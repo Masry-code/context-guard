@@ -1170,6 +1170,61 @@ LABEL_STOP = {"the", "and", "for", "with", "from", "this", "that", "chat", "note
               "handoff", "session", "project", "continue", "please", "about", "sept", "2026"}
 
 
+WRITER_PREFIX = "WRITTEN BY:"
+WRITER_HEAD_LINES = 6
+
+
+def note_writer(path):
+    """The TITLE of the chat that wrote this note, or "" if it did not say.
+
+    POSITIONAL, and that is not fussiness. 19 Sep 2026 a sentinel matched anywhere in a
+    file, so the note EXPLAINING the sentinel was classified as machine output and 287
+    lines were destroyed. A note is allowed to discuss this convention; only the head of
+    the file is structure.
+
+    A title rather than an id, because there is no id to use. MEASURED 19 Sep 2026: a
+    transcript never records the app's session id - its own `sessionId` field holds the
+    transcript uuid, while the sidebar archives by `local_<uuid>`, a different id - so a
+    hook has nothing in reach to map one to the other. The title is the only handle both
+    sides can see."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for i, line in enumerate(f):
+                if i >= WRITER_HEAD_LINES:
+                    break
+                s = line.strip()
+                if s.upper().startswith(WRITER_PREFIX):
+                    return s[len(WRITER_PREFIX):].strip()
+    except Exception:
+        return ""            # unreadable: say nothing, never guess at a chat to close
+    return ""
+
+
+def archive_tail(writers):
+    """Name the chats that are now provably finished, for the new chat to archive.
+
+    A note being consumed is the ONE moment this tool can be certain the chat that wrote
+    it is done: it handed off, and something else has taken over. 19 Sep 2026 his sidebar
+    held 47 dead chats and he asked whether they could go automatically."""
+    writers = [w for w in writers if w]
+    if not writers:
+        return ""            # every note written before today lacks the line. Silence.
+    if len(writers) == 1:
+        who = "The chat that wrote this note is FINISHED - it is titled '" + writers[0] + "'."
+    else:
+        who = ("The chats that wrote these notes are FINISHED - they are titled "
+               + "; ".join("'" + w + "'" for w in writers) + ".")
+    return (chr(10) + chr(10) + "-" * 72 + chr(10) + who + " Handing a note over is proof "
+            "the work moved on. AFTER you have answered him, tidy his sidebar without "
+            "mentioning it: call mcp__ccd_session_mgmt__list_sessions, and for each title "
+            "above find the ONE session matching it EXACTLY that is not running and is not "
+            "this chat, then call mcp__ccd_session_mgmt__archive_session on it. If a title "
+            "matches zero sessions or more than one, archive NOTHING for that title and say "
+            "nothing about it - a wrong archive costs his trust, a stale row costs him a "
+            "scroll. Do not ask permission and do not announce it; archiving is reversible "
+            "with unarchive_session. If you have no such tool, skip it silently.")
+
+
 def note_label(path):
     """The phrase the user types to summon this note. Explicit "HANDOFF LABEL:" line wins;
     otherwise fall back to the first heading, so notes written before labels existed still
@@ -1359,6 +1414,8 @@ def pending_handoff(transcript_path, prompt=""):
     cap = max(NOTE_CHARS // len(notes), 20_000)
     # read the labels while the notes are still where they are - the loop below renames them
     picked = [note_label(f) for f in notes]
+    # read BEFORE the loop renames the files out from under us
+    writers = [note_writer(f) for f in notes]
     chunks = []
     for f in notes:
         # archive under a timestamp, never a fixed .used.md - that overwrote the previous
@@ -1400,7 +1457,7 @@ def pending_handoff(transcript_path, prompt=""):
             "KEY>.<that chat's 8-char id>.md before doing anything else. They were consumed "
             "to reach you and would otherwise be lost to the next chat - the archived copies "
             "sit beside them as .used-* if you need to copy from disk instead."
-            + chr(10) + chr(10) + body), True
+            + chr(10) + chr(10) + body + archive_tail(writers)), True
 
 
 def _bash_shape(cmd):
@@ -1876,6 +1933,14 @@ def cmd_size():
         "Do not invent it and do not restart it. He does NOT have to type the number or the "
         "date to summon the note - the name on its own still works - but quote him the whole "
         "label in step 4 anyway, because seeing the order is the entire point of it; "
+        "(2d) THE SECOND LINE must be exactly 'WRITTEN BY: <this chat's own title, "
+        "exactly as it reads in his sidebar>'. That is how the next chat learns which "
+        "session is finished and can archive it for him - on 19 Sep 2026 his sidebar "
+        "held 47 dead chats. Use the title you set with set_session_title. If you "
+        "never set one, write 'WRITTEN BY: (untitled)' - a WRONG title is far worse "
+        "than none, because it can match a chat that is still alive. A transcript "
+        "never records the app's session id, so the title is the only handle "
+        "that exists; "
         + handoff_steps(today) +
         "DO NOT CALL mcp__ccd_session_mgmt__clear_session. Measured three times on 11 Sep 2026 "
         "(12:42, 13:13, 20:12): it returns success, announces a clear, and the session carries "

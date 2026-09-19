@@ -2552,6 +2552,91 @@ def test_a_note_that_mentions_the_marker_is_not_a_stub():
         shutil.rmtree(home, ignore_errors=True)
 
 
+# ------------------------------------- change 7: the finished chat archives itself
+WRITER_NOTE = ("HANDOFF LABEL: context guard -4 (19 Sep)\n"
+               "WRITTEN BY: Context Guard -3 (18 Sep)\n\n"
+               "# Handoff - the guard\n\nbody-CONTEXTGUARD\n")
+
+
+def test_pickup_names_the_finished_chat_for_archiving():
+    """19 Sep 2026: his sidebar held 47 dead chats and he asked whether they could be
+    archived when a new chat takes a note. Pickup is exactly the right trigger - a note
+    being consumed is proof the chat that wrote it is done."""
+    home = make_home({KEY + ".9e19c7ab.md": WRITER_NOTE})
+    try:
+        p = run(home, "arch0001-new", "context guard")
+        ctx = context_of(p)
+        expect_clean(p, "pickup/archive")
+        # NOT '"Context Guard -3 (18 Sep)" in ctx' - the note body is delivered
+        # verbatim and the title lives in it, so that check passed before the feature
+        # existed. Assert the title inside the GUARD'S OWN sentence; only extraction
+        # can produce that.
+        check("pickup/archive: names the finished chat by its EXACT title",
+              "is titled 'Context Guard -3 (18 Sep)'" in ctx, repr(ctx[-700:]))
+        check("pickup/archive: names the tool that does it",
+              "archive_session" in ctx, repr(ctx[-700:]))
+        check("pickup/archive: still delivers the note itself",
+              "body-CONTEXTGUARD" in ctx, repr(ctx[:200]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_pickup_without_a_writer_line_says_nothing_about_archiving():
+    """Every note written before today lacks the line, and so will any note a chat
+    forgets. Missing must be SILENT - not an error, and above all not a guess. The
+    cost of archiving the wrong chat is his trust, which is not worth a heuristic."""
+    home = make_home({KEY + ".9e19c7ab.md": NOTE_CTX})
+    try:
+        p = run(home, "arch0002-new", "context guard")
+        ctx = context_of(p)
+        expect_clean(p, "pickup/no-writer")
+        check("pickup/no-writer: says nothing at all about archiving",
+              "archive_session" not in ctx, repr(ctx[-500:]))
+        check("pickup/no-writer: still delivers the note",
+              "body-CONTEXTGUARD" in ctx, repr(ctx[:200]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_a_writer_line_deep_in_the_body_is_not_the_writer():
+    """The marker bug of 19 Sep, pre-empted rather than repeated. That one cost a
+    287-line note: a sentinel was matched anywhere in the file, and the note that
+    EXPLAINED the sentinel was destroyed by it. A note is allowed to discuss the
+    convention. Only the head of the file is structure; everything below is prose."""
+    body = (NOTE_CTX.rstrip("\n")
+            + "\n\nEvery note must carry WRITTEN BY: <that chat's title> near the top "
+              "so the next chat knows which session is finished.\n")
+    home = make_home({KEY + ".9e19c7ab.md": body})
+    try:
+        p = run(home, "arch0003-new", "context guard")
+        ctx = context_of(p)
+        expect_clean(p, "pickup/deep-writer")
+        check("pickup/deep-writer: prose ABOUT the convention is not a writer line",
+              "archive_session" not in ctx, repr(ctx[-500:]))
+        check("pickup/deep-writer: and the note survives to be delivered",
+              "body-CONTEXTGUARD" in ctx, repr(ctx[:200]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_the_note_instruction_asks_for_the_writer_line():
+    """A convention nothing asks for never appears. If the instruction that demands
+    the note does not also demand the line, the archive step is dead code for every
+    note ever written - green tests about a feature that can never fire."""
+    home = make_home({})
+    try:
+        write_transcript(home, "arch0004", 200_000)
+        p = run(home, "arch0004", "carry on")
+        ctx = context_of(p)
+        expect_clean(p, "note-instruction")
+        check("note-instruction: the handoff warning fired",
+              "THIS CHAT IS NOW" in ctx, repr(ctx[:200]))
+        check("note-instruction: asks the chat to record its own title",
+              "WRITTEN BY:" in ctx, repr(ctx[-900:]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
 if __name__ == "__main__":
     for t in (test_handoff_instruction_demands_memory_consolidation,
               test_handoff_label_gets_the_next_number,
@@ -2649,7 +2734,11 @@ if __name__ == "__main__":
               test_away_mode_says_so_once_per_chat,
               test_the_away_indicator_names_both_ways_out,
               test_no_indicator_when_he_is_at_the_console,
-              test_a_note_that_mentions_the_marker_is_not_a_stub):
+              test_a_note_that_mentions_the_marker_is_not_a_stub,
+              test_pickup_names_the_finished_chat_for_archiving,
+              test_pickup_without_a_writer_line_says_nothing_about_archiving,
+              test_a_writer_line_deep_in_the_body_is_not_the_writer,
+              test_the_note_instruction_asks_for_the_writer_line):
         print(t.__name__)
         t()
     print()
