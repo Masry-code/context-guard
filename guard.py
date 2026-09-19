@@ -65,7 +65,17 @@ LEDGER_OTHERS = 15        # ...of which this many may come from the OTHER thread
 # chars across the folder) and costs at most 2,000 extra chars - about 500 tokens - on the
 # one turn a pickup happens. The thread that was losing requests is the one whose oldest
 # requests keep turning out to still be open, so the trade is the right way round.
-LEDGER_OWN_CHARS = 12000    # the resumed thread's share of the injection
+LEDGER_OWN_CHARS = 20000    # the resumed thread's share of the injection
+# 19 Sep 2026, chosen from the real 505-request ledger once ledger-budget.py could see
+# all of it. Not the no-drop knee: that is 69,706 chars, ~17.4k tokens on turn one of
+# every pickup, which would make this tool the bloat it exists to remove. Picked on
+# MARGINAL value instead - requests rescued per 1,000 extra tokens of injection:
+#     12,000 -> 20,000   +1.9k tokens, 63 requests   33 per 1k   <- best
+#     20,000 -> 30,000   +2.6k tokens, 30 requests   12 per 1k
+#     30,000 -> 50,000   +5.0k tokens, 82 requests   16 per 1k
+#     50,000 -> 69,706   +5.0k tokens, 84 requests   17 per 1k
+# 20,000 is where each extra token buys the most of his own words back; past it the
+# curve flattens and then only pays off by buying the whole tail at once.
 LEDGER_OTHERS_CHARS = 4000  # ...and the neighbours', once the thread has taken its own
 LEDGER_OLDEST_SHARE = 0.2   # of a thread's budget, reserved for its OLDEST entries -
                             # a newest-first window is structurally blind to exactly the
@@ -2162,6 +2172,11 @@ def log_day(line):
 # moving would blind all of them at once to shrink a number. The shrink is a separate step
 # he takes when he is satisfied - and copying is the version that can be undone.
 MANIFEST = os.path.join(STATE, "memory-manifest.json")
+# Where an index line lives once it has been moved OUT of the shared MEMORY.md. On
+# 19 Sep 2026, with every project furnished with its own folder, 45 of the shared
+# index's 48 lines moved here and cut 6,670 bytes off every turn of every chat started
+# in D:\Claude. The lines are still his words; they are just no longer paid for.
+PROJECTS_INDEX = os.path.join(STATE, "projects-index.md")
 # The folder all 79+ of his chats have shared so far, and the source a new folder is
 # furnished FROM. Not derived: it is a fact about this machine, and a wrong guess here
 # fails by silently copying nothing, which is the failure mode that looks like success.
@@ -2347,7 +2362,11 @@ def cmd_bootstrap():
         log("bootstrap: %s is not in the manifest - declining to guess" % cwd)
         return                  # a directory nobody has classified. Silence beats a guess.
     src = os.path.join(PROJECTS, SOURCE_KEY, "memory")
-    idx = index_lines(os.path.join(src, "MEMORY.md"))
+    # The pointer file FIRST, so the live index wins on any slug listed in both. A line
+    # that has moved is still the line he wrote, and this hook must never invent a
+    # replacement - see index_lines().
+    idx = index_lines(PROJECTS_INDEX)
+    idx.update(index_lines(os.path.join(src, "MEMORY.md")))
     copied, missing = [], []
     try:
         os.makedirs(dest)

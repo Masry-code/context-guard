@@ -3621,6 +3621,88 @@ def test_the_token_column_is_the_cost_of_one_pickup():
 
 
 
+def test_the_neighbour_share_of_the_tail_is_bounded_too():
+    """The thread's own budget has had three agreement bugs this week. The NEIGHBOUR side
+    - the other threads sharing the folder - had no check against a real pickup at all,
+    and it is bounded by two constants rather than one. Measured against the constants
+    read from source, so raising either one cannot silently turn this green."""
+    home = make_home({})
+    try:
+        with open(os.path.join(home, ".claude", "handoff",
+                               KEY + ".guardaaa.md"), "w", encoding="utf-8") as f:
+            f.write("HANDOFF LABEL: Context Guard -2 (18 Sep)" + chr(10) * 2 + "# n" + chr(10))
+        with open(os.path.join(home, ".claude", "handoff",
+                               KEY + ".spotliba.md"), "w", encoding="utf-8") as f:
+            f.write("HANDOFF LABEL: Spotliar -4 (18 Sep)" + chr(10) * 2 + "# n" + chr(10))
+        lp = os.path.join(home, ".claude", "handoff", KEY + ".requests.md")
+        with open(lp, "w", encoding="utf-8") as f:
+            f.write("# What the user actually asked for - his own words" + chr(10))
+        for i in range(2):
+            append_new_entry(home, "2026-09-18 10:0%d:00" % i, "guardaaa",
+                             "my own request %d" % i)
+        # a loud neighbour: far more entries and far more chars than either bound allows
+        for i in range(40):
+            append_new_entry(home, "2026-09-18 11:%02d:00" % i, "spotliba",
+                             "neighbour request %d: " % i + ("word " * 120))
+        p = run(home, "freshchat", "Context Guard -2 (18 Sep)")
+        expect_clean(p, "tail-neighbour")
+        ctx = context_of(p)
+        split = ctx.find("OTHER CHATS")
+        check("tail-neighbour: the pickup did split the two sides", split > -1,
+              repr(ctx[-300:]))
+        theirs = ctx[split:] if split > -1 else ""
+        carried = theirs.count(chr(10) + "### ")
+        n_max = guard_constant("LEDGER_OTHERS")
+        c_max = guard_constant("LEDGER_OTHERS_CHARS")
+        check("tail-neighbour: no more neighbour entries than LEDGER_OTHERS allows",
+              0 < carried <= n_max, "carried=%d, LEDGER_OTHERS=%d" % (carried, n_max))
+        check("tail-neighbour: and no more neighbour CHARS than LEDGER_OTHERS_CHARS",
+              len(theirs) <= c_max + 2000,
+              "neighbour section=%d chars, LEDGER_OTHERS_CHARS=%d" % (len(theirs), c_max))
+        check("tail-neighbour: the loud neighbour did not crowd out his own words",
+              "my own request 0" in ctx and "my own request 1" in ctx,
+              repr(ctx[:400]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+
+def test_bootstrap_finds_an_index_line_that_moved_to_the_pointer():
+    """19 Sep 2026: once every project had its own folder, 45 of the shared index's 48
+    lines were moved out to ~/.claude/context-guard/projects-index.md, which cut 6,670
+    bytes off every turn of every chat started in D:\\Claude. The bootstrap builds a new
+    project's index by CARRYING OVER his line - it must never invent one - so a line that
+    has moved has to be found where it now lives. Without this the next project added to
+    the manifest gets a folder full of memories and an index that does not mention them."""
+    home = make_boot_home()
+    try:
+        idxp = os.path.join(home, ".claude", "projects", KEY, "memory", "MEMORY.md")
+        with open(idxp, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+        moved = [ln for ln in lines if "(food-expiry-scanner-app.md)" in ln]
+        check("bootstrap/pointer: the fixture really has that line to move",
+              len(moved) == 1, "lines=%r" % (lines[:6],))
+        rest = [ln for ln in lines if "(food-expiry-scanner-app.md)" not in ln]
+        with open(idxp, "w", encoding="utf-8") as f:
+            f.write(chr(10).join(rest) + chr(10))
+        with open(os.path.join(home, ".claude", "context-guard", "projects-index.md"),
+                  "w", encoding="utf-8") as f:
+            f.write("# Other projects - full index" + chr(10) * 2
+                    + chr(10).join(moved) + chr(10))
+        p = boot(home, r"D:\AI Projects\Taza")
+        expect_clean(p, "bootstrap/pointer")
+        with open(os.path.join(home, ".claude", "projects", "D--AI-Projects-Taza",
+                               "memory", "MEMORY.md"), encoding="utf-8") as f:
+            got = f.read()
+        check("bootstrap/pointer: his line was carried over from the pointer file",
+              moved[0].strip() in got, repr(got[:300]))
+        check("bootstrap/pointer: and it was not replaced by an invented summary",
+              got.count("(food-expiry-scanner-app.md)") == 1, repr(got[:300]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+
 if __name__ == "__main__":
     for t in (test_handoff_instruction_demands_memory_consolidation,
               test_handoff_label_gets_the_next_number,
@@ -3748,6 +3830,8 @@ if __name__ == "__main__":
               test_the_budget_tool_still_refuses_to_guess_without_the_sidecar,
               test_the_budget_verdict_always_names_a_number,
               test_the_token_column_is_the_cost_of_one_pickup,
+              test_the_neighbour_share_of_the_tail_is_bounded_too,
+              test_bootstrap_finds_an_index_line_that_moved_to_the_pointer,
               test_the_report_surfaces_the_ordering_verdict):
         print(t.__name__)
         t()
