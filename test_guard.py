@@ -3233,6 +3233,114 @@ def test_an_unanswerable_probe_waits_instead_of_guessing():
         shutil.rmtree(home, ignore_errors=True)
 
 
+# ------------------------------------------- three silences, each made to explain itself
+# 19 Sep 2026: `--report` said "memory nags 0 never fired" after eight days and 82 handoff
+# pickups, and nothing in the tool could say whether that meant "every chat saved its
+# memories" or "the check is dead". The away indicator was exactly that, and it was dead.
+# A counter that cannot explain a zero is not evidence. Same shape for the other two: the
+# ledger budget drops requests silently, and the ordering verdict lands in a file nobody
+# has any reason to open.
+
+def guard_log(home):
+    """Everything guard.py wrote to its own log inside this throwaway home."""
+    p = os.path.join(home, ".claude", "context-audit.log")
+    try:
+        with open(p, encoding="utf-8", errors="replace") as f:
+            return f.read()
+    except Exception:
+        return ""
+
+
+def test_a_nag_that_stays_quiet_says_why():
+    """A zero in the report must be explainable, not just true.
+
+    The memory folder is SHARED by every chat in the folder, so a neighbour saving a
+    memory makes this chat's nag stand down - by mtime there is no way to tell the two
+    apart. That is a real hole and it is why the count can be zero while the check is
+    healthy; the least the hook can do is say which of the two happened."""
+    home = make_home({})
+    try:
+        started = time.time() - 3600
+        write_chat(home, "quiet", started)
+        write_note(home, "quiet")
+        write_memory(home, "saved-this-chat.md", time.time())   # touched since it started
+        p = run_stop(home, "quiet")
+        expect_clean(p, "nag-quiet")
+        check("nag-quiet: the chat is let go", blocked(p) == "", repr(blocked(p)[:200]))
+        check("nag-quiet: and the log says why it stayed quiet",
+              "memory-nag: skipped" in guard_log(home), repr(guard_log(home)[-400:]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+    # control, same shape: when it DOES fire the log still says so, and differently
+    home = make_home({})
+    try:
+        started = time.time() - 3600
+        write_chat(home, "loud", started)
+        write_note(home, "loud")
+        write_memory(home, "old-lesson.md", started - 86400)
+        p = run_stop(home, "loud")
+        expect_clean(p, "nag-loud")
+        check("nag-quiet: control - it still blocks when nothing was saved",
+              "MEMORY" in blocked(p), repr(blocked(p)[:120]))
+        check("nag-quiet: control - and that is logged as fired, not skipped",
+              "memory-nag: note written" in guard_log(home), repr(guard_log(home)[-400:]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_the_ledger_says_when_the_budget_drops_his_requests():
+    """The budget was re-measured by hand on 19 Sep because nothing announced itself.
+
+    The ledger is append-only and grows, so the next overflow is a certainty. Dropping
+    his own words into a "... N more ..." line is exactly the kind of loss that must not
+    wait for somebody to think of measuring it again."""
+    budget = guard_constant("LEDGER_OWN_CHARS")
+    each = 1900
+    n = max(8, int(budget * 2 // each) + 2)
+    home = make_home({})
+    try:
+        pickup(home, ["BULK-%02d %s" % (i, "q" * each) for i in range(n)])
+        check("ledger-drop: the omission is logged, not just printed in the injection",
+              "ledger: budget dropped" in guard_log(home), repr(guard_log(home)[-400:]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+    # control: a thread that fits must NOT report a drop, or the line means nothing
+    home = make_home({})
+    try:
+        pickup(home, ["a short request about the guard", "and another one"])
+        check("ledger-drop: control - a thread that fits says nothing",
+              "ledger: budget dropped" not in guard_log(home),
+              repr(guard_log(home)[-400:]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_the_report_surfaces_the_ordering_verdict():
+    """The probe answers a question nobody is watching for. Put the answer where the one
+    command anybody runs will show it - otherwise it is a reminder again."""
+    home = make_home({})
+    state = os.path.join(home, ".claude", "context-guard")
+    os.makedirs(state, exist_ok=True)
+    try:
+        out = run_report(home).stdout
+        check("report-ordering: silent while there is nothing to say",
+              "ordering" not in out.lower(), repr(line_with(out, "rdering")))
+        with open(os.path.join(state, "ordering-probe.json"), "w", encoding="utf-8") as f:
+            json.dump({"sid": "probe001", "key": "D--AI-Projects-Taza"}, f)
+        out = run_report(home).stdout
+        check("report-ordering: a pending probe is reported as waiting",
+              "waiting" in out.lower() and "D--AI-Projects-Taza" in out,
+              repr(line_with(out, "aiting")))
+        os.remove(os.path.join(state, "ordering-probe.json"))
+        with open(os.path.join(state, "ordering-answer.txt"), "w", encoding="utf-8") as f:
+            f.write("verdict : same-session\nproject : D--AI-Projects-Taza\n")
+        out = run_report(home).stdout
+        check("report-ordering: the verdict itself is printed once it lands",
+              "same-session" in out, repr(out[-400:]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
 if __name__ == "__main__":
     for t in (test_handoff_instruction_demands_memory_consolidation,
               test_handoff_label_gets_the_next_number,
@@ -3351,7 +3459,10 @@ if __name__ == "__main__":
               test_bootstrap_survives_a_manifest_entry_with_no_file_on_disk,
               test_the_bootstrap_arms_a_probe_only_when_it_actually_furnished_a_folder,
               test_the_hook_answers_the_ordering_question_by_itself,
-              test_an_unanswerable_probe_waits_instead_of_guessing):
+              test_an_unanswerable_probe_waits_instead_of_guessing,
+              test_a_nag_that_stays_quiet_says_why,
+              test_the_ledger_says_when_the_budget_drops_his_requests,
+              test_the_report_surfaces_the_ordering_verdict):
         print(t.__name__)
         t()
     print()

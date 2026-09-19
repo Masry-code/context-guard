@@ -1030,6 +1030,15 @@ def memory_nag(d, path):
         log("memory-nag: could not date this session - staying quiet")
         return
     if memory_touched_since(path, since):
+        # Why this is logged at all: on 19 Sep 2026 `--report` had said "memory nags 0,
+        # never fired" for eight days and 82 pickups, and nothing could say whether that
+        # meant every chat saved its memories or the check was dead - which is exactly
+        # what the away indicator turned out to be. Note the honest wording: the memory
+        # folder is SHARED by every chat in the folder, so a neighbour's save clears this
+        # chat's nag and no mtime can tell the two apart. One folder per project closes
+        # that hole; until then the log says which of the two happened.
+        log("memory-nag: skipped - the memory folder changed since this chat started "
+            "(shared folder, so possibly another chat)")
         return
     st = load_state(sid)
     said = int(st.get("memory_nags", 0) or 0)
@@ -1163,6 +1172,13 @@ def ledger_tail(transcript_path, labels=None):
     # folder with no attribution yet still gets the full 30, which is every other project
     # on this machine today.
     oldest, newest, omitted = fit_budget(ours, LEDGER_OWN_CHARS, LEDGER_OLDEST_SHARE)
+    if omitted:
+        # The budget was last sized by measuring this file by hand. The ledger is
+        # append-only, so the next overflow is a certainty rather than a risk, and his
+        # own words being summarised away is precisely what it must not do quietly.
+        log("ledger: budget dropped %d of %d request(s) for this thread - %d chars "
+            "offered, budget %d" % (omitted, len(ours),
+                                    sum(len(b) for b in ours), LEDGER_OWN_CHARS))
     theirs = theirs[-(LEDGER_OTHERS if ours else LEDGER_TAIL):]
     # the neighbours are bounded by size too - 15 entries of 2,000 chars is 30 KB, which
     # on its own would eat most of the injection the note itself needs.
@@ -2069,6 +2085,10 @@ REPORT_EVENTS = [
     ("handoff notes picked up", "handoff picked up",        False),
     ("handoff menus offered",   "offered the menu",         False),
     ("memory nags",             "memory-nag: note written", True),
+    # ...and the reason the row above can honestly read zero. Without this line the zero
+    # is unfalsifiable, which is how a dead feature hid for eight days once already.
+    ("nags skipped, mem fresh", "memory-nag: skipped",       False),
+    ("ledger budget drops",     "ledger: budget dropped",    True),
     ("ceiling blocks",          "ceiling: blocked",         True),
     ("checkpoints recorded",    "checkpoint at ",           True),
     ("ledger appends",          "ledger: +",                False),
@@ -2401,6 +2421,35 @@ def cmd_report():
         print("  %s (%d chars)" % (os.path.basename(p), os.path.getsize(p)))
     if not pend:
         print("  none")
+    report_ordering()
+
+
+def report_ordering():
+    """Surface the ordering verdict where somebody will actually see it.
+
+    A file in a state directory that nothing prints is a reminder wearing a disguise: the
+    probe would answer the question and the answer would sit unread. Printed only when
+    there is something to say, so the report does not grow a permanent empty section."""
+    if os.path.exists(ORDER_ANSWER):
+        try:
+            with open(ORDER_ANSWER, encoding="utf-8", errors="replace") as f:
+                body = f.read().strip()
+        except Exception:
+            return
+        print(chr(10) + "-- the SessionStart ordering, answered --")
+        for line in body.splitlines():
+            print("  " + line)
+        return
+    if os.path.exists(ORDER_PROBE):
+        try:
+            with open(ORDER_PROBE, encoding="utf-8") as f:
+                rec = json.load(f) or {}
+        except Exception:
+            return
+        print(chr(10) + "-- the SessionStart ordering --")
+        print("  waiting on session %s, which furnished %s. The verdict lands here by"
+              % (rec.get("sid"), rec.get("key")))
+        print("  itself once that chat has taken a turn; nobody has to go and look.")
 
 
 if __name__ == "__main__":
