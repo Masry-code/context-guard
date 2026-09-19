@@ -1457,7 +1457,10 @@ def pending_handoff(transcript_path, prompt=""):
             "KEY>.<that chat's 8-char id>.md before doing anything else. They were consumed "
             "to reach you and would otherwise be lost to the next chat - the archived copies "
             "sit beside them as .used-* if you need to copy from disk instead."
-            + chr(10) + chr(10) + body + archive_tail(writers)), True
+            # archive_tail FIRST: the app truncates the tail of a long injected
+            # message, and on 19 Sep 2026 a 24kB note ate this instruction whole.
+            # The note body is the part that may safely be cut.
+            + archive_tail(writers) + chr(10) + chr(10) + body), True
 
 
 def _bash_shape(cmd):

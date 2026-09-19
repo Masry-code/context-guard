@@ -351,12 +351,12 @@ def test_handoff_instruction_demands_memory_consolidation():
               "THIS CHAT IS NOW" in ctx, repr(ctx[:200]))
         want = os.path.join("projects", KEY, "memory").replace(chr(92), "/")
         check("memory-step: points at this project's own memory folder",
-              want in ctx.replace(chr(92), "/"), repr(ctx[-700:]))
-        check("memory-step: names the MEMORY.md index", "MEMORY.md" in ctx, repr(ctx[-700:]))
+              want in ctx.replace(chr(92), "/"), repr(ctx[:1200]))
+        check("memory-step: names the MEMORY.md index", "MEMORY.md" in ctx, repr(ctx[:1200]))
         check("memory-step: requires consolidating, not just adding",
-              "consolidat" in ctx.lower(), repr(ctx[-700:]))
+              "consolidat" in ctx.lower(), repr(ctx[:1200]))
         check("memory-step: says check for an existing file BEFORE creating one",
-              "before creating" in ctx.lower(), repr(ctx[-700:]))
+              "before creating" in ctx.lower(), repr(ctx[:1200]))
     finally:
         shutil.rmtree(home, ignore_errors=True)
 
@@ -664,10 +664,10 @@ def test_handoff_offers_the_skill_candidates():
         ctx = context_of(p)
         expect_clean(p, "skills-handoff")
         check("skills-handoff: the warning carries the candidates",
-              "SKILL CANDIDATES" in ctx, repr(ctx[-700:]))
-        check("skills-handoff: names the shape", "python test_guard.py" in ctx, repr(ctx[-700:]))
+              "SKILL CANDIDATES" in ctx, repr(ctx[:1200]))
+        check("skills-handoff: names the shape", "python test_guard.py" in ctx, repr(ctx[:1200]))
         check("skills-handoff: forbids building them unasked",
-              "DO NOT BUILD" in ctx, repr(ctx[-700:]))
+              "DO NOT BUILD" in ctx, repr(ctx[:1200]))
     finally:
         shutil.rmtree(home, ignore_errors=True)
 
@@ -2572,9 +2572,9 @@ def test_pickup_names_the_finished_chat_for_archiving():
         # existed. Assert the title inside the GUARD'S OWN sentence; only extraction
         # can produce that.
         check("pickup/archive: names the finished chat by its EXACT title",
-              "is titled 'Context Guard -3 (18 Sep)'" in ctx, repr(ctx[-700:]))
+              "is titled 'Context Guard -3 (18 Sep)'" in ctx, repr(ctx[:1200]))
         check("pickup/archive: names the tool that does it",
-              "archive_session" in ctx, repr(ctx[-700:]))
+              "archive_session" in ctx, repr(ctx[:1200]))
         check("pickup/archive: still delivers the note itself",
               "body-CONTEXTGUARD" in ctx, repr(ctx[:200]))
     finally:
@@ -2633,6 +2633,33 @@ def test_the_note_instruction_asks_for_the_writer_line():
               "THIS CHAT IS NOW" in ctx, repr(ctx[:200]))
         check("note-instruction: asks the chat to record its own title",
               "WRITTEN BY:" in ctx, repr(ctx[-900:]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_the_archive_instruction_survives_a_truncated_tail():
+    """MEASURED IN THE WILD 19 Sep 2026, within the hour of shipping the feature.
+
+    EGX -21 picked up a 24,089-char note and never archived anything. guard.py's own
+    truncation had NOT fired - the app's persisted-output cut took the end of the
+    injected text, and the archive instruction was sitting at the very end because I
+    put it there so a test could find it in ctx[-700:]. A test convenience placed a
+    live instruction in the one position that gets discarded.
+
+    The note body is the part that is allowed to be cut. Instructions go in FRONT of
+    it. Asserted as an ORDERING, because "it is present" was true in the broken
+    version too - present in a region nothing downstream kept."""
+    home = make_home({KEY + ".9e19c7ab.md": WRITER_NOTE})
+    try:
+        p = run(home, "arch0005-new", "context guard")
+        ctx = context_of(p)
+        expect_clean(p, "pickup/order")
+        i_arch = ctx.find("archive_session")
+        i_body = ctx.find("body-CONTEXTGUARD")
+        check("pickup/order: the instruction and the note are both delivered",
+              i_arch >= 0 and i_body >= 0, "arch=%d body=%d" % (i_arch, i_body))
+        check("pickup/order: the archive instruction comes BEFORE the note body",
+              0 <= i_arch < i_body, "arch=%d body=%d" % (i_arch, i_body))
     finally:
         shutil.rmtree(home, ignore_errors=True)
 
@@ -2738,7 +2765,8 @@ if __name__ == "__main__":
               test_pickup_names_the_finished_chat_for_archiving,
               test_pickup_without_a_writer_line_says_nothing_about_archiving,
               test_a_writer_line_deep_in_the_body_is_not_the_writer,
-              test_the_note_instruction_asks_for_the_writer_line):
+              test_the_note_instruction_asks_for_the_writer_line,
+              test_the_archive_instruction_survives_a_truncated_tail):
         print(t.__name__)
         t()
     print()
