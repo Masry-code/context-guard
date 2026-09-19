@@ -27,6 +27,10 @@ PY = sys.executable.replace(os.sep, "/")
 # (event, matcher, script, flag, timeout, statusMessage)
 HOOKS = [
     ("SessionStart", None, AUDIT, "--alert", 15, "Checking context cost"),
+    # Furnishes a project directory's own memory folder the first time a chat opens there.
+    # Without a memory-manifest.json in ~/.claude/context-guard/ this is a silent no-op, so
+    # it is safe to ship to someone who has never written one.
+    ("SessionStart", None, GUARD, "--bootstrap", 15, "Setting up project memory"),
     ("UserPromptSubmit", None, GUARD, "--size", 10, None),
     ("PreToolUse", "Read", GUARD, "--reread", 10, None),
     ("PreToolUse", "Bash", GUARD, "--bash", 10, None),
@@ -48,7 +52,7 @@ def command_for(script, flag):
     return '"%s" "%s" %s' % (PY, script, flag)
 
 
-FLAGS = ("--alert", "--size", "--reread", "--bash", "--ledger")
+FLAGS = ("--alert", "--size", "--reread", "--bash", "--ledger", "--bootstrap")
 
 
 def is_ours(entry):

@@ -2046,6 +2046,162 @@ def log_day(line):
         return ""
 
 
+# ---------------------------------------------------------------- the bootstrap
+# His words, 19 Sep 2026: "we need to make sure once we do the 'write Context Guard -14
+# (19 Sep) in a new chat' thingy it needs to create a folder then and there and organize
+# it automatically can we do that??"
+#
+# Claude Code keys the memory folder on the working DIRECTORY, so a project that has never
+# been worked in from its own folder has no memories there - it starts blind. The fix he
+# asked for is not a hand migration, it is that the first chat in such a folder furnishes
+# itself. The manifest is the assignment; this is the thing that acts on it.
+#
+# It COPIES, never moves. Every chat he currently has open runs in the shared folder, and
+# moving would blind all of them at once to shrink a number. The shrink is a separate step
+# he takes when he is satisfied - and copying is the version that can be undone.
+MANIFEST = os.path.join(STATE, "memory-manifest.json")
+# The folder all 79+ of his chats have shared so far, and the source a new folder is
+# furnished FROM. Not derived: it is a fact about this machine, and a wrong guess here
+# fails by silently copying nothing, which is the failure mode that looks like success.
+SOURCE_KEY = "D--Claude"
+
+
+def dir_key(cwd):
+    r"""Claude Code's own folder name for a working DIRECTORY.
+
+    Deliberately not called project_key - that name is taken, by the function above that
+    reads the key off a transcript PATH. Defining a second project_key here overrode it
+    at import and broke 89 checks in one edit, silently, because Python's last definition
+    simply wins. The suite caught it; a grep for the name would not have.
+
+    Every character that is not a letter or a digit becomes a hyphen, and runs are NOT
+    collapsed. Checked against the three keys that actually exist on his disk:
+    D:\Claude -> D--Claude, D:\TEST -> D--TEST, and
+    D:\sticker-project - Gemini -> D--sticker-project---Gemini (three hyphens, from
+    space-hyphen-space). A tidier rule that collapses the runs produces a folder name
+    Claude Code will never read, and nothing would ever say so."""
+    return re.sub(r"[^A-Za-z0-9]", "-", cwd or "")
+
+
+def _same_dir(a, b):
+    """Two spellings of one folder. On Windows the separator and the case both vary."""
+    return ((a or "").replace("/", "\\").rstrip("\\").lower()
+            == (b or "").replace("/", "\\").rstrip("\\").lower())
+
+
+def manifest_project(cwd, man):
+    """The manifest entry whose `dir` - or one of its `also` spellings - is this cwd.
+
+    `also` is not decoration: StreamBERT lives in two folders and Spotliar in four, and a
+    chat opened in the wrong one of them is exactly the chat that starts blind."""
+    for name, e in sorted((man.get("projects") or {}).items()):
+        if _same_dir(cwd, e.get("dir")):
+            return name, e
+        for alt in (e.get("also") or []):
+            if _same_dir(cwd, alt):
+                return name, e
+    return None, None
+
+
+def index_lines(path):
+    """slug -> its own line in MEMORY.md, so a new index is CARRIED OVER, not invented.
+
+    The hook has no business writing its own one-line summary of a memory it has not
+    read - his standing complaint is notes that are lazy, and a regenerated index line
+    is a summary of a summary."""
+    out = {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                m = re.search(r"\]\(([^)]+)\.md\)", line)
+                if m:
+                    out[m.group(1)] = line.rstrip("\r\n")
+    except Exception:
+        pass
+    return out
+
+
+def cmd_bootstrap():
+    """SessionStart: give this directory its own memory folder if it has none yet."""
+    d = read_stdin()
+    cwd = d.get("cwd") or ""
+    key = dir_key(cwd)
+    if not key:
+        # Measured 19 Sep 2026: the first end-to-end run of this hook did NOTHING and said
+        # nothing, and it took a debugging session to find out why - the JSON on stdin had
+        # been mangled by the shell that sent it, so cwd was empty. Every give-up path below
+        # is silent BY DESIGN (SessionStart must not chatter), which means the log is the
+        # only place a misconfiguration can ever show up. Say which branch declined, always.
+        log("bootstrap: no cwd on stdin - nothing to do")
+        return
+    dest = os.path.join(PROJECTS, key, "memory")
+    # A folder that already holds memories is HIS. Never overwrite one, never merge into
+    # one, and say nothing - SessionStart fires on every resume as well as every startup.
+    if os.path.exists(os.path.join(dest, "MEMORY.md")):
+        log("bootstrap: %s already has a memory folder - left alone" % key)
+        return
+    try:
+        with open(MANIFEST, encoding="utf-8") as f:
+            man = json.load(f)
+    except Exception as e:
+        log("bootstrap: no usable manifest (%s) - declining to guess" % e)
+        return                  # no manifest, or unreadable: nothing here is worth guessing
+    name, entry = manifest_project(cwd, man)
+    if not entry:
+        log("bootstrap: %s is not in the manifest - declining to guess" % cwd)
+        return                  # a directory nobody has classified. Silence beats a guess.
+    src = os.path.join(PROJECTS, SOURCE_KEY, "memory")
+    idx = index_lines(os.path.join(src, "MEMORY.md"))
+    copied, missing = [], []
+    try:
+        os.makedirs(dest)
+    except Exception:
+        pass
+    for slug in (entry.get("files") or []):
+        s = os.path.join(src, slug + ".md")
+        if not os.path.isfile(s):
+            missing.append(slug)          # a name in the manifest that has since rotted
+            continue
+        try:
+            # byte-for-byte, so the LF endings that folder requires survive the copy
+            with open(s, "rb") as a:
+                blob = a.read()
+            with open(os.path.join(dest, slug + ".md"), "wb") as b:
+                b.write(blob)
+            copied.append(slug)
+        except Exception:
+            missing.append(slug)
+    body = ["# Memory Index"]
+    for slug in copied:
+        body.append(idx.get(slug) or ("- [%s](%s.md)" % (slug, slug)))
+    try:
+        with open(os.path.join(dest, "MEMORY.md"), "w", encoding="utf-8", newline="\n") as f:
+            f.write("\n".join(body) + "\n")
+    except Exception:
+        return
+    log("bootstrap: %s -> %s, %d copied, %d missing" % (name, key, len(copied), len(missing)))
+    out = ["Context Guard just created this project's own memory folder.",
+           "",
+           "  project : %s" % name,
+           "  folder  : %s" % dest,
+           "  copied  : %d memories (the shared folder was NOT changed)" % len(copied),
+           ""]
+    if missing:
+        # Never let a bootstrap quietly drop a memory. A short set that looks complete is
+        # worse than a short set that says what is missing.
+        out += ["NOT copied - the manifest names these and they are not on disk:",
+                "  " + ", ".join(missing),
+                ""]
+    # BELT AND BRACES. It is not known whether Claude Code's memory loader runs before or
+    # after SessionStart. If it runs first, a folder created here is only read by the NEXT
+    # chat - and that failure looks exactly like success, because chat #2 works fine.
+    # Handing the index back as additionalContext makes the ordering stop mattering.
+    out += ["This project's memories, in context now regardless of when the folder is read:",
+            ""] + body
+    print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart",
+                                             "additionalContext": "\n".join(out)}}))
+
+
 def cmd_report():
     """Human-readable: what the guards have actually been doing. Run by hand.
 
@@ -2127,5 +2283,7 @@ if __name__ == "__main__":
         cmd_skills()
     elif "--attribute" in a:
         cmd_attribute()
+    elif "--bootstrap" in a:
+        cmd_bootstrap()
     elif "--report" in a:
         cmd_report()

@@ -2129,6 +2129,53 @@ def test_install_is_idempotent():
         shutil.rmtree(home, ignore_errors=True)
 
 
+def test_install_wires_the_bootstrap():
+    """A feature that is built and tested but never wired into settings.json never runs.
+
+    Asserted on the COMMAND, not the count: SessionStart already carries audit.py --alert,
+    so "there is a SessionStart hook" was true before the bootstrap existed."""
+    home = make_home({})
+    try:
+        seed_settings(home, {})
+        p = run_install(home)
+        expect_clean(p, "install-bootstrap")
+        s = read_settings(home)
+        cmds = [h.get("command") or ""
+                for e in s.get("hooks", {}).get("SessionStart", [])
+                for h in e.get("hooks") or []]
+        check("install-bootstrap: --bootstrap is wired to SessionStart",
+              any("--bootstrap" in c for c in cmds), json.dumps(cmds)[:300])
+        check("install-bootstrap: the existing --alert hook is still there too",
+              any("--alert" in c for c in cmds), json.dumps(cmds)[:300])
+        run_install(home)
+        s2 = read_settings(home)
+        cmds2 = [h.get("command") or ""
+                 for e in s2.get("hooks", {}).get("SessionStart", [])
+                 for h in e.get("hooks") or []]
+        check("install-bootstrap: installing twice does not wire it twice",
+              len([c for c in cmds2 if "--bootstrap" in c]) == 1, json.dumps(cmds2)[:300])
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_uninstall_removes_the_bootstrap_too():
+    """FLAGS is what uninstall matches on. A flag missing from it is a hook he cannot
+    remove with the tool that installed it - and he would have to find it by hand."""
+    home = make_home({})
+    try:
+        seed_settings(home, {})
+        run_install(home)
+        run_install(home, "--uninstall")
+        s = read_settings(home)
+        cmds = [h.get("command") or ""
+                for e in s.get("hooks", {}).get("SessionStart", [])
+                for h in e.get("hooks") or []]
+        check("uninstall-bootstrap: the bootstrap hook is gone",
+              not any("--bootstrap" in c for c in cmds), json.dumps(cmds)[:300])
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
 def test_install_keeps_other_peoples_settings_and_hooks():
     """A friend's settings.json is not ours to rewrite. If this ever clobbers their own
     hooks the tool has done more damage than the token bill it was meant to save."""
@@ -2664,6 +2711,294 @@ def test_the_archive_instruction_survives_a_truncated_tail():
         shutil.rmtree(home, ignore_errors=True)
 
 
+# ---------------------------------------------------------------- the bootstrap
+# His words, 19 Sep 2026: "we need to make sure once we do the 'write Context Guard -14
+# (19 Sep) in a new chat' thingy it needs to create a folder then and there and organize
+# it automatically can we do that??"
+#
+# He is not asking for 109 files to be sorted by hand. He is asking that the FIRST chat
+# opened in a project's own directory furnish its own memory folder from the shared one.
+# A hand-sorted copy would satisfy "do that yes" and miss the request entirely.
+
+BOOT_MANIFEST = {
+    "t1_claude_md": ["alsaad-laptop-hardware"],
+    "projects": {
+        "taza": {"dir": r"D:\AI Projects\Taza", "also": [],
+                 "files": ["food-expiry-scanner-app"]},
+        "streambert": {"dir": r"D:\AI Projects\StreamBERT APK",
+                       "also": [r"D:\AI Projects\StreamBERT PC"],
+                       "files": ["streambert-pc-port", "youtubedl-android-traps"]},
+    },
+    "_craft": ["regex-char-class-range-trap"],
+}
+
+BOOT_FILES = {
+    "food-expiry-scanner-app": "body-TAZA",
+    "streambert-pc-port": "body-SBPC",
+    "youtubedl-android-traps": "body-YTDL",
+    "alsaad-laptop-hardware": "body-LAPTOP",
+    "regex-char-class-range-trap": "body-REGEX",
+}
+
+BOOT_INDEX = "\n".join([
+    "# Memory Index",
+    "- [Taza / food expiry scanner](food-expiry-scanner-app.md) - v0.1.0 beta APK at D:\\AI Projects\\Taza",
+    "- [StreamBERT PC port](streambert-pc-port.md) - 5 files differ from the APK tree",
+    "- [youtubedl-android traps](youtubedl-android-traps.md) - the progress callback only sees '[' lines",
+    "- [Laptop hardware](alsaad-laptop-hardware.md) - HP EliteBook 845 G7, no discrete GPU",
+    "- [Regex char-class range trap](regex-char-class-range-trap.md) - it ate table rows for weeks",
+]) + "\n"
+
+
+def make_boot_home(manifest=None, files=None):
+    """A fake ~ holding the SHARED memory folder and the manifest, and nothing else."""
+    home = tempfile.mkdtemp(prefix="guardboot-")
+    mem = os.path.join(home, ".claude", "projects", KEY, "memory")
+    state = os.path.join(home, ".claude", "context-guard")
+    os.makedirs(mem)
+    os.makedirs(state)
+    os.makedirs(os.path.join(home, ".claude", "handoff"))
+    for name, body in (BOOT_FILES if files is None else files).items():
+        with open(os.path.join(mem, name + ".md"), "w", encoding="utf-8") as f:
+            f.write("---\nname: %s\n---\n\n%s\n" % (name, body))
+    with open(os.path.join(mem, "MEMORY.md"), "w", encoding="utf-8") as f:
+        f.write(BOOT_INDEX)
+    with open(os.path.join(state, "memory-manifest.json"), "w", encoding="utf-8") as f:
+        json.dump(BOOT_MANIFEST if manifest is None else manifest, f)
+    return home
+
+
+def boot(home, cwd, sid="boot0001"):
+    """Fire the SessionStart hook exactly as Claude Code does."""
+    payload = {"session_id": sid, "cwd": cwd, "hook_event_name": "SessionStart",
+               "source": "startup"}
+    p = subprocess.run([sys.executable, GUARD, "--bootstrap"],
+                       input=json.dumps(payload), capture_output=True, text=True,
+                       env=child_env(home))
+    return p
+
+
+def boot_memory(home, key):
+    """Everything the bootstrap left in that project's memory folder."""
+    d = os.path.join(home, ".claude", "projects", key, "memory")
+    if not os.path.isdir(d):
+        return None
+    return sorted(os.listdir(d))
+
+
+def test_the_project_key_matches_the_ones_claude_code_actually_made():
+    """The folder name is the ONE thing that cannot be a near miss.
+
+    Measured against the three project keys that exist on his disk on 19 Sep 2026 -
+    D--Claude, D--TEST and D--sticker-project---Gemini. Note the triple hyphen: the
+    runs are NOT collapsed, and a tidier-looking rule that collapses them produces a
+    folder Claude Code will never read. Five of ten project directories were wrong on
+    the manifest's first draft; this is the same failure one level down."""
+    pairs = [(r"D:\Claude", "D--Claude"),
+             (r"D:\TEST", "D--TEST"),
+             (r"D:\sticker-project - Gemini", "D--sticker-project---Gemini")]
+    man = {"t1_claude_md": [], "_craft": [], "projects": {}}
+    for i, (cwd, _key) in enumerate(pairs):
+        man["projects"]["p%d" % i] = {"dir": cwd, "also": [],
+                                      "files": ["food-expiry-scanner-app"]}
+    for cwd, key in pairs:
+        home = make_boot_home(manifest=man)
+        try:
+            p = boot(home, cwd)
+            expect_clean(p, "bootstrap/key " + key)
+            check("bootstrap/key: %s -> %s" % (cwd, key),
+                  os.path.isfile(os.path.join(home, ".claude", "projects", key,
+                                              "memory", "MEMORY.md")),
+                  "made: " + str(sorted(os.listdir(os.path.join(home, ".claude", "projects")))))
+        finally:
+            shutil.rmtree(home, ignore_errors=True)
+
+
+def test_bootstrap_furnishes_a_fresh_directory():
+    """The whole request, in one test: open a chat somewhere new, find your memories."""
+    home = make_boot_home()
+    try:
+        p = boot(home, r"D:\AI Projects\Taza")
+        expect_clean(p, "bootstrap/fresh")
+        got = boot_memory(home, "D--AI-Projects-Taza")
+        check("bootstrap/fresh: the folder was created", got is not None, str(got))
+        check("bootstrap/fresh: the memory file came with it",
+              got is not None and "food-expiry-scanner-app.md" in got, str(got))
+        check("bootstrap/fresh: an index was written",
+              got is not None and "MEMORY.md" in got, str(got))
+        if got:
+            with open(os.path.join(home, ".claude", "projects", "D--AI-Projects-Taza",
+                                   "memory", "MEMORY.md"), encoding="utf-8") as f:
+                idx = f.read()
+            check("bootstrap/fresh: the index line was carried over, not invented",
+                  "(food-expiry-scanner-app.md)" in idx, repr(idx[:200]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_bootstrap_gives_the_new_folder_only_its_own_memories():
+    """The point of the split. A Taza chat must not inherit StreamBERT's 9 files."""
+    home = make_boot_home()
+    try:
+        boot(home, r"D:\AI Projects\Taza")
+        got = boot_memory(home, "D--AI-Projects-Taza") or []
+        # POSITIVE CONTROL. Every other check here asserts an ABSENCE, and an absence is
+        # trivially true while the feature does not exist at all - that is how a no-op
+        # step reports green. This one line makes the test able to fail.
+        check("bootstrap/only-own: its own memory did arrive",
+              "food-expiry-scanner-app.md" in got, str(got))
+        check("bootstrap/only-own: no other project's memories",
+              "streambert-pc-port.md" not in got and "youtubedl-android-traps.md" not in got,
+              str(got))
+        check("bootstrap/only-own: no craft memories in a project folder",
+              "regex-char-class-range-trap.md" not in got, str(got))
+        check("bootstrap/only-own: no tier-1 memories in a project folder",
+              "alsaad-laptop-hardware.md" not in got, str(got))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_bootstrap_puts_the_new_index_in_context_on_the_same_turn():
+    """THE UNMEASURED ORDERING, designed around rather than guessed at.
+
+    Nobody knows whether Claude Code's memory loader runs before or after SessionStart.
+    If it runs first, a folder created by this hook is only read by the NEXT chat - and
+    that failure looks exactly like success, because chat #2 in the folder works fine.
+    So the hook hands the index back as additionalContext and the ordering stops
+    mattering. This test is the belt; the folder on disk is the braces."""
+    home = make_boot_home()
+    try:
+        p = boot(home, r"D:\AI Projects\Taza")
+        ctx = context_of(p)
+        check("bootstrap/turn-one: said something", bool(ctx.strip()), repr(ctx[:120]))
+        check("bootstrap/turn-one: the index is in context immediately",
+              "food-expiry-scanner-app" in ctx, repr(ctx[:400]))
+        check("bootstrap/turn-one: names the folder it made",
+              "D--AI-Projects-Taza" in ctx, repr(ctx[:400]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_bootstrap_copies_rather_than_moves():
+    """Copy is reversible, move is not, and every existing chat runs in the shared folder.
+
+    Moving would shrink D--Claude today and blind every chat he has open. The shrink is
+    a separate, explicit step he takes when he is satisfied - not a side effect of
+    opening a chat somewhere."""
+    home = make_boot_home()
+    try:
+        boot(home, r"D:\AI Projects\Taza")
+        src = os.path.join(home, ".claude", "projects", KEY, "memory")
+        left = sorted(os.listdir(src))
+        # POSITIVE CONTROL - "the source still has it" is also true when nothing ran.
+        check("bootstrap/copy: the destination got a copy",
+              "food-expiry-scanner-app.md" in (boot_memory(home, "D--AI-Projects-Taza") or []),
+              str(boot_memory(home, "D--AI-Projects-Taza")))
+        check("bootstrap/copy: the shared folder still has every file",
+              all(n + ".md" in left for n in BOOT_FILES), str(left))
+        check("bootstrap/copy: the shared index is untouched",
+              open(os.path.join(src, "MEMORY.md"), encoding="utf-8").read() == BOOT_INDEX)
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_bootstrap_never_overwrites_an_existing_memory_folder():
+    """A folder that already has memories is HIS. Never write over it."""
+    home = make_boot_home()
+    try:
+        mem = os.path.join(home, ".claude", "projects", "D--AI-Projects-Taza", "memory")
+        os.makedirs(mem)
+        with open(os.path.join(mem, "MEMORY.md"), "w", encoding="utf-8") as f:
+            f.write("# Memory Index\n- [his own](his-own.md) - written by hand\n")
+        p = boot(home, r"D:\AI Projects\Taza")
+        expect_clean(p, "bootstrap/no-clobber")
+        body = open(os.path.join(mem, "MEMORY.md"), encoding="utf-8").read()
+        check("bootstrap/no-clobber: his index survived", "his-own.md" in body, repr(body))
+        check("bootstrap/no-clobber: nothing was added",
+              "food-expiry-scanner-app" not in body, repr(body))
+        check("bootstrap/no-clobber: and it said nothing", not context_of(p).strip(),
+              repr(context_of(p)[:120]))
+        # POSITIVE CONTROL, in the SAME home: a folder that does not exist yet is still
+        # furnished. Without this the whole test passes against a feature that is dead.
+        boot(home, r"D:\AI Projects\StreamBERT APK", sid="boot0009")
+        check("bootstrap/no-clobber: control - a fresh folder IS still furnished",
+              "streambert-pc-port.md" in (boot_memory(home, "D--AI-Projects-StreamBERT-APK") or []),
+              str(boot_memory(home, "D--AI-Projects-StreamBERT-APK")))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_bootstrap_is_idempotent():
+    """SessionStart fires on every startup AND every resume. It must run exactly once."""
+    home = make_boot_home()
+    try:
+        boot(home, r"D:\AI Projects\Taza", sid="boot0001")
+        first = boot_memory(home, "D--AI-Projects-Taza")
+        # POSITIVE CONTROL - "unchanged" is trivially true when the first run did nothing.
+        check("bootstrap/idempotent: the first run actually furnished it",
+              first is not None and "food-expiry-scanner-app.md" in first, str(first))
+        p2 = boot(home, r"D:\AI Projects\Taza", sid="boot0002")
+        expect_clean(p2, "bootstrap/idempotent")
+        check("bootstrap/idempotent: the folder is unchanged",
+              boot_memory(home, "D--AI-Projects-Taza") == first, str(first))
+        check("bootstrap/idempotent: the second run is silent",
+              not context_of(p2).strip(), repr(context_of(p2)[:120]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_bootstrap_ignores_a_directory_the_manifest_does_not_know():
+    """Do not guess. An unknown folder gets nothing, silently."""
+    home = make_boot_home()
+    try:
+        # POSITIVE CONTROL first, in the same home: prove the feature is live, THEN prove
+        # it declines to guess. A control that cannot fire makes the finding meaningless.
+        boot(home, r"D:\AI Projects\Taza", sid="boot0008")
+        check("bootstrap/unknown: control - a known folder IS furnished",
+              "food-expiry-scanner-app.md" in (boot_memory(home, "D--AI-Projects-Taza") or []),
+              str(boot_memory(home, "D--AI-Projects-Taza")))
+        p = boot(home, r"D:\AI Projects\Something Brand New")
+        expect_clean(p, "bootstrap/unknown")
+        check("bootstrap/unknown: no folder invented",
+              boot_memory(home, "D--AI-Projects-Something-Brand-New") is None,
+              str(boot_memory(home, "D--AI-Projects-Something-Brand-New")))
+        check("bootstrap/unknown: and it said nothing", not context_of(p).strip(),
+              repr(context_of(p)[:120]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_bootstrap_matches_an_also_directory():
+    """StreamBERT lives in two folders and Spotliar in four. `also` is not decoration."""
+    home = make_boot_home()
+    try:
+        p = boot(home, r"D:\AI Projects\StreamBERT PC")
+        expect_clean(p, "bootstrap/also")
+        got = boot_memory(home, "D--AI-Projects-StreamBERT-PC") or []
+        check("bootstrap/also: the alias folder was furnished too",
+              "streambert-pc-port.md" in got and "youtubedl-android-traps.md" in got, str(got))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_bootstrap_survives_a_manifest_entry_with_no_file_on_disk():
+    """The manifest is judgement written by hand; a name in it can rot.
+
+    A missing file must not abort the other eight, and must not be silently skipped
+    either - a bootstrap that quietly drops memories is worse than one that fails."""
+    files = dict(BOOT_FILES)
+    del files["food-expiry-scanner-app"]
+    home = make_boot_home(files=files)
+    try:
+        p = boot(home, r"D:\AI Projects\Taza")
+        expect_clean(p, "bootstrap/missing-file")
+        ctx = context_of(p)
+        check("bootstrap/missing-file: it says which name it could not find",
+              "food-expiry-scanner-app" in ctx, repr(ctx[:300]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
 if __name__ == "__main__":
     for t in (test_handoff_instruction_demands_memory_consolidation,
               test_handoff_label_gets_the_next_number,
@@ -2743,6 +3078,8 @@ if __name__ == "__main__":
               test_the_thread_budget_is_characters_not_entries,
               test_report_writes_nothing,
               test_install_is_idempotent,
+              test_install_wires_the_bootstrap,
+              test_uninstall_removes_the_bootstrap_too,
               test_install_keeps_other_peoples_settings_and_hooks,
               test_install_dry_run_writes_nothing,
               test_install_backs_the_file_up_before_writing,
@@ -2766,7 +3103,17 @@ if __name__ == "__main__":
               test_pickup_without_a_writer_line_says_nothing_about_archiving,
               test_a_writer_line_deep_in_the_body_is_not_the_writer,
               test_the_note_instruction_asks_for_the_writer_line,
-              test_the_archive_instruction_survives_a_truncated_tail):
+              test_the_archive_instruction_survives_a_truncated_tail,
+              test_the_project_key_matches_the_ones_claude_code_actually_made,
+              test_bootstrap_furnishes_a_fresh_directory,
+              test_bootstrap_gives_the_new_folder_only_its_own_memories,
+              test_bootstrap_puts_the_new_index_in_context_on_the_same_turn,
+              test_bootstrap_copies_rather_than_moves,
+              test_bootstrap_never_overwrites_an_existing_memory_folder,
+              test_bootstrap_is_idempotent,
+              test_bootstrap_ignores_a_directory_the_manifest_does_not_know,
+              test_bootstrap_matches_an_also_directory,
+              test_bootstrap_survives_a_manifest_entry_with_no_file_on_disk):
         print(t.__name__)
         t()
     print()
