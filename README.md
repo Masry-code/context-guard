@@ -174,7 +174,15 @@ The flag is machine-wide and does not expire, so the next chat you open says so 
 | `guard.py --skills` | yes — counts repeated command patterns |
 | `guard.py --checkpoint <session-id> "<text>"` | yes — records a milestone |
 | `guard.py --attribute` | yes — backfills ledger attribution |
+| `ledger-budget.py [project-key]` | yes — prints what the request budget keeps and drops |
 | `guard.py --size` / `--ledger`, `audit.py --alert` | **no** — hook entry points with side effects, including consuming a handoff note |
+
+**Run `--attribute` before `ledger-budget.py`.** Entries written before the chat id went
+inline know whose thread they belong to only through the `.attrib.json` sidecar that
+`--attribute` builds. Without it the budget tool sees a smaller ledger than the pickup
+path does and will happily tell you the budget is fine when it is not — measured here on
+19 Sep 2026, 399 of 505 attributed requests were invisible to it. It now prints how many
+it recovered, and says so when the answer is none.
 
 ### Turning bits off
 

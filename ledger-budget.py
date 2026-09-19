@@ -12,6 +12,7 @@ that actually ship, not a second implementation that can drift.
     python ledger-budget.py D--Claude   # a project key, as Claude Code spells it
 """
 import glob
+import json
 import os
 import sys
 
@@ -44,11 +45,23 @@ def main(argv):
         return 1
     stems = guard.chat_threads(any_transcript(key))
     known = set(stems.values())
+    # The entries written before the chat id went inline know whose they are only through
+    # the .attrib.json sidecar, and guard.ledger_tail() reads it. Measuring without it
+    # measures a SMALLER ledger than the one the budget is actually spent on - 19 Sep 2026
+    # on his real file, 399 recovered attributions were written off as "unattributed",
+    # this tool printed "context guard 43 reqs ... 0 dropped, 12000 is enough today", and
+    # --report logged "budget dropped 34 of 83" from the same ledger on the same day.
+    try:
+        with open(guard.attrib_path(any_transcript(key)), encoding="utf-8") as f:
+            attrib = json.load(f) or {}
+    except Exception:
+        attrib = {}
     by_thread, unattributed, noise = {}, 0, 0
     raw = entries(path)
     for b in raw:
         m = guard.LEDGER_CHAT_RE.search(b.split(NL, 1)[0])
-        sid = m.group(1) if m else None
+        sid = m.group(1) if m else (attrib.get(guard.entry_key(b))
+                                    if attrib else None)
         stem = stems.get(sid) if sid else None
         body = b.split(NL, 1)[1].strip() if NL in b else ""
         if guard.is_summon_label(body, known) or guard.ledger_noise(body):
@@ -62,6 +75,9 @@ def main(argv):
     print("LEDGER: %s" % path)
     print("  %d entries, %d bytes, %d skipped as summon-labels/noise, %d unattributed"
           % (len(raw), os.path.getsize(path), noise, unattributed))
+    print("  %d recovered from the attribution sidecar%s"
+          % (len(attrib), "" if attrib else "  <- none: run guard.py --attribute, or "
+             "this tool is measuring a smaller ledger than the pickup path"))
     print("  in force: LEDGER_OWN_CHARS=%d  LEDGER_OLDEST_SHARE=%s"
           % (guard.LEDGER_OWN_CHARS, guard.LEDGER_OLDEST_SHARE))
     print()
@@ -84,26 +100,50 @@ def main(argv):
     # recommendation rather than applied, because the number is a judgement about how
     # much of the injection one thread may take, and that judgement is the user's.
     knee = None
-    print("%9s %8s %9s %10s" % ("budget", "dropped", "kept", "chars kept"))
-    for budget in (6000, 8000, 10000, 12000, 15000, 20000, 30000, 50000):
-        dropped = kept = chars = 0
+    # The smallest budget at which nothing is dropped is ARITHMETIC - it is the largest
+    # thread's own size - so it is computed and added as a rung rather than searched for
+    # among round numbers. Measured 19 Sep 2026: the largest thread was 69,706 chars, the
+    # fixed rungs stopped at 50,000, and the tool recommended "None".
+    rungs = [6000, 8000, 10000, 12000, 15000, 20000, 30000, 50000]
+    fits_all = max((sum(len(b) for b in blocks)
+                    for blocks in by_thread.values()), default=0)
+    if fits_all:
+        rungs = sorted(set(rungs + [fits_all]))
+    print("%9s %8s %9s %10s %9s" % ("budget", "dropped", "kept", "chars kept",
+                                    "~tok/pick"))
+    for budget in rungs:
+        dropped = kept = chars = worst_one = 0
         for blocks in by_thread.values():
             o, n, om = guard.fit_budget(blocks, budget, guard.LEDGER_OLDEST_SHARE)
             dropped += om
             kept += len(o) + len(n)
-            chars += sum(len(b) for b in o + n)
+            c = sum(len(b) for b in o + n)
+            chars += c
+            # A pickup injects ONE thread's share, never the sum of every thread's - the
+            # neighbours are bounded separately by LEDGER_OTHERS_CHARS. Summing them here
+            # printed 28,968 tokens beside a verdict that said 17,426, from one run.
+            worst_one = max(worst_one, c)
         if dropped == 0 and knee is None:
             knee = budget
-        print("%9d %8d %9d %10d%s" % (budget, dropped, kept, chars,
-                                      "   <- nothing dropped from here up"
-                                      if budget == knee else ""))
+        # ~tokens is what the injection costs on turn one of EVERY pickup, which is the
+        # other half of the judgement: 4 chars/token, the ratio this project has used
+        # throughout. A budget is a trade between his old words and the floor this tool
+        # exists to lower, and the table should show both sides of it.
+        print("%9d %8d %9d %10d %9d%s" % (budget, dropped, kept, chars, worst_one // 4,
+                                          "   <- nothing dropped from here up"
+                                          if budget == knee else ""))
     print()
     if worst == 0:
         print("verdict: %d is enough today - no thread loses a request."
               % guard.LEDGER_OWN_CHARS)
     else:
         print("verdict: %d is TOO SMALL - the worst thread loses %d request(s). "
-              "Nothing is dropped at %s." % (guard.LEDGER_OWN_CHARS, worst, knee))
+              "Nothing is dropped at %s (~%s tokens on turn one of every pickup)."
+              % (guard.LEDGER_OWN_CHARS, worst, knee,
+                 "?" if knee is None else knee // 4))
+        print("         Raising it is NOT automatic: the dropped requests are still in "
+              "this file, and the")
+        print("         note names the chat ids to grep for. The trade is his.")
     return 0
 
 

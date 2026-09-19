@@ -3421,6 +3421,206 @@ def test_the_report_surfaces_the_ordering_verdict():
         shutil.rmtree(home, ignore_errors=True)
 
 
+# --------------- change 12: the budget tool must count what the pickup actually counts
+# Measured 19 Sep 2026 on his real ledger, the same file on the same day:
+#   guard.py --report   ->  "ledger: budget dropped 34 of 83 request(s) for this thread"
+#   ledger-budget.py    ->  "context guard  43 reqs ... 0 dropped"
+#                           "verdict: 12000 is enough today - no thread loses a request."
+# ledger_tail() falls back to the .attrib.json sidecar for entries written before the chat
+# id went inline; ledger-budget.py did not, so 399 recovered attributions were written off
+# as "unattributed". The tool that SIZES the budget was measuring a smaller population
+# than the code that spends it, and a verdict from the wrong population is worse than no
+# verdict at all: it reads as reassurance. Same family as [[a-no-op-step-reports-green]].
+BUDGET = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ledger-budget.py")
+
+
+def run_budget(home, key=KEY):
+    return subprocess.run([sys.executable, BUDGET, key],
+                          capture_output=True, text=True, env=child_env(home))
+
+
+def budget_rows(out):
+    """{thread: (reqs, kept)} parsed off the table STRUCTURALLY - the row shape, never a
+    sentence. The knee table and the header cannot match: both start with whitespace or
+    a non-numeric column."""
+    rows = {}
+    for line in out.splitlines():
+        m = re.match(r"^(\S.*?)\s{2,}(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*$",
+                     line)
+        if m:
+            rows[m.group(1).strip()] = (int(m.group(2)), int(m.group(4)))
+    return rows
+
+
+def budget_unattributed(out):
+    m = re.search(r"(\d+) unattributed", out)
+    return int(m.group(1)) if m else -1
+
+
+def append_new_entry(home, ts, sid8, body):
+    """An entry in the POST-18-Sep format, which carries its chat id inline."""
+    lp = os.path.join(home, ".claude", "handoff", KEY + ".requests.md")
+    with open(lp, "a", encoding="utf-8") as f:
+        f.write(chr(10) + "### " + ts + " - chat " + sid8 + chr(10) + chr(10)
+                + body + chr(10))
+
+
+def setup_recovered_thread(home):
+    """One thread whose words arrived BOTH ways - three before attribution existed and one
+    after - plus a neighbour, so a tool that simply claims everything is caught."""
+    started = time.time() - 7200
+    write_chat_msgs(home, "guardaaaa", started,
+                    ["the first guard thing he asked for",
+                     "the second guard thing he asked for",
+                     "the third guard thing he asked for"])
+    write_chat_msgs(home, "spotlibbb", started + 10, ["the spotliar thing he asked for"])
+    write_old_ledger(home, [("2026-09-17 10:00:00", "the first guard thing he asked for"),
+                            ("2026-09-17 10:01:00", "the second guard thing he asked for"),
+                            ("2026-09-17 10:02:00", "the third guard thing he asked for"),
+                            ("2026-09-17 10:03:00", "the spotliar thing he asked for")])
+    append_new_entry(home, "2026-09-18 09:00:00", "guardbbb",
+                     "the fourth guard thing he asked for")
+    for sid, body in (("guardaaaa", "HANDOFF LABEL: Context Guard -2 (18 Sep)\n\n# n\n"),
+                      ("guardbbbb", "HANDOFF LABEL: Context Guard -3 (18 Sep)\n\n# n\n"),
+                      ("spotlibbb", "HANDOFF LABEL: Spotliar -4 (18 Sep)\n\n# n\n")):
+        with open(os.path.join(home, ".claude", "handoff",
+                               KEY + "." + sid[:8] + ".md"), "w", encoding="utf-8") as f:
+            f.write(body)
+
+
+def test_the_budget_tool_reads_the_recovered_attribution_too():
+    """The sidecar is how 399 of his requests know whose they are. A budget measured
+    without it is measured on a different ledger than the one that ships."""
+    home = make_home({})
+    try:
+        setup_recovered_thread(home)
+        a = run_attribute(home)
+        check("budget-attrib: the recovery ran", a.returncode == 0, (a.stderr or "")[:200])
+        b = run_budget(home)
+        check("budget-attrib: the tool exited 0", b.returncode == 0, (b.stderr or "")[:300])
+        rows = budget_rows(b.stdout)
+        check("budget-attrib: the recovered entries are counted for their thread",
+              rows.get("context guard", (0, 0))[0] == 4,
+              "rows=%r" % (rows,))
+        check("budget-attrib: and none of them is left unattributed",
+              budget_unattributed(b.stdout) == 0,
+              "unattributed=%d out=%r" % (budget_unattributed(b.stdout),
+                                          b.stdout[:400]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_the_budget_tool_and_the_pickup_agree_on_the_thread():
+    """The check that would have caught this: not a number, but AGREEMENT. Whatever the
+    budget tool says a thread keeps is what a real pickup must actually carry."""
+    home = make_home({})
+    try:
+        setup_recovered_thread(home)
+        run_attribute(home)
+        rows = budget_rows(run_budget(home).stdout)
+        kept = rows.get("context guard", (0, 0))[1]
+        p = run(home, "freshchat", "Context Guard -3 (18 Sep)")
+        expect_clean(p, "budget-agree")
+        ctx = context_of(p)
+        split = ctx.find("OTHER CHATS")
+        mine = ctx[ctx.find("THIS THREAD"):split if split > -1 else len(ctx)]
+        carried = mine.count(chr(10) + "### ")
+        check("budget-agree: the pickup carries exactly what the tool says it keeps",
+              kept > 0 and carried == kept,
+              "tool kept=%d, pickup carried=%d" % (kept, carried))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_the_budget_tool_still_refuses_to_guess_without_the_sidecar():
+    """Positive control, and the one that stops the fix being 'claim everything'. With no
+    recovery run, those entries have no evidence of an owner and must stay unattributed."""
+    home = make_home({})
+    try:
+        setup_recovered_thread(home)          # deliberately NO run_attribute()
+        b = run_budget(home)
+        check("budget-noguess: the tool exited 0", b.returncode == 0,
+              (b.stderr or "")[:300])
+        rows = budget_rows(b.stdout)
+        check("budget-noguess: only the inline-attributed entry is claimed",
+              rows.get("context guard", (0, 0))[0] == 1, "rows=%r" % (rows,))
+        check("budget-noguess: the rest are reported as unattributed, not guessed",
+              budget_unattributed(b.stdout) == 4,
+              "unattributed=%d" % budget_unattributed(b.stdout))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+
+def test_the_budget_verdict_always_names_a_number():
+    """Measured 19 Sep 2026 the moment the attribution fix let the real ledger through:
+    the largest thread was 69,706 chars, every rung in the table stopped at 50,000, and
+    the tool printed "Nothing is dropped at None." A verdict that cannot name the number
+    it is recommending is not a recommendation. The knee is arithmetic - the largest
+    thread's own size - so it can be computed rather than searched for."""
+    home = make_home({})
+    try:
+        started = time.time() - 7200
+        with open(os.path.join(home, ".claude", "handoff",
+                               KEY + ".guardaaa.md"), "w", encoding="utf-8") as f:
+            f.write("HANDOFF LABEL: Context Guard -2 (18 Sep)" + chr(10) * 2 + "# n" + chr(10))
+        lp = os.path.join(home, ".claude", "handoff", KEY + ".requests.md")
+        with open(lp, "w", encoding="utf-8") as f:
+            f.write("# What the user actually asked for - his own words" + chr(10))
+        for i in range(40):
+            append_new_entry(home, "2026-09-1%d 10:00:00" % (i % 9), "guardaaa",
+                             "request number %d: " % i + ("word " * 400))
+        b = run_budget(home)
+        check("budget-knee: the tool exited 0", b.returncode == 0, (b.stderr or "")[:300])
+        check("budget-knee: the verdict never says None",
+              "at None" not in b.stdout, b.stdout[-200:])
+        m = re.search(r"Nothing is dropped at (\d+)", b.stdout)
+        check("budget-knee: it names the budget that would drop nothing",
+              m is not None, b.stdout[-300:])
+        if m:
+            knee = int(m.group(1))
+            check("budget-knee: and the table proves that budget drops nothing",
+                  re.search(r"^\s*%d\s+0\s" % knee, b.stdout, re.M) is not None,
+                  "knee=%d, table=%r" % (knee, b.stdout[b.stdout.find("budget"):][:400]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+
+def test_the_token_column_is_the_cost_of_one_pickup():
+    """A pickup injects ONE thread's share, never every thread's at once. Summing all
+    threads made the 69,706 rung read "28,968 tokens" while the verdict on the next line
+    said "~17,426" - two numbers for one decision, from one run. The column is bounded by
+    the budget by construction, so the invariant is checkable without a fixed number."""
+    home = make_home({})
+    try:
+        for sid, lab in (("guardaaa", "Context Guard -2 (18 Sep)"),
+                         ("spotliba", "Spotliar -4 (18 Sep)")):
+            with open(os.path.join(home, ".claude", "handoff",
+                                   KEY + "." + sid + ".md"), "w", encoding="utf-8") as f:
+                f.write("HANDOFF LABEL: " + lab + chr(10) * 2 + "# n" + chr(10))
+        lp = os.path.join(home, ".claude", "handoff", KEY + ".requests.md")
+        with open(lp, "w", encoding="utf-8") as f:
+            f.write("# What the user actually asked for - his own words" + chr(10))
+        for sid in ("guardaaa", "spotliba"):
+            for i in range(25):
+                append_new_entry(home, "2026-09-1%d 10:00:00" % (i % 9), sid,
+                                 "%s request %d: " % (sid, i) + ("word " * 300))
+        b = run_budget(home)
+        check("budget-tok: the tool exited 0", b.returncode == 0, (b.stderr or "")[:300])
+        rows = re.findall(r"^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)",
+                          b.stdout, re.M)
+        check("budget-tok: the knee table has rows to check", len(rows) >= 5,
+              "rows=%r" % (rows[:3],))
+        bad = [(int(r[0]), int(r[4])) for r in rows
+               if int(r[4]) > int(r[0]) // 4 + 1]
+        check("budget-tok: no rung claims a pickup bigger than its own budget",
+              not bad, "budget/tokens offenders: %r" % (bad,))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+
 if __name__ == "__main__":
     for t in (test_handoff_instruction_demands_memory_consolidation,
               test_handoff_label_gets_the_next_number,
@@ -3543,6 +3743,11 @@ if __name__ == "__main__":
               test_a_nag_that_stays_quiet_says_why,
               test_the_ledger_says_when_the_budget_drops_his_requests,
               test_a_neighbours_memory_save_no_longer_silences_this_chats_nag,
+              test_the_budget_tool_reads_the_recovered_attribution_too,
+              test_the_budget_tool_and_the_pickup_agree_on_the_thread,
+              test_the_budget_tool_still_refuses_to_guess_without_the_sidecar,
+              test_the_budget_verdict_always_names_a_number,
+              test_the_token_column_is_the_cost_of_one_pickup,
               test_the_report_surfaces_the_ordering_verdict):
         print(t.__name__)
         t()
