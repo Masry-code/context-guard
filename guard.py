@@ -381,17 +381,41 @@ def handoff_path(transcript_path, sid=None):
 STUB_MARKER = "context-guard:auto-stub"
 
 
+# The marker is POSITIONAL, and that is not fussiness. MEASURED IN THE WILD 19 Sep
+# 2026, and it destroyed a real artefact: a curated 287-line handoff note told the next
+# chat to grep the folder for this marker, so the string appeared in its BODY. A bare
+# substring test over the whole file then classified that note as machine output,
+# write_stub() replaced it with 21 lines, and the ceiling fired saying no note existed -
+# which by then was true. Three symptoms, one cause: a guard that read prose instead of
+# structure. write_stub() writes the tag as an HTML comment near the top, so only the
+# top is ever consulted.
+STUB_TAG = "<!-- " + STUB_MARKER + " -->"
+STUB_HEAD_LINES = 6
+
+
+def is_stub(p):
+    """True only for a file THIS tool generated, judged by its opening lines alone.
+
+    Anything further down is prose, and prose is allowed to talk about the marker."""
+    try:
+        with open(p, encoding="utf-8") as f:
+            for i, line in enumerate(f):
+                if i >= STUB_HEAD_LINES:
+                    break
+                if STUB_TAG in line:
+                    return True
+    except Exception:
+        return False        # unreadable: assume it is a real note, never gamble
+    return False
+
+
 def real_note(p):
     """A note a CHAT wrote, as opposed to one this tool generated.
 
     The distinction is load-bearing in both directions: a stub must never satisfy the
     ceiling (or the ceiling silently stops working the day stubs ship), and it must
     never satisfy the memory nag (or the chat is scolded about a note no one wrote)."""
-    try:
-        with open(p, encoding="utf-8") as f:
-            return STUB_MARKER not in f.read()
-    except Exception:
-        return False
+    return os.path.exists(p) and not is_stub(p)
 
 
 def write_stub(transcript_path, sid, ctx):
@@ -405,13 +429,10 @@ def write_stub(transcript_path, sid, ctx):
     It NEVER touches a real note. A curated note is worth far more than this, and a
     stub that could overwrite one would destroy the thing it exists to protect."""
     p = handoff_path(transcript_path, sid)
-    if os.path.exists(p):
-        try:
-            with open(p, encoding="utf-8") as f:
-                if STUB_MARKER not in f.read():
-                    return False      # a real note - leave it completely alone
-        except Exception:
-            return False              # unreadable: assume real, never gamble
+    if real_note(p):
+        return False      # a note a chat wrote. NEVER touch it - one predicate, shared
+                          # with the ceiling, so the two can never disagree about what
+                          # counts as a real note.
     today = datetime.date.today().isoformat()
     body = [
         "HANDOFF LABEL: Unsaved chat " + str(sid)[:8] + " (" + today + ")",

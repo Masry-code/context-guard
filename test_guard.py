@@ -2515,6 +2515,43 @@ def test_no_indicator_when_he_is_at_the_console():
     finally:
         shutil.rmtree(home, ignore_errors=True)
 
+def test_a_note_that_mentions_the_marker_is_not_a_stub():
+    """MEASURED IN THE WILD 19 Sep 2026 - this one cost a real 287-line handoff note.
+
+    The note told the next chat to grep the handoff folder for the stub marker, so the
+    marker string appeared in its body. real_note() tested the WHOLE file for that
+    substring, decided a curated note was machine output, and write_stub() overwrote it
+    with 21 lines of facts. The ceiling then fired saying no note existed - which was, by
+    then, true. A guard that reads prose instead of structure is the recurring bug in this
+    project, and this is the sixth instance."""
+    home = make_home({})
+    try:
+        write_big_chat(home, "markerxx", time.time() - 3600, 130_000)
+        d = os.path.join(home, ".claude", "handoff")
+        if not os.path.isdir(d):
+            os.makedirs(d)
+        note = os.path.join(d, KEY + ".markerxx.md")
+        real = ("HANDOFF LABEL: Real Note -9 (19 Sep)" + chr(10) * 2
+                + "Tell the next chat to grep the folder for " + STUB_MARKER
+                + " - that is how you spot a stub." + chr(10))
+        with open(note, "w", encoding="utf-8") as f:
+            f.write(real)
+        p = run_stop(home, "markerxx")
+        expect_clean(p, "marker-mention")
+        with open(note, encoding="utf-8") as f:
+            after = f.read()
+        check("marker-mention: a note that merely NAMES the marker survives untouched",
+              after == real, repr(after[:160]))
+        # NOT "not blocked" - the memory nag legitimately blocks in a fake home with no
+        # memory writes, and catching it here would make this test about the wrong thing.
+        # Assert the CEILING's own sentence is absent.
+        check("marker-mention: and the ceiling no longer claims there is no note",
+              "has NOT written a handoff note" not in (p.stdout or ""),
+              repr((p.stdout or "")[:200]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
 if __name__ == "__main__":
     for t in (test_handoff_instruction_demands_memory_consolidation,
               test_handoff_label_gets_the_next_number,
@@ -2611,7 +2648,8 @@ if __name__ == "__main__":
               test_a_small_chat_is_not_asked_for_a_note,
               test_away_mode_says_so_once_per_chat,
               test_the_away_indicator_names_both_ways_out,
-              test_no_indicator_when_he_is_at_the_console):
+              test_no_indicator_when_he_is_at_the_console,
+              test_a_note_that_mentions_the_marker_is_not_a_stub):
         print(t.__name__)
         t()
     print()
