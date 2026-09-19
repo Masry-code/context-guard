@@ -882,6 +882,41 @@ def away_toggle(prompt):
     return None
 
 
+def away_notice(sid, st, ctx):
+    """The once-per-chat away indicator, or "" when it is not due. Spends itself: the
+    caller that gets a string MUST show it, because the state is already saved.
+
+    MEASURED 19 Sep 2026, and this is why it lived in cmd_size for weeks without him
+    ever seeing it. The indicator used to be written inline BELOW the handoff pickup,
+    which prints its own systemMessage and returns. In D:\\Claude a note is always
+    waiting, so turn one always took that branch, and by turn two the chat was already
+    past LEVELS[0][0] and the indicator was correctly silent for good. The feature was
+    unreachable in the only folder that uses it. It is a function now so every branch
+    that prints to him can carry it.
+
+    ctx < LEVELS[0][0] is load-bearing, not a tidy-up. Above the first tier the
+    away-aware warning is already running, and it is SILENT to him on purpose - a
+    banner there would break "save silently, never nag", which is his decision, not
+    mine. A brand-new chat reports ctx 0, so a pickup turn always qualifies."""
+    if not (is_away() and ctx < LEVELS[0][0] and not st.get("away_told")):
+        return ""
+    st["away_told"] = True
+    save_state(sid, st)
+    since = away_since()
+    return ("Away mode is ON"
+            + (" (since " + since[:16].replace("T", " ") + ")" if since else "")
+            + " - notes are still being saved, but nothing will ask you to open a new "
+              "chat. Type 'back' or 'afk off' to resume normal prompts.")
+
+
+def with_away(msg, sid, st, ctx):
+    """A message he is about to be shown, with the away indicator appended when it is
+    due. The flag is machine-wide and permanent, so the chat that inherits it is usually
+    not the one that set it - being told on the turn he arrives is the whole point."""
+    notice = away_notice(sid, st, ctx)
+    return msg + ("  " + notice if notice else "")
+
+
 def handoff_steps(today):
     """Steps 3 and 4 of the handoff instruction - the only part that differs while away.
 
@@ -1815,7 +1850,8 @@ def cmd_size():
             save_state(sid, st)
             print(json.dumps({
                 "hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": hand},
-                "systemMessage": "Picked up the handoff note from your last chat.",
+                "systemMessage": with_away(
+                    "Picked up the handoff note from your last chat.", sid, st, ctx),
             }))
             return
         if hand and not st.get("menu_shown"):
@@ -1827,7 +1863,8 @@ def cmd_size():
             save_state(sid, st)
             print(json.dumps({
                 "hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": hand},
-                "systemMessage": "Saved threads are waiting in this folder.",
+                "systemMessage": with_away(
+                    "Saved threads are waiting in this folder.", sid, st, ctx),
             }))
             return
     elif waiting_notes(path):
@@ -1844,15 +1881,9 @@ def cmd_size():
     # banner there would break "save silently, never nag", which is his decision, not
     # mine. Every chat starts below the floor, and the flag is machine-wide and
     # permanent, so the next small chat he opens tells him anyway.
-    if is_away() and ctx < LEVELS[0][0] and not st.get("away_told"):
-        st["away_told"] = True
-        save_state(sid, st)
-        since = away_since()
-        print(json.dumps({"systemMessage": (
-            "Away mode is ON" + (" (since " + since[:16].replace("T", " ") + ")" if since
-                                 else "")
-            + " - notes are still being saved, but nothing will ask you to open a new "
-              "chat. Type 'back' or 'afk off' to resume normal prompts.")}))
+    notice = away_notice(sid, st, ctx)
+    if notice:
+        print(json.dumps({"systemMessage": notice}))
         return
 
     last = st.get("warned_ctx", 0) or st.get("warned_at", 0)   # migrate pre-fix state

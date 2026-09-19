@@ -2562,6 +2562,72 @@ def test_no_indicator_when_he_is_at_the_console():
     finally:
         shutil.rmtree(home, ignore_errors=True)
 
+
+def test_the_away_indicator_survives_a_handoff_pickup():
+    """MEASURED IN THE WILD 19 Sep 2026, and the reason he never once saw the indicator.
+
+    Every away test above uses make_home({}) - NO note waiting. In D:\\Claude a note is
+    ALWAYS waiting, so turn one goes down the pickup branch, which prints its own
+    systemMessage and returns before the indicator is ever reached. By turn two the chat
+    is past LEVELS[0][0] and the indicator is correctly silent for good. The feature was
+    therefore unreachable in the only folder that uses it - six handoff notes asked him
+    whether he had ever seen it, and the answer was in the code.
+
+    Same one-path blind spot as the headphone button: both branches exist, every test
+    drove one. The pickup itself must keep working - that is asserted here too, so a fix
+    that silences the pickup cannot pass."""
+    for label, notes, prompt, arrives, marker in (
+            ("pickup", {KEY + ".9e19c7ab.md": NOTE_CTX}, "context guard",
+             "handoff", "body-CONTEXTGUARD"),
+            ("menu", {KEY + ".9e19c7ab.md": NOTE_CTX, KEY + ".143f0320.md": NOTE_SPOT},
+             "carry on with the build", "saved threads", "")):
+        home = make_home(notes)
+        try:
+            arm_away(home)
+            p = run(home, "awaypick1-" + label, prompt)
+            expect_clean(p, "away-pickup/" + label)
+            check("away-pickup/%s: the note still reaches the new chat" % label,
+                  arrives in context_of(p).lower(), repr(context_of(p)[:160]))
+            if marker:
+                check("away-pickup/%s: it is the RIGHT note" % label,
+                      marker in context_of(p), repr(context_of(p)[:160]))
+            check("away-pickup/%s: and he is STILL told away mode is on" % label,
+                  "away mode" in sysmsg(p).lower(), repr(sysmsg(p)[:200]))
+            check("away-pickup/%s: the indicator carries the way out" % label,
+                  "afk off" in sysmsg(p).lower(), repr(sysmsg(p)[:200]))
+        finally:
+            shutil.rmtree(home, ignore_errors=True)
+
+        # CONTROL, in the same shape: at the console the pickup must say nothing about
+        # away mode. Without it, hard-coding the phrase into the pickup message passes.
+        home = make_home(notes)
+        try:
+            p = run(home, "awaypick2-" + label, prompt)
+            expect_clean(p, "away-pickup/" + label + "/control")
+            check("away-pickup/%s CONTROL: pickup alone never mentions away mode" % label,
+                  "away mode" not in sysmsg(p).lower(), repr(sysmsg(p)[:200]))
+            check("away-pickup/%s CONTROL: and the note still arrives" % label,
+                  arrives in context_of(p).lower(), repr(context_of(p)[:160]))
+        finally:
+            shutil.rmtree(home, ignore_errors=True)
+
+    # Once, not twice - the pickup turn spends the indicator like any other turn.
+    home = make_home({KEY + ".9e19c7ab.md": NOTE_CTX})
+    try:
+        arm_away(home)
+        first = run(home, "awaypick3", "context guard")
+        expect_clean(first, "away-pickup/once")
+        check("away-pickup/once: told on the pickup turn",
+              "away mode" in sysmsg(first).lower(), repr(sysmsg(first)[:200]))
+        write_big_chat(home, "awaypick3", time.time() - 60, 20_000)
+        second = run(home, "awaypick3", "carry on")
+        expect_clean(second, "away-pickup/once/second")
+        check("away-pickup/once: and NOT told again on the next turn",
+              "away mode" not in sysmsg(second).lower(), repr(sysmsg(second)[:200]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
 def test_a_note_that_mentions_the_marker_is_not_a_stub():
     """MEASURED IN THE WILD 19 Sep 2026 - this one cost a real 287-line handoff note.
 
@@ -3098,6 +3164,7 @@ if __name__ == "__main__":
               test_away_mode_says_so_once_per_chat,
               test_the_away_indicator_names_both_ways_out,
               test_no_indicator_when_he_is_at_the_console,
+              test_the_away_indicator_survives_a_handoff_pickup,
               test_a_note_that_mentions_the_marker_is_not_a_stub,
               test_pickup_names_the_finished_chat_for_archiving,
               test_pickup_without_a_writer_line_says_nothing_about_archiving,
