@@ -370,6 +370,44 @@ def memory_touched_since(transcript_path, since):
     return False
 
 
+def chat_wrote_memory(transcript_path):
+    """Did THIS chat write to the memory folder? True / False / None if unreadable.
+
+    memory_touched_since() answers a different question - "did ANYONE touch the shared
+    folder" - and with five chats live in one folder a neighbour's save silences this
+    chat's nag. The transcript knows who actually wrote, so ask it.
+
+    POSITIONAL on purpose, and this is the part that must not be simplified: the memory
+    folder's path also appears in the hook's OWN instruction text, which is in the
+    transcript too, so a grep over the file would call every chat a saver. Only a
+    tool_use block counts - a Write/Edit with a file_path inside the folder, or a Bash
+    command that names it (a prune script writes there without a file_path)."""
+    try:
+        with open(transcript_path, "r", encoding="utf-8", errors="replace") as f:
+            lines = f.read().splitlines()
+    except Exception:
+        return None
+    mdir = os.path.normcase(memory_dir(transcript_path))
+    for line in lines:
+        if "tool_use" not in line:
+            continue                    # cheap reject before the JSON cost
+        try:
+            rec = json.loads(line)
+        except Exception:
+            continue
+        content = ((rec.get("message") or {}).get("content")
+                   if isinstance(rec.get("message"), dict) else None)
+        for block in (content if isinstance(content, list) else []):
+            if not isinstance(block, dict) or block.get("type") != "tool_use":
+                continue
+            inp = block.get("input") if isinstance(block.get("input"), dict) else {}
+            for key in ("file_path", "path", "notebook_path", "command"):
+                val = inp.get(key)
+                if isinstance(val, str) and mdir in os.path.normcase(val):
+                    return True
+    return False
+
+
 def handoff_path(transcript_path, sid=None):
     """Where THIS chat writes its note - ONE FILE PER CHAT.
 
@@ -1029,17 +1067,23 @@ def memory_nag(d, path):
     if since is None:
         log("memory-nag: could not date this session - staying quiet")
         return
-    if memory_touched_since(path, since):
-        # Why this is logged at all: on 19 Sep 2026 `--report` had said "memory nags 0,
-        # never fired" for eight days and 82 pickups, and nothing could say whether that
-        # meant every chat saved its memories or the check was dead - which is exactly
-        # what the away indicator turned out to be. Note the honest wording: the memory
-        # folder is SHARED by every chat in the folder, so a neighbour's save clears this
-        # chat's nag and no mtime can tell the two apart. One folder per project closes
-        # that hole; until then the log says which of the two happened.
-        log("memory-nag: skipped - the memory folder changed since this chat started "
-            "(shared folder, so possibly another chat)")
+    # Two questions, and until 19 Sep 2026 only the weaker one was asked. mtimes answer
+    # "did anyone touch the shared folder"; the transcript answers "did THIS chat write
+    # to it". Ask the transcript first and fall back to mtimes only when it cannot be
+    # read, because an unreadable transcript must never turn into a wrong accusation.
+    wrote = chat_wrote_memory(path)
+    if wrote is True:
+        log("memory-nag: skipped - this chat wrote to the memory folder")
         return
+    if wrote is None and memory_touched_since(path, since):
+        log("memory-nag: skipped - no transcript to read, but the folder changed")
+        return
+    if wrote is False and memory_touched_since(path, since):
+        # The hole this closes: `--report` read "memory nags 0, never fired" for eight
+        # days and 82 pickups, and with five chats sharing one folder a neighbour's save
+        # was enough to clear every one of them. One folder per project removes the
+        # ambiguity entirely; this removes the false silence in the meantime.
+        log("memory-nag: the folder changed but this chat wrote nothing - another chat")
     st = load_state(sid)
     said = int(st.get("memory_nags", 0) or 0)
     if said >= NAG_MAX:

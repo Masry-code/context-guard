@@ -470,6 +470,10 @@ def test_stop_is_silent_once_a_memory_was_really_written():
         write_chat(home, "handedoff", started)
         write_note(home, "handedoff")
         write_memory(home, "fresh-lesson.md", started + 60)     # written DURING this chat
+        # ...and the transcript must show WHO wrote it. Since 19 Sep 2026 an mtime alone
+        # is not enough: the folder is shared, so it proves only that somebody saved.
+        append_tool_use(home, "handedoff", "Write", {"file_path": os.path.join(
+            home, ".claude", "projects", KEY, "memory", "fresh-lesson.md")})
         p = run_stop(home, "handedoff")
         expect_clean(p, "mem-saved")
         check("mem-saved: let the chat close", blocked(p) == "", repr(blocked(p)[:200]))
@@ -1047,6 +1051,8 @@ def test_the_ceiling_is_satisfied_by_the_note_existing():
         write_big_chat(home, "ceilnote", started, 400_000)
         write_note(home, "ceilnote")
         write_memory(home, "saved-this-chat.md", time.time())
+        append_tool_use(home, "ceilnote", "Write", {"file_path": os.path.join(
+            home, ".claude", "projects", KEY, "memory", "saved-this-chat.md")})
         p = run_stop(home, "ceilnote")
         expect_clean(p, "ceiling-satisfied")
         check("ceiling-satisfied: the written note lets the chat close",
@@ -3263,7 +3269,9 @@ def test_a_nag_that_stays_quiet_says_why():
         started = time.time() - 3600
         write_chat(home, "quiet", started)
         write_note(home, "quiet")
-        write_memory(home, "saved-this-chat.md", time.time())   # touched since it started
+        write_memory(home, "saved-this-chat.md", time.time())
+        append_tool_use(home, "quiet", "Edit", {"file_path": os.path.join(
+            home, ".claude", "projects", KEY, "memory", "saved-this-chat.md")})
         p = run_stop(home, "quiet")
         expect_clean(p, "nag-quiet")
         check("nag-quiet: the chat is let go", blocked(p) == "", repr(blocked(p)[:200]))
@@ -3311,6 +3319,78 @@ def test_the_ledger_says_when_the_budget_drops_his_requests():
         check("ledger-drop: control - a thread that fits says nothing",
               "ledger: budget dropped" not in guard_log(home),
               repr(guard_log(home)[-400:]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def append_tool_use(home, sid, name, inp):
+    """An assistant tool_use record, shaped the way Claude Code writes one."""
+    p = os.path.join(home, ".claude", "projects", KEY, sid + ".jsonl")
+    with open(p, "a", encoding="utf-8") as f:
+        f.write(json.dumps({"type": "assistant", "message": {"role": "assistant",
+                "content": [{"type": "tool_use", "name": name, "input": inp}]}}) + chr(10))
+
+
+def append_prose(home, sid, text):
+    """An assistant TEXT block that merely talks about a path. Not a save."""
+    p = os.path.join(home, ".claude", "projects", KEY, sid + ".jsonl")
+    with open(p, "a", encoding="utf-8") as f:
+        f.write(json.dumps({"type": "assistant", "message": {"role": "assistant",
+                "content": [{"type": "text", "text": text}]}}) + chr(10))
+
+
+def test_a_neighbours_memory_save_no_longer_silences_this_chats_nag():
+    """The hole the nag has had since it was written, closed by asking the transcript.
+
+    Every chat in a folder shares one memory directory, so the mtime test answers "did
+    ANYONE save something" when the question is "did THIS chat save something". With five
+    chats live in D:\\Claude that is not a corner case. The transcript knows: a save is a
+    tool_use with a file_path inside the memory folder, and that is a POSITIONAL fact -
+    the folder's path also appears in the hook's own instruction text, which is in the
+    transcript too, so a grep over the file would call every chat a saver."""
+    home = make_home({})
+    try:
+        started = time.time() - 3600
+        write_chat(home, "neighbour", started)
+        write_note(home, "neighbour")
+        write_memory(home, "someone-elses-save.md", time.time())   # another chat, just now
+        p = run_stop(home, "neighbour")
+        expect_clean(p, "nag-neighbour")
+        check("nag-neighbour: the nag is no longer silenced by somebody else's save",
+              "MEMORY" in blocked(p), repr(blocked(p)[:120]))
+        check("nag-neighbour: and the log attributes the save elsewhere",
+              "memory-nag: the folder changed but this chat wrote nothing"
+              in guard_log(home), repr(guard_log(home)[-300:]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+    # control 1: THIS chat wrote a memory file - it must stay silent
+    home = make_home({})
+    try:
+        started = time.time() - 3600
+        write_chat(home, "saver", started)
+        append_tool_use(home, "saver", "Write", {"file_path": os.path.join(
+            home, ".claude", "projects", KEY, "memory", "a-real-lesson.md")})
+        write_note(home, "saver")
+        write_memory(home, "a-real-lesson.md", time.time())
+        p = run_stop(home, "saver")
+        expect_clean(p, "nag-saver")
+        check("nag-saver: a chat that really saved is let go",
+              blocked(p) == "", repr(blocked(p)[:200]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+    # control 2: the prose trap - the path is MENTIONED, not written to
+    home = make_home({})
+    try:
+        started = time.time() - 3600
+        write_chat(home, "talker", started)
+        append_prose(home, "talker", "I will save this to " + os.path.join(
+            home, ".claude", "projects", KEY, "memory", "MEMORY.md") + " shortly.")
+        write_note(home, "talker")
+        write_memory(home, "someone-elses-save.md", time.time())
+        p = run_stop(home, "talker")
+        expect_clean(p, "nag-talker")
+        check("nag-talker: talking about the memory folder is not saving to it",
+              "MEMORY" in blocked(p), repr(blocked(p)[:120]))
     finally:
         shutil.rmtree(home, ignore_errors=True)
 
@@ -3462,6 +3542,7 @@ if __name__ == "__main__":
               test_an_unanswerable_probe_waits_instead_of_guessing,
               test_a_nag_that_stays_quiet_says_why,
               test_the_ledger_says_when_the_budget_drops_his_requests,
+              test_a_neighbours_memory_save_no_longer_silences_this_chats_nag,
               test_the_report_surfaces_the_ordering_verdict):
         print(t.__name__)
         t()
