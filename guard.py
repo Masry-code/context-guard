@@ -58,7 +58,14 @@ LEDGER_OTHERS = 15        # ...of which this many may come from the OTHER thread
 # 248 of his own words dropped, in silence, with nothing to say they existed. Budget the
 # share in CHARACTERS instead: a thread that fits inherits all of it, and one that does
 # not is told what was left out and how to find it.
-LEDGER_OWN_CHARS = 10000    # the resumed thread's share of the injection
+# 10,000 was judgement and stayed unmeasured for eight chats. Measured 19 Sep 2026 against
+# the real 573-entry ledger: of the three attributed threads only ONE overflowed - "context
+# guard" itself, 38 requests / 10,933 chars, 5 of his own requests pushed into the "... N
+# more ..." line. 12,000 drops nothing at all for any thread today (115 of 115 kept, 25,627
+# chars across the folder) and costs at most 2,000 extra chars - about 500 tokens - on the
+# one turn a pickup happens. The thread that was losing requests is the one whose oldest
+# requests keep turning out to still be open, so the trade is the right way round.
+LEDGER_OWN_CHARS = 12000    # the resumed thread's share of the injection
 LEDGER_OTHERS_CHARS = 4000  # ...and the neighbours', once the thread has taken its own
 LEDGER_OLDEST_SHARE = 0.2   # of a thread's budget, reserved for its OLDEST entries -
                             # a newest-first window is structurally blind to exactly the
@@ -2096,6 +2103,97 @@ MANIFEST = os.path.join(STATE, "memory-manifest.json")
 # fails by silently copying nothing, which is the failure mode that looks like success.
 SOURCE_KEY = "D--Claude"
 
+# The question SEVEN handoff notes have now carried: when the bootstrap below creates a
+# project's memory folder during SessionStart, does THAT chat get to read it, or only the
+# next one? Nothing here can spawn a session to find out - there is no claude CLI on this
+# machine - and every note has ended with "write the answer down when it happens", which
+# is a reminder, i.e. a bug in the tooling rather than advice. So the hook answers it
+# itself: Claude Code's own memory loader leaves a fingerprint in the session transcript
+# ("...\<KEY>\memory\MEMORY.md (user's auto-memory, persists across conversations)" -
+# measured in his real 19 Sep transcript), so a furnish arms a probe and a LATER
+# SessionStart reads that transcript back.
+#
+# Hung on SessionStart rather than on every prompt deliberately: it fires on every startup
+# AND every resume, so the verdict lands within hours for the price of one os.path.exists
+# per session instead of one per turn. Nothing depends on the answer - the bootstrap hands
+# the index back as additionalContext either way - this exists so the question is never
+# asked an eighth time.
+ORDER_PROBE = os.path.join(STATE, "ordering-probe.json")
+ORDER_ANSWER = os.path.join(STATE, "ordering-answer.txt")
+USER_TURN_RE = re.compile(r'"type"\s*:\s*"user"')
+
+
+def arm_ordering_probe(sid, key, given):
+    """Record that THIS session created THIS project's folder, for a later one to check.
+
+    A probe that is still pending when another furnish happens is simply replaced: both
+    ask the identical question and the newer session is the one whose transcript is most
+    likely to actually appear on disk."""
+    if not sid or not key or os.path.exists(ORDER_ANSWER):
+        return                      # answered once is answered for good
+    try:
+        os.makedirs(STATE, exist_ok=True)
+        with open(ORDER_PROBE, "w", encoding="utf-8") as f:
+            json.dump({"sid": sid, "key": key, "transcript": given or "",
+                       "armed": datetime.datetime.now().isoformat(timespec="seconds")}, f)
+        log("ordering: probe armed - session %s furnished %s" % (sid, key))
+    except Exception:
+        pass
+
+
+def transcript_read_its_memories(path, key):
+    """Did Claude Code's OWN memory loader put that project's index into that session?
+
+    True / False / None - and None means NOT YET, not no. Hooks fire before the transcript
+    exists (measured 11 Sep 2026), so absence of evidence always arrives first and must
+    never be read as a verdict: a wrong answer here would also stop the asking."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            text = f.read()
+    except Exception:
+        return None
+    if not USER_TURN_RE.search(text):
+        return None                 # no user turn yet - the loader has had no chance
+    for line in text.splitlines():
+        if "auto-memory" in line and key in line:
+            return True
+    return False
+
+
+def resolve_ordering_probe():
+    """Write the verdict down once the evidence lands. Silent, and at most once ever."""
+    if not os.path.exists(ORDER_PROBE):
+        return
+    try:
+        with open(ORDER_PROBE, encoding="utf-8") as f:
+            rec = json.load(f) or {}
+    except Exception:
+        return
+    sid, key = rec.get("sid"), rec.get("key")
+    path = find_transcript(sid, rec.get("transcript")) if sid else None
+    saw = transcript_read_its_memories(path, key) if (path and key) else None
+    if saw is None:
+        return                      # keep waiting; the probe costs one stat per session
+    out = ["THE SESSIONSTART ORDERING, ANSWERED BY MEASUREMENT - "
+           + datetime.datetime.now().isoformat(timespec="seconds"),
+           "verdict : %s" % ("same-session" if saw else "next-session"),
+           "project : %s   (session %s)" % (key, sid),
+           "evidence: %s" % path, ""]
+    out += (["Claude Code's memory loader ran AFTER the SessionStart hook: the chat that",
+             "created the folder read its own memories too. A first chat in a new project",
+             "is not blind."] if saw else
+            ["Claude Code's memory loader ran BEFORE the SessionStart hook: the chat that",
+             "created the folder did NOT get the index from the loader - only the copy the",
+             "bootstrap hands back as additionalContext. That belt-and-braces path is",
+             "LOAD-BEARING. Do not remove it."])
+    try:
+        with open(ORDER_ANSWER, "w", encoding="utf-8") as f:
+            f.write("\n".join(out) + "\n")
+        os.remove(ORDER_PROBE)
+        log("ordering: answered %s for %s" % (out[1], key))
+    except Exception:
+        pass
+
 
 def dir_key(cwd):
     r"""Claude Code's own folder name for a working DIRECTORY.
@@ -2155,6 +2253,9 @@ def index_lines(path):
 def cmd_bootstrap():
     """SessionStart: give this directory its own memory folder if it has none yet."""
     d = read_stdin()
+    # First, before any of the give-up paths below: a probe left by an earlier session may
+    # finally be answerable. Resolution must not be hostage to this session's own cwd.
+    resolve_ordering_probe()
     cwd = d.get("cwd") or ""
     key = dir_key(cwd)
     if not key:
@@ -2211,6 +2312,10 @@ def cmd_bootstrap():
     except Exception:
         return
     log("bootstrap: %s -> %s, %d copied, %d missing" % (name, key, len(copied), len(missing)))
+    # Only when something was actually copied: an index with no entries gives the loader
+    # nothing to inject, so its absence downstream would prove nothing about the ordering.
+    if copied:
+        arm_ordering_probe(d.get("session_id"), key, d.get("transcript_path"))
     out = ["Context Guard just created this project's own memory folder.",
            "",
            "  project : %s" % name,

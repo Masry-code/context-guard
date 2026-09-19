@@ -20,6 +20,7 @@ spot that shipped a broken headphone button in Spotliar with 18 passing tests.
 import datetime
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -29,6 +30,23 @@ import time
 GUARD = os.path.join(os.path.dirname(os.path.abspath(__file__)), "guard.py")
 KEY = "D--Claude"
 CWD = "D:/Claude"
+
+
+def guard_constant(name):
+    """A constant read out of guard.py's SOURCE, so a test can size its fixture against
+    the budget that actually ships instead of hard-coding today's number.
+
+    Deliberately not an import: importing guard binds HOME at import time and this suite
+    must never be able to reach the real one. Measured 19 Sep 2026 - raising
+    LEDGER_OWN_CHARS from 10,000 to 12,000 broke exactly one check, and it was a fixture
+    tuned to the old value, not a behaviour anyone had decided on."""
+    with open(GUARD, encoding="utf-8") as f:
+        for line in f:
+            m = re.match(r"\s*" + name + r"\s*=\s*([0-9_.]+)", line)
+            if m:
+                raw = m.group(1).replace("_", "")
+                return float(raw) if "." in raw else int(raw)
+    raise AssertionError("guard.py has no constant called " + name)
 
 NOTE_CTX = "HANDOFF LABEL: context guard\n\n# Handoff - the guard\n\nbody-CONTEXTGUARD\n"
 NOTE_SPOT = "HANDOFF LABEL: Spotliar\n\n# Handoff - Spotliar\n\nbody-SPOTLIAR\n"
@@ -2027,16 +2045,20 @@ def test_old_noise_in_the_ledger_is_not_carried_into_a_pickup():
 def test_the_thread_budget_is_characters_not_entries():
     """The injection has a hard cap. A handful of very long entries must be cut by SIZE -
     a count-based window would have waved 16 KB through because it was only 8 entries."""
+    budget = guard_constant("LEDGER_OWN_CHARS")
+    each = 1900
+    n = max(8, int(budget * 2 // each) + 2)     # comfortably more than twice the budget
     home = make_home({})
     try:
         sec = this_thread_section(pickup(
-            home, ["BULK-%02d %s" % (i, "q" * 1900) for i in range(8)]))
+            home, ["BULK-%02d %s" % (i, "q" * each) for i in range(n)]))
         check("scope-budget: the thread's share is bounded by size",
-              0 < len(sec) < 14000, "%d chars" % len(sec))
-        check("scope-budget: the newest is kept", "BULK-07" in sec, repr(sec[:200]))
+              0 < len(sec) < budget + 4000, "%d chars, budget %d" % (len(sec), budget))
+        check("scope-budget: the newest is kept", "BULK-%02d" % (n - 1) in sec,
+              repr(sec[:200]))
         check("scope-budget: the oldest is kept", "BULK-00" in sec, repr(sec[:200]))
-        check("scope-budget: and a middle one is cut", "BULK-03" not in sec,
-              "%d chars" % len(sec))
+        check("scope-budget: and a middle one is cut", "BULK-%02d" % (n // 2) not in sec,
+              "%d chars of %d offered" % (len(sec), n * each))
     finally:
         shutil.rmtree(home, ignore_errors=True)
 
@@ -3065,6 +3087,152 @@ def test_bootstrap_survives_a_manifest_entry_with_no_file_on_disk():
         shutil.rmtree(home, ignore_errors=True)
 
 
+# ------------------------------------------------- the ordering, answered by the hook
+# Carried unanswered across SEVEN handoff notes: when a chat creates a project's memory
+# folder during SessionStart, does THAT chat get to read it, or only the next one?
+# It cannot be measured by hand here - there is no claude CLI on this machine - and
+# every note so far has ended with "write the answer down when it happens", which is a
+# reminder, i.e. a bug in the tooling. The hook can answer it itself: Claude Code's own
+# memory loader leaves a fingerprint in the session transcript, so the bootstrap arms a
+# probe when it creates a folder and a later SessionStart reads that transcript back and
+# writes the verdict down once, for good.
+
+def probe_paths(home):
+    state = os.path.join(home, ".claude", "context-guard")
+    return (os.path.join(state, "ordering-probe.json"),
+            os.path.join(state, "ordering-answer.txt"))
+
+
+def fake_transcript(home, key, sid, saw_memory, turns=1):
+    """A session transcript shaped like a real one.
+
+    The needle is taken verbatim from his own 19 Sep transcript, where Claude Code's
+    memory loader writes: Contents of C:\\Users\\...\\projects\\<KEY>\\memory\\MEMORY.md
+    (user's auto-memory, persists across conversations)."""
+    d = os.path.join(home, ".claude", "projects", key)
+    os.makedirs(d, exist_ok=True)
+    lines = []
+    if saw_memory:
+        lines.append(json.dumps({"type": "system", "content":
+                                 "Contents of C:\\Users\\Someone\\.claude\\projects\\"
+                                 + key + "\\memory\\MEMORY.md (user's auto-memory, "
+                                 "persists across conversations)"}))
+    for _i in range(turns):
+        lines.append(json.dumps({"type": "user",
+                                 "message": {"role": "user", "content": "hello"}}))
+    with open(os.path.join(d, sid + ".jsonl"), "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+
+
+def test_the_bootstrap_arms_a_probe_only_when_it_actually_furnished_a_folder():
+    """A verdict about a chat that was handed nothing would be a verdict about nothing.
+
+    Two positive controls in the same shape as the real case: a folder that already
+    existed (this chat did not create it, so its memories were always there to read)
+    and a manifest whose files have all rotted (nothing copied, so an empty index
+    proves nothing either way). Neither may leave a probe behind."""
+    home = make_boot_home()
+    try:
+        boot(home, r"D:\AI Projects\Taza", sid="probe001")
+        probe, answer = probe_paths(home)
+        check("ordering/arm: furnishing a fresh folder arms the probe",
+              os.path.isfile(probe), str(sorted(os.listdir(os.path.dirname(probe)))))
+        if os.path.isfile(probe):
+            with open(probe, encoding="utf-8") as f:
+                rec = json.load(f)
+            check("ordering/arm: the probe records the session it must read back",
+                  rec.get("sid") == "probe001", json.dumps(rec)[:200])
+            check("ordering/arm: the probe records the project key it furnished",
+                  rec.get("key") == "D--AI-Projects-Taza", json.dumps(rec)[:200])
+        check("ordering/arm: nothing is answered yet", not os.path.exists(answer),
+              answer)
+        # control 1: the same directory a second time - the folder is already there
+        if os.path.exists(probe):
+            os.remove(probe)
+        boot(home, r"D:\AI Projects\Taza", sid="probe002")
+        check("ordering/arm: an existing memory folder arms no probe",
+              not os.path.exists(probe), "re-armed on a folder it left alone")
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+    # control 2: a manifest entry whose file has rotted - folder made, nothing copied
+    files = dict(BOOT_FILES)
+    del files["food-expiry-scanner-app"]
+    home = make_boot_home(files=files)
+    try:
+        boot(home, r"D:\AI Projects\Taza", sid="probe003")
+        probe, _a = probe_paths(home)
+        check("ordering/arm: a folder furnished with NO memories arms no probe",
+              not os.path.exists(probe), "armed on an empty index")
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_the_hook_answers_the_ordering_question_by_itself():
+    """The whole point: nobody has to remember to look.
+
+    Driven both ways round, because a detector that only ever says yes is not a
+    detector. Resolution is deliberately hung on SessionStart - it fires on every
+    startup AND every resume, so the answer lands within hours and costs one stat per
+    session rather than one per prompt."""
+    for saw, want, tag in ((True, "same-session", "same"),
+                           (False, "next-session", "next")):
+        home = make_boot_home()
+        try:
+            boot(home, r"D:\AI Projects\Taza", sid="ord" + tag)
+            probe, answer = probe_paths(home)
+            fake_transcript(home, "D--AI-Projects-Taza", "ord" + tag, saw_memory=saw)
+            # any later SessionStart resolves it - here one the manifest does not know,
+            # so nothing is furnished and only the resolution can have written the file
+            p = boot(home, r"D:\Nowhere At All", sid="later" + tag)
+            expect_clean(p, "ordering/answer " + tag)
+            check("ordering/answer: %s - the verdict was written down" % tag,
+                  os.path.isfile(answer), str(sorted(os.listdir(os.path.dirname(answer)))))
+            got = ""
+            if os.path.isfile(answer):
+                with open(answer, encoding="utf-8") as f:
+                    got = f.read()
+            check("ordering/answer: %s - and it is the right verdict" % tag,
+                  want in got, repr(got[:300]))
+            check("ordering/answer: %s - the probe is spent, not asked again" % tag,
+                  not os.path.exists(probe), "probe survived its own answer")
+            check("ordering/answer: %s - the verdict says which project it came from"
+                  % tag, "D--AI-Projects-Taza" in got, repr(got[:300]))
+        finally:
+            shutil.rmtree(home, ignore_errors=True)
+
+
+def test_an_unanswerable_probe_waits_instead_of_guessing():
+    """No transcript yet, or one with no user turn in it, is not evidence of absence.
+
+    Hooks fire before the transcript exists - measured 11 Sep 2026 - so the first
+    SessionStart after arming will usually find nothing on disk. Guessing there would
+    answer the question wrongly and then stop asking, which is the worst of the three
+    outcomes."""
+    home = make_boot_home()
+    try:
+        boot(home, r"D:\AI Projects\Taza", sid="ordwait")
+        probe, answer = probe_paths(home)
+        boot(home, r"D:\Nowhere At All", sid="later1")      # no transcript at all
+        check("ordering/wait: no transcript yet - nothing is claimed",
+              not os.path.exists(answer), "answered with no evidence")
+        check("ordering/wait: and the probe is kept for later",
+              os.path.isfile(probe), "probe thrown away unanswered")
+        # a transcript that exists but has not reached a user turn yet
+        fake_transcript(home, "D--AI-Projects-Taza", "ordwait", saw_memory=False, turns=0)
+        boot(home, r"D:\Nowhere At All", sid="later2")
+        check("ordering/wait: an empty transcript is not a 'no'",
+              not os.path.exists(answer), "answered off a transcript with no user turn")
+        check("ordering/wait: the probe is still waiting",
+              os.path.isfile(probe), "probe thrown away unanswered")
+        # ...and once the turn arrives it answers normally
+        fake_transcript(home, "D--AI-Projects-Taza", "ordwait", saw_memory=True)
+        boot(home, r"D:\Nowhere At All", sid="later3")
+        check("ordering/wait: the same probe answers once the evidence lands",
+              os.path.isfile(answer), "still unanswered with a full transcript on disk")
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
 if __name__ == "__main__":
     for t in (test_handoff_instruction_demands_memory_consolidation,
               test_handoff_label_gets_the_next_number,
@@ -3180,7 +3348,10 @@ if __name__ == "__main__":
               test_bootstrap_is_idempotent,
               test_bootstrap_ignores_a_directory_the_manifest_does_not_know,
               test_bootstrap_matches_an_also_directory,
-              test_bootstrap_survives_a_manifest_entry_with_no_file_on_disk):
+              test_bootstrap_survives_a_manifest_entry_with_no_file_on_disk,
+              test_the_bootstrap_arms_a_probe_only_when_it_actually_furnished_a_folder,
+              test_the_hook_answers_the_ordering_question_by_itself,
+              test_an_unanswerable_probe_waits_instead_of_guessing):
         print(t.__name__)
         t()
     print()
