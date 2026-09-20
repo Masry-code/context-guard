@@ -2606,6 +2606,40 @@ def test_the_guidance_forbids_handing_him_a_path_in_both_branches():
         shutil.rmtree(home, ignore_errors=True)
 
 
+def test_the_note_template_names_the_log_it_is_written_from():
+    """His decision, 21 Sep 2026 - "yes if it is going to make it better" - asked on its
+    own after being carried unasked through two handoffs. Every note re-derived where the
+    diagnostics log lives and one of them wrote "guard.log", a file that has never
+    existed.
+
+    An AGREEMENT test, not a prose test. Both names are read out of guard.py's OWN source:
+    the template guard.py points chats at must name the log guard.py actually writes. A
+    hardcoded path in a static markdown file is the same false confidence the line was
+    added to remove - it would go stale in silence the day LOG moves - so the test is the
+    half that makes the line worth having, not an extra.
+
+    The CONTROL carries as much weight as the assertion: naming a path FOR Claude must
+    not weaken the standing rule that HE is never handed one."""
+    with open(GUARD, encoding="utf-8") as f:
+        src = f.read()
+    mlog = re.search(r"^LOG\s*=.*?[\"']([^\"']+\.log)[\"']", src, re.M)
+    mtpl = re.search(r"^TEMPLATE\s*=.*?[\"']([^\"']+\.md)[\"']", src, re.M)
+    check("template-log: guard.py still names both the log and the template in source",
+          bool(mlog) and bool(mtpl),
+          "LOG=%r TEMPLATE=%r" % (mlog and mlog.group(1), mtpl and mtpl.group(1)))
+    if not (mlog and mtpl):
+        return
+
+    path = os.path.join(os.path.dirname(GUARD), mtpl.group(1))
+    with open(path, encoding="utf-8") as f:
+        tmpl = f.read()
+    check("template-log: the note template names the log guard.py actually writes",
+          mlog.group(1) in tmpl,
+          "guard.py writes %r; %s never names it" % (mlog.group(1), mtpl.group(1)))
+    check("template-log: CONTROL - and it still forbids handing HIM a filesystem path",
+          "never hand him a filesystem path" in tmpl.lower(), repr(tmpl[-600:]))
+
+
 def test_growth_within_one_epoch_is_still_not_a_compaction():
     """The other half of defect 2, and the reason it is a threshold and not `ctx < last`.
     A chat that has warned and then grown a little must STAY quiet - re-arming on every
@@ -4165,7 +4199,8 @@ if __name__ == "__main__":
               test_a_watermark_spent_while_away_does_not_mute_the_chat_forever,
               test_a_compaction_re_arms_the_warning_even_far_above_the_floor,
               test_growth_within_one_epoch_is_still_not_a_compaction,
-              test_the_guidance_forbids_handing_him_a_path_in_both_branches):
+              test_the_guidance_forbids_handing_him_a_path_in_both_branches,
+              test_the_note_template_names_the_log_it_is_written_from):
         print(t.__name__)
         t()
     print()

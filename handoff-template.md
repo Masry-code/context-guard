@@ -59,5 +59,11 @@ anything he is expected to act on - he cannot type a path to summon anything. Th
 LABEL on line 1 is the only thing that works. His words, 21 Sep 2026:
 "where is the keyword why is it saying the whole path?"
 
+**The diagnostics log is at `~/.claude/context-audit.log`** - the only log this project
+writes, defined once as `LOG` in `guard.py`. Do not re-derive it and do not guess
+`guard.log`; that file has never existed, and a note named it anyway. This path is
+YOURS, for reading diagnostics off disk - it is covered by the rule above, so it never
+goes to him.
+
 **Durable lessons do NOT belong here** — they go to a memory file first, because
 this note is consumed once and memory is forever.
