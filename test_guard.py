@@ -3703,6 +3703,122 @@ def test_bootstrap_finds_an_index_line_that_moved_to_the_pointer():
 
 
 
+# --------------- change 13: the keyword he types must hand him THAT project's memory
+# His words, 20 Sep 2026: "this needs to be automated when the keyword is first written in
+# a new chat cause idk how to do that to begin with". He was being told to open a chat in
+# D:\AI Projects\EGX-Books-Pipeline so it would load EGX's memories instead of the shared
+# index - and being told is the bug. A chat started in D:\Claude gets the D--Claude folder
+# whatever thread it is about, because the memory folder keys off the DIRECTORY.
+#
+# So the label he already types to summon a note now also fetches that project's own
+# MEMORY.md. The mapping is explicit in memory-manifest.json ("threads"), never fuzzy:
+# "egx bot" and "egx handover" are one project by his review, not by luck.
+MANIFEST_THREADS = {
+    "_README": "test fixture",
+    "projects": {
+        "egx": {"dir": "D:\\AI Projects\\EgxScannerzBot", "also": [],
+                "threads": ["egx handover", "egx bot"], "files": []},
+        "spotliar": {"dir": "D:\\AI Projects\\Spotliar", "also": [],
+                     "threads": ["spotliar"], "files": []},
+        "context-guard": {"dir": "D:\\Claude\\context-guard", "also": [],
+                          "threads": [], "files": []},
+    },
+}
+
+
+def write_threads_manifest(home, man=None):
+    state = os.path.join(home, ".claude", "context-guard")
+    os.makedirs(state, exist_ok=True)
+    with open(os.path.join(state, "memory-manifest.json"), "w", encoding="utf-8") as f:
+        json.dump(MANIFEST_THREADS if man is None else man, f)
+
+
+def write_project_index(home, key, body):
+    """A project's OWN memory index - the curated one, not the flat pointer file."""
+    d = os.path.join(home, ".claude", "projects", key, "memory")
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, "MEMORY.md"), "w", encoding="utf-8") as f:
+        f.write(body)
+    return d
+
+
+def test_a_thread_label_hands_back_that_projects_memory_index():
+    """The label carries the number and the date he actually types, not a tidy stem."""
+    home = make_home({KEY + ".9e19c7ab.md": NOTE_CTX, KEY + ".b0b0b0b0.md": NOTE_EGX})
+    try:
+        write_threads_manifest(home)
+        write_project_index(home, "D--AI-Projects-EgxScannerzBot",
+                            "# Memory Index\n- [a](b.md) - INDEX-EGX\n")
+        p = run(home, "aa11-label-mem", "EGX bot -3 (20 Sep)")
+        ctx = context_of(p)
+        expect_clean(p, "label-memory")
+        check("label-memory: the note still arrives", "body-EGXBOT" in ctx, repr(ctx[:200]))
+        check("label-memory: that project's own index came with it",
+              "INDEX-EGX" in ctx, repr(ctx[-400:]))
+        check("label-memory: and it says which index it is and where it came from",
+              "MEMORY INDEX for egx" in ctx and "D--AI-Projects-EgxScannerzBot" in ctx,
+              repr(ctx[-400:]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_a_label_that_maps_to_no_project_appends_nothing():
+    """THE CONTROL. Without it, "append every index on disk" passes the test above.
+
+    context-guard is in the manifest with an EMPTY threads list - reviewed and mapped to
+    nothing on purpose - and its index sits on disk next to EGX's."""
+    home = make_home({KEY + ".9e19c7ab.md": NOTE_CTX})
+    try:
+        write_threads_manifest(home)
+        write_project_index(home, "D--AI-Projects-EgxScannerzBot",
+                            "# Memory Index\n- [a](b.md) - INDEX-EGX\n")
+        write_project_index(home, "D--Claude-context-guard",
+                            "# Memory Index\n- [a](b.md) - INDEX-GUARD\n")
+        p = run(home, "bb22-label-none", "context guard")
+        ctx = context_of(p)
+        expect_clean(p, "label-none")
+        check("label-none: the note still arrives", "body-CONTEXTGUARD" in ctx, repr(ctx[:200]))
+        check("label-none: no index was appended",
+              "INDEX-EGX" not in ctx and "INDEX-GUARD" not in ctx, repr(ctx[-300:]))
+        check("label-none: and it said nothing about memory at all",
+              "MEMORY INDEX for" not in ctx, repr(ctx[-300:]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_a_project_with_no_memory_folder_is_skipped_not_crashed():
+    """Nine `also` directories have no memory folder. Silence, not a traceback."""
+    home = make_home({KEY + ".143f0320.md": NOTE_SPOT})
+    try:
+        write_threads_manifest(home)          # spotliar maps; nothing ever furnished it
+        p = run(home, "cc33-label-nofolder", "Spotliar")
+        ctx = context_of(p)
+        expect_clean(p, "label-nofolder")     # rc 0 and no traceback IS the assertion
+        check("label-nofolder: the note still arrives", "body-SPOTLIAR" in ctx, repr(ctx[:200]))
+        check("label-nofolder: nothing was invented",
+              "MEMORY INDEX for" not in ctx, repr(ctx[-300:]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_the_project_index_is_not_re_injected_every_turn():
+    """It rides the pickup turn only. Anywhere else re-injects the index forever, which
+    is the exact bloat this tool exists to remove."""
+    home = make_home({KEY + ".b0b0b0b0.md": NOTE_EGX})
+    try:
+        write_threads_manifest(home)
+        write_project_index(home, "D--AI-Projects-EgxScannerzBot",
+                            "# Memory Index\n- [a](b.md) - INDEX-EGX\n")
+        first = context_of(run(home, "dd44-once", "EGX bot"))
+        check("label-once: the first turn carried it", "INDEX-EGX" in first, repr(first[-300:]))
+        second = run(home, "dd44-once", "EGX bot")
+        check("label-once: the next turn does not",
+              "INDEX-EGX" not in context_of(second), repr(context_of(second)[:300]))
+        expect_clean(second, "label-once")
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
 if __name__ == "__main__":
     for t in (test_handoff_instruction_demands_memory_consolidation,
               test_handoff_label_gets_the_next_number,
@@ -3832,7 +3948,11 @@ if __name__ == "__main__":
               test_the_token_column_is_the_cost_of_one_pickup,
               test_the_neighbour_share_of_the_tail_is_bounded_too,
               test_bootstrap_finds_an_index_line_that_moved_to_the_pointer,
-              test_the_report_surfaces_the_ordering_verdict):
+              test_the_report_surfaces_the_ordering_verdict,
+              test_a_thread_label_hands_back_that_projects_memory_index,
+              test_a_label_that_maps_to_no_project_appends_nothing,
+              test_a_project_with_no_memory_folder_is_skipped_not_crashed,
+              test_the_project_index_is_not_re_injected_every_turn):
         print(t.__name__)
         t()
     print()

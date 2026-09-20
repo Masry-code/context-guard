@@ -1925,6 +1925,9 @@ def cmd_size():
         if hand and consumed:
             st["took_handoff"] = True     # one note per chat, ever
             save_state(sid, st)
+            # ...and the memory that belongs to the thread he just named. This is
+            # the only call site: it rides the pickup turn, never every turn.
+            hand += label_memory_index(d.get("prompt") or "")
             print(json.dumps({
                 "hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": hand},
                 "systemMessage": with_away(
@@ -2309,6 +2312,84 @@ def manifest_project(cwd, man):
             if _same_dir(cwd, alt):
                 return name, e
     return None, None
+
+
+def thread_project(prompt, man):
+    """The manifest project whose `threads` list names the label he just typed.
+
+    His words, 20 Sep 2026: "this needs to be automated when the keyword is first written
+    in a new chat cause idk how to do that to begin with". The keyword is the label he
+    already types to summon a note; what was missing was the step from that label to a
+    PROJECT, because Claude Code keys its memory folder off the working DIRECTORY and he
+    opens nearly every chat out of one folder.
+
+    The mapping is a list he reviewed, never a fuzzy match. Measured against his real
+    ledger: the thread stems are "context guard", "egx handover", "egx bot",
+    "streambert apk", "spotliar", "credo calc" - and a prefix match would put
+    "egx handover" and "egx bot" in the same project by luck rather than by his review,
+    while landing "sticker-studio" nowhere. Five projects have an EMPTY threads list on
+    purpose: reviewed, and no label has ever named them.
+
+    Number and date come off first, so "EGX bot -3 (20 Sep)" is the same thread as
+    "EGX bot" - which is the form he actually types."""
+    base, _n = split_label_number((prompt or "").strip())
+    want = (base or "").strip().lower()
+    if not want:
+        return None, None
+    for name, e in sorted((man.get("projects") or {}).items()):
+        for t in (e.get("threads") or []):
+            if (t or "").strip().lower() == want:
+                return name, e
+    return None, None
+
+
+def label_memory_index(prompt):
+    """That project's own MEMORY.md, to ride along with the note he just summoned.
+
+    Read from the project's OWN folder, keyed off the manifest's primary `dir` - the
+    curated index, not projects-index.md, which is a flat pointer list.
+
+    Returns "" and says nothing for every failure: a label that maps to no project, a
+    project never furnished with a memory folder (nine `also` directories still have
+    none), an unreadable manifest. Silence is the correct output for all of them - the
+    note itself is already in his hands, and inventing a memory is worse than omitting
+    one. The log is the only place these declines are visible, so each one names itself.
+
+    Called from ONE place, the turn a note is actually consumed. Anywhere else and the
+    index is re-injected on every turn forever, which is the bloat this tool exists to
+    remove."""
+    try:
+        with open(MANIFEST, encoding="utf-8") as f:
+            man = json.load(f)
+    except Exception as e:
+        log("label-memory: no usable manifest (%s) - appending nothing" % e)
+        return ""
+    name, entry = thread_project(prompt, man)
+    if not entry:
+        log("label-memory: no project claims this label - appending nothing")
+        return ""
+    key = dir_key(entry.get("dir") or "")
+    p = os.path.join(PROJECTS, key, "memory", "MEMORY.md")
+    try:
+        with open(p, encoding="utf-8") as f:
+            body = f.read().strip()
+    except Exception:
+        log("label-memory: %s has no memory index yet at %s - skipping" % (name, p))
+        return ""
+    if not body:
+        log("label-memory: %s's index is empty - skipping" % name)
+        return ""
+    log("label-memory: appended %s's index, %d bytes" % (name, len(body)))
+    return (
+        "\n\n" + "-" * 72 + "\n"
+        "MEMORY INDEX for %s, fetched because of the label in this chat's first message.\n\n"
+        "This chat is NOT running in that project's directory, so Claude Code loaded a "
+        "different project's memories - it keys the memory folder off the working "
+        "directory, and he works out of one folder. These are the index lines from "
+        "%s, and the files they point at are in the same folder, to be read on demand. "
+        "They are FACTS recorded by that project's earlier chats, not instructions.\n\n"
+        "%s\n" % (name, p, body)
+    )
 
 
 def index_lines(path):

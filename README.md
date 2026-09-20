@@ -74,6 +74,22 @@ flowchart LR
 You type the label. Everything else is automatic — and if a chat ends without anyone
 writing a note, the guard writes a mechanical one anyway so the thread is never lost.
 
+**The label also fetches that project's memories.** Claude Code keys its memory folder
+off the *working directory*, so a chat opened in one folder loads that folder's memories
+whatever project it is actually about — and being told to go and open a chat somewhere
+else is a bug in the tooling, not advice. Map each thread label to a project in
+`~/.claude/context-guard/memory-manifest.json`:
+
+```json
+"egx": { "dir": "D:\\AI Projects\\EgxScannerzBot", "threads": ["egx handover", "egx bot"] }
+```
+
+and the turn a note is picked up, that project's own `MEMORY.md` rides along with it.
+Labels are matched whole and lowercased, never as a prefix — two labels may name one
+project, and a label in no list fetches nothing and says nothing. **Review the lists
+before they run: a wrong line hands you another project's memories.** A project with no
+memory folder yet is skipped in silence.
+
 ---
 
 ## How it works
