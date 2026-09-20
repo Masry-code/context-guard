@@ -54,5 +54,10 @@ shell quirks. Anything that took a command to discover.
 instead of his, go back and fix it. That single failure is why a bug was asked
 for twice on two different days and dropped both times.
 
+**Never hand him a filesystem path.** Not to this note, not to the log, not to
+anything he is expected to act on - he cannot type a path to summon anything. The
+LABEL on line 1 is the only thing that works. His words, 21 Sep 2026:
+"where is the keyword why is it saying the whole path?"
+
 **Durable lessons do NOT belong here** — they go to a memory file first, because
 this note is consumed once and memory is forever.

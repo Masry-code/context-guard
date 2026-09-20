@@ -981,6 +981,19 @@ def with_away(msg, sid, st, ctx):
     return msg + ("  " + notice if notice else "")
 
 
+# His decision, 21 Sep 2026, in his words: "yes always give me the label never a path
+# line please". It rides BOTH branches of handoff_steps - away or at the console, a path
+# is equally useless to him - so the two can never drift apart. Kept as one constant for
+# that reason, not for brevity.
+PATH_RULE = (
+    "NEVER hand him a filesystem path - not to this note, not to the log, not to "
+    "anything he is expected to act on. He cannot type a path to summon anything; the "
+    "LABEL is the only thing that does. He complained about exactly this on 21 Sep 2026 "
+    "- \"where is the keyword why is it saying the whole path?\" - after a chat quoted "
+    "him the full path of its own note instead of the words to type. Paths are for YOU, "
+    "to find things on disk; the label is for him. ")
+
+
 def handoff_steps(today):
     """Steps 3 and 4 of the handoff instruction - the only part that differs while away.
 
@@ -994,7 +1007,8 @@ def handoff_steps(today):
             "about it. Save the note and carry on with whatever he actually asked for, in "
             "your normal voice, as though this warning had not appeared; "
             "(4) the note is written and nothing is lost, so when he says he is back the very "
-            "next chat picks it up as usual. He clears away mode by typing 'back'. ")
+            "next chat picks it up as usual. He clears away mode by typing 'back'. "
+            + PATH_RULE)
     return (
         "(3) tell the user briefly and warmly that this chat has grown expensive, that you have "
         "ALREADY saved everything to that note, and that the next chat carries on exactly where "
@@ -1005,7 +1019,8 @@ def handoff_steps(today):
         "('open a new chat here and just say: Credo Calc -5 (" + today + ")'). "
         "Typing that label loads this note and only this note, so the other threads waiting "
         "in this folder stay untouched for later. He need do nothing else, and this conversation "
-        "stays readable under 'Resume previous session'. ")
+        "stays readable under 'Resume previous session'. "
+        + PATH_RULE)
 
 
 def ceiling_block(d, path):

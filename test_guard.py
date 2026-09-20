@@ -2567,6 +2567,45 @@ def test_a_compaction_re_arms_the_warning_even_far_above_the_floor():
         shutil.rmtree(home, ignore_errors=True)
 
 
+def test_the_guidance_forbids_handing_him_a_path_in_both_branches():
+    """His decision, 21 Sep 2026: "yes always give me the label never a path line please".
+
+    An AGREEMENT test, not a prose test: the point is that the prohibition rides BOTH
+    branches of handoff_steps. Away or at the console, a path is equally useless to him -
+    he cannot type one - so a rule present in only one branch is the bug, and that is what
+    is asserted. The substring is the shortest stable stem of the rule; the surrounding
+    wording is free to change.
+
+    Why it matters: the complaint came from a chat that was NOT writing a note at the
+    time, so step 4 alone could never have caught it. The rule has to be standing."""
+    stem = "never hand him a filesystem path"
+
+    home = make_home({})
+    try:
+        write_big_chat(home, "pathrule", time.time() - 3600, 250_000)
+        p = run(home, "pathrule", "carry on")
+        expect_clean(p, "path-rule/console")
+        at_console = context_of(p).lower()
+        check("path-rule: the at-console guidance forbids handing him a path",
+              stem in at_console, repr(at_console[-400:]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+    home = make_home({})
+    try:
+        write_big_chat(home, "pathaway", time.time() - 3600, 250_000)
+        arm_away(home)
+        p = run(home, "pathaway", "carry on")
+        expect_clean(p, "path-rule/away")
+        away = context_of(p).lower()
+        check("path-rule: and so does the away guidance - both branches agree",
+              stem in away, repr(away[-400:]))
+        check("path-rule: CONTROL - the away branch still does not send him to a new chat",
+              "quote him the exact words to type" not in away, repr(away[-400:]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
 def test_growth_within_one_epoch_is_still_not_a_compaction():
     """The other half of defect 2, and the reason it is a threshold and not `ctx < last`.
     A chat that has warned and then grown a little must STAY quiet - re-arming on every
@@ -4125,7 +4164,8 @@ if __name__ == "__main__":
               test_coming_back_from_away_re_arms_on_that_same_turn,
               test_a_watermark_spent_while_away_does_not_mute_the_chat_forever,
               test_a_compaction_re_arms_the_warning_even_far_above_the_floor,
-              test_growth_within_one_epoch_is_still_not_a_compaction):
+              test_growth_within_one_epoch_is_still_not_a_compaction,
+              test_the_guidance_forbids_handing_him_a_path_in_both_branches):
         print(t.__name__)
         t()
     print()
