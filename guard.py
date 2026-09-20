@@ -36,6 +36,15 @@ TEMPLATE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "handoff-tem
 # 143f0320 parked at ~211k in silence forever: it is over 150k but never reaches
 # 250k, so the old "already warned at this level" check muted it permanently.
 REWARN_STEP = 40_000
+# ...and re-arm when the context DROPS by this much. Context only grows within an epoch,
+# so a fall this large can only be a compaction or a resume: the history was summarised
+# and the high-water mark no longer describes this chat. Measured 20-21 Sep 2026 on his
+# session 69ba63cb - 290,007 -> 203,980, an 86k fall that landed FAR above the 100k
+# re-arm floor, so the floor check never saw it. `due` then needed 330,007 while
+# auto-compact fires at 318,500, so that chat could never warn again - and never did.
+# A threshold rather than "any fall at all" on purpose: re-arming on every small wobble
+# is the nagging this tool exists to replace.
+COMPACTION_DROP = 20_000
 # A handoff note is addressed to a FRESH chat. Sessions in one project share a single
 # note slot, so without a freshness gate a big old chat in the same folder swallows the
 # note meant for someone else. Measured 11 Sep: this session, sitting at 213k, ate the
@@ -1895,9 +1904,43 @@ def cmd_size():
             "'afk off' when you are at the console again - both work, and so does any "
             "other phrase in AWAY_OFF.")}))
         return
+    back = ""
     if toggled is False:
-        print(json.dumps({"systemMessage": "Away mode OFF - normal handoff prompts are back."}))
-        return
+        # MEASURED 20-21 Sep 2026, session 69ba63cb. This branch used to print and RETURN,
+        # so the size check below never ran on the un-mute turn - the one turn whose whole
+        # job is to re-arm the alarm was the one turn structurally guaranteed not to sound
+        # it. His log is the proof: every other turn that night wrote a "size: ctx=..."
+        # line and 00:19:34 wrote none at all. He came back to a 227k chat, said "afk off",
+        # and was told nothing.
+        #
+        # Clearing the watermark matters just as much. While away, cmd_size runs the WHOLE
+        # path - only steps 3 and 4 of the instruction change - so `st["warned_ctx"] = ctx`
+        # ran on warnings that were SILENT to him, and the mark reached 290,007. Coming
+        # back cancels that debt: he cannot have been nagged by something he was never
+        # shown.
+        back = "Away mode OFF - normal handoff prompts are back."
+        st = load_state(sid)
+        if st.get("warned_ctx") or st.get("warned_at"):
+            st["warned_ctx"] = 0
+            st.pop("warned_at", None)
+            save_state(sid, st)
+            log("away: cleared - dropped a watermark spent on warnings he never saw")
+    out = _size_check(d, sid)
+    if back:
+        # ONE json object per run is the hook contract, and it is not a style point:
+        # everything that reads this output json.loads() the WHOLE of stdout, so a branch
+        # which prints a second time reads as silence. Merge; never print twice.
+        out = out or {}
+        out["systemMessage"] = (back + " " + (out.get("systemMessage") or "")).strip()
+    if out:
+        print(json.dumps(out))
+
+
+def _size_check(d, sid):
+    """The size check proper. RETURNS the hook's json object, or None when it has nothing
+    to say. It deliberately does not print: a caller with its own line to add - coming back
+    from away is the one that exists - has to merge the two into the single object the hook
+    contract allows."""
     path = find_transcript(sid, d.get("transcript_path"))
     if not path:
         path = virtual_transcript(d, sid)
@@ -1928,12 +1971,11 @@ def cmd_size():
             # ...and the memory that belongs to the thread he just named. This is
             # the only call site: it rides the pickup turn, never every turn.
             hand += label_memory_index(d.get("prompt") or "")
-            print(json.dumps({
+            return {
                 "hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": hand},
                 "systemMessage": with_away(
                     "Picked up the handoff note from your last chat.", sid, st, ctx),
-            }))
-            return
+            }
         if hand and not st.get("menu_shown"):
             # the menu: several threads waiting, his message named none. It consumes
             # NOTHING, so the slot stays open and the label still works next turn.
@@ -1941,12 +1983,11 @@ def cmd_size():
             # ten turns later still lands.
             st["menu_shown"] = True
             save_state(sid, st)
-            print(json.dumps({
+            return {
                 "hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": hand},
                 "systemMessage": with_away(
                     "Saved threads are waiting in this folder.", sid, st, ctx),
-            }))
-            return
+            }
     elif waiting_notes(path):
         log("size: note left for a fresher chat (ctx=%d, own=%.1fMB, took=%s)"
             % (ctx, own_bytes / 1e6, st.get("took_handoff")))
@@ -1963,8 +2004,7 @@ def cmd_size():
     # permanent, so the next small chat he opens tells him anyway.
     notice = away_notice(sid, st, ctx)
     if notice:
-        print(json.dumps({"systemMessage": notice}))
-        return
+        return {"systemMessage": notice}
 
     last = st.get("warned_ctx", 0) or st.get("warned_at", 0)   # migrate pre-fix state
     if ctx < LEVELS[0][0]:
@@ -1977,7 +2017,20 @@ def cmd_size():
             log("size: ctx=" + str(ctx) + " - back under the floor, re-armed")
         else:
             log("size: ctx=" + str(ctx) + " level=None")
-        return
+        return None
+    if last and ctx <= last - COMPACTION_DROP:
+        # A fall this large cannot happen inside one epoch, so the history was summarised
+        # and the high-water mark describes a chat that no longer exists. Without this the
+        # mark survives the compaction, and whenever last + REWARN_STEP lands above the
+        # auto-compact point the chat is muted for the rest of its life. This is the same
+        # permanent silence the REWARN_STEP comment above describes for session 143f0320,
+        # arriving through a different door.
+        log("size: ctx=" + str(ctx) + " fell " + str((last - ctx) // 1000)
+            + "k below last=" + str(last) + " - compacted, re-armed")
+        last = 0
+        st["warned_ctx"] = 0
+        st.pop("warned_at", None)
+        save_state(sid, st)
     level = LEVELS[0]
     for threshold, word in LEVELS:
         if ctx >= threshold:
@@ -1992,7 +2045,7 @@ def cmd_size():
     log("size: ctx=" + str(ctx) + " level=" + str(level[0]) + " last=" + str(last)
         + " due=" + str(due) + (" DROPPED-CLEAR@" + dropped if dropped else ""))
     if not due:
-        return                      # warned recently and it has barely grown - do not nag
+        return None                 # warned recently and it has barely grown - do not nag
     st["warned_ctx"] = ctx
     st.pop("warned_at", None)
     if dropped:
@@ -2090,7 +2143,7 @@ def cmd_size():
         # cannot act on. The guidance above still orders the save either way, so dropping
         # this costs nothing but the nagging - which is exactly what he asked for.
         out["systemMessage"] = msg + " Claude is saving a handoff note now - nothing will be lost."
-    print(json.dumps(out))
+    return out
 
 
 def cmd_reread():

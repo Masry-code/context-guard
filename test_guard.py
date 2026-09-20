@@ -2421,6 +2421,175 @@ def test_the_ceiling_still_saves_while_away():
 
 
 # ---------------------------------------------------------------------------
+# THE AFK-OFF BUG, measured 20-21 Sep 2026 on his own session 69ba63cb.
+#
+# He said "afk off" in a chat sitting at 227k and was told nothing at all. Two
+# independent defects, and they compound into permanent silence:
+#
+#   1. the branch that clears away mode PRINTED AND RETURNED, so the size check
+#      below it never ran on the one turn whose whole job is to re-arm the alarm.
+#      His log proves it: every other turn that night wrote a "size: ctx=..."
+#      line and the un-mute turn wrote none at all.
+#   2. warnings fired WHILE away still moved warned_ctx - they were silent to
+#      him, but they spent the watermark, reaching 290007. A compaction then
+#      dropped that chat from 290k to 204k, which is nowhere near the 100k
+#      re-arm floor, so the mark survived the compaction. due then needed
+#      330007 while auto-compact fires at 318500: that chat could never warn
+#      again, and never did.
+#
+# Each test below isolates ONE defect and pins it against a CONTROL run rather
+# than against a sentence, so neither can be satisfied by rewording a message.
+
+
+def seed_state(home, sid, **kw):
+    """Plant per-session state the way a previous turn would have left it."""
+    p = os.path.join(home, ".claude", "context-guard", sid[:40] + ".json")
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump(kw, f)
+    return p
+
+
+def read_state(home, sid):
+    p = os.path.join(home, ".claude", "context-guard", sid[:40] + ".json")
+    try:
+        with open(p, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def one_json(proc):
+    """The hook contract is ONE json object on stdout. sysmsg() and context_of() both
+    json.loads() the WHOLE of stdout, so a branch that prints twice is indistinguishable
+    from a branch that said nothing. A fix that falls through by simply printing again
+    would pass a "did it warn" assertion in isolation and be invisible to him in real
+    life; this is the check that catches it."""
+    out = (proc.stdout or "").strip()
+    if not out:
+        return False
+    try:
+        json.loads(out)
+        return True
+    except Exception:
+        return False
+
+
+def test_coming_back_from_away_re_arms_on_that_same_turn():
+    """DEFECT 1. The un-mute turn must be able to warn, because it is the turn he is
+    standing there for. Pinned against a CONTROL: the same chat, same size, at the
+    console, must produce a warning - and the un-mute turn must carry that SAME warning
+    plus the away-off confirmation. Asserting the control's sentence is a substring of
+    the un-mute turn's means neither can be reworded out of agreement."""
+    home = make_home({})
+    try:
+        write_big_chat(home, "awayctl", time.time() - 3600, 250_000)
+        c = run(home, "awayctl", "carry on with the build")
+        expect_clean(c, "away-off-warns/control")
+        control = sysmsg(c)
+        check("away-off-warns: CONTROL - at the console this chat really does warn",
+              bool(control), repr((c.stdout or "")[:200]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+    home = make_home({})
+    try:
+        write_big_chat(home, "awayoff", time.time() - 3600, 250_000)
+        arm_away(home)
+        p = run(home, "awayoff", "afk off")
+        expect_clean(p, "away-off-warns")
+        check("away-off-warns: stdout is ONE json object",
+              one_json(p), repr((p.stdout or "")[:200]))
+        check("away-off-warns: he is still told away mode is off",
+              "away mode off" in sysmsg(p).lower(), repr(sysmsg(p)[:200]))
+        check("away-off-warns: the SAME turn carries the control's warning too",
+              control and control in sysmsg(p), repr(sysmsg(p)[:300]))
+        check("away-off-warns: and that turn orders the note",
+              "handoff note" in context_of(p).lower(), repr(context_of(p)[:200]))
+        check("away-off-warns: away mode really is off afterwards",
+              not os.path.exists(away_flag(home)), away_flag(home))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_a_watermark_spent_while_away_does_not_mute_the_chat_forever():
+    """DEFECT 1, the other half. Warnings that fired while he was away were never shown
+    to him, but they still moved warned_ctx. Coming back must clear that debt, or he is
+    silently charged for warnings he never received. Pinned on the STATE, not on prose."""
+    home = make_home({})
+    try:
+        write_big_chat(home, "awaydebt", time.time() - 3600, 250_000)
+        arm_away(home)
+        seed_state(home, "awaydebt", warned_ctx=290_007)
+        p = run(home, "awaydebt", "afk off")
+        expect_clean(p, "away-debt")
+        st = read_state(home, "awaydebt")
+        check("away-debt: the watermark he never saw is not still sitting at 290007",
+              st.get("warned_ctx") != 290_007, repr(st))
+        check("away-debt: and the un-mute turn was not silenced by it",
+              bool(sysmsg(p)), repr((p.stdout or "")[:200]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_a_compaction_re_arms_the_warning_even_far_above_the_floor():
+    """DEFECT 2, and it bites chats that never touched away mode. Context only grows
+    within an epoch, so a large DROP can only mean the history was summarised - the
+    high-water mark no longer describes this chat. The old code re-armed only below the
+    100k floor, and his real compaction landed at 204k.
+
+    Pinned against a CONTROL at the same size with no history, because the question is
+    not "does it say something" but "does a compacted chat behave like the fresh chat it
+    now resembles". 290007 -> 203980 are his real numbers."""
+    home = make_home({})
+    try:
+        write_big_chat(home, "compctl", time.time() - 3600, 203_980)
+        c = run(home, "compctl", "carry on")
+        expect_clean(c, "compaction-rearm/control")
+        control = sysmsg(c)
+        check("compaction-rearm: CONTROL - a chat this size with no history warns",
+              bool(control), repr((c.stdout or "")[:200]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+    home = make_home({})
+    try:
+        write_big_chat(home, "compacted", time.time() - 3600, 203_980)
+        seed_state(home, "compacted", warned_ctx=290_007)
+        p = run(home, "compacted", "carry on")
+        expect_clean(p, "compaction-rearm")
+        check("compaction-rearm: the compacted chat says what the fresh one says",
+              control and control in sysmsg(p), repr(sysmsg(p)[:300]))
+        check("compaction-rearm: and the stale high-water mark is gone",
+              read_state(home, "compacted").get("warned_ctx") != 290_007,
+              repr(read_state(home, "compacted")))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_growth_within_one_epoch_is_still_not_a_compaction():
+    """The other half of defect 2, and the reason it is a threshold and not `ctx < last`.
+    A chat that has warned and then grown a little must STAY quiet - re-arming on every
+    small wobble would turn the guard back into the nagging it exists to replace. His
+    words, 19 Sep: the indicator is once per chat, "every turn would be the very nagging
+    away mode exists to stop"."""
+    home = make_home({})
+    try:
+        write_big_chat(home, "epoch", time.time() - 3600, 252_000)
+        seed_state(home, "epoch", warned_ctx=250_000)
+        p = run(home, "epoch", "carry on")
+        expect_clean(p, "epoch-quiet")
+        check("epoch-quiet: a chat that warned at 250k does not warn again at 252k",
+              sysmsg(p) == "", repr(sysmsg(p)[:200]))
+        check("epoch-quiet: and its watermark is untouched",
+              read_state(home, "epoch").get("warned_ctx") == 250_000,
+              repr(read_state(home, "epoch")))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+
+# ---------------------------------------------------------------------------
 # The auto-stub and the early warning. Both exist because of ONE measured
 # failure, 19 Sep 2026: chat "Context Guard -10" ran for 19 hours, peaked at
 # 132k of context - 38% of the window, nowhere near the 300k ceiling - and so
@@ -3952,7 +4121,11 @@ if __name__ == "__main__":
               test_a_thread_label_hands_back_that_projects_memory_index,
               test_a_label_that_maps_to_no_project_appends_nothing,
               test_a_project_with_no_memory_folder_is_skipped_not_crashed,
-              test_the_project_index_is_not_re_injected_every_turn):
+              test_the_project_index_is_not_re_injected_every_turn,
+              test_coming_back_from_away_re_arms_on_that_same_turn,
+              test_a_watermark_spent_while_away_does_not_mute_the_chat_forever,
+              test_a_compaction_re_arms_the_warning_even_far_above_the_floor,
+              test_growth_within_one_epoch_is_still_not_a_compaction):
         print(t.__name__)
         t()
     print()
