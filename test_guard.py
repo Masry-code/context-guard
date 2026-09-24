@@ -1290,8 +1290,76 @@ def test_pickup_renames_the_chat_to_its_own_number():
         check("pickup/rename: delivered the note", "body-CONTEXTGUARD" in ctx, repr(ctx[:160]))
         check("pickup/rename: tells Claude to retitle this session",
               "set_session_title" in ctx, repr(ctx[:400]))
-        check("pickup/rename: says the new chat takes the NEXT number",
-              "one higher" in ctx or "increased by one" in ctx, repr(ctx[:400]))
+        check("pickup/rename: the title to set IS the label on the note, as it is",
+              rename_title(ctx) == "context guard", repr(rename_title(ctx)))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def rename_title(ctx):
+    """The title the pickup tells Claude to set: the first quoted string after 'self' in the
+    set_session_title instruction. Read out of the instruction itself, so a test compares the
+    title Claude will actually type against the label - agreement, never prose."""
+    m = re.search(r"set_session_title[^']*'self'[^']*'([^']*)'", ctx or "")
+    return m.group(1) if m else None
+
+
+NOTE_MANGO = ("HANDOFF LABEL: Mango -4 (1 Jan)" + chr(10) + "WRITTEN BY: Mango -3 (1 Jan)"
+              + chr(10) * 2 + "body-MANGO" + chr(10))
+
+
+def test_the_title_is_the_label_as_it_is():
+    """His words, 24 Sep 2026: "do 2" - yes to item 2 of chat -25's list, which read "The
+    renaming rule says 'take the note's label and add one', but the label already is the
+    next number". The chat that WRITES a note raises the number when it names the label, so
+    the chat that picks it up must copy the label as it is. Read literally, the old wording
+    named chat -25 as -26 and skipped a number in his sidebar; -25 only caught it by checking
+    the chain (WRITTEN BY -24, label -25, he typed -25) instead of the prose. The pickup now
+    prints the exact title, so there is no arithmetic left to get wrong."""
+    for prompt in ("Mango -4 (1 Jan)", "mango", "carry on"):
+        home = make_home({KEY + ".aaaaaaaa.md": NOTE_MANGO})
+        try:
+            p = run(home, "eeeeeeee-new", prompt)
+            ctx = context_of(p)
+            expect_clean(p, "title/as-is " + repr(prompt))
+            check("title/as-is: delivered the note for " + repr(prompt),
+                  "body-MANGO" in ctx, repr(ctx[:160]))
+            check("title/as-is: the title to set is the label, for " + repr(prompt),
+                  rename_title(ctx) == "Mango -4 (1 Jan)", repr(rename_title(ctx)))
+            check("title/as-is: the next number up appears nowhere, for " + repr(prompt),
+                  "Mango -5" not in ctx, repr(ctx[:600]))
+        finally:
+            shutil.rmtree(home, ignore_errors=True)
+
+
+def test_his_typed_number_wins_the_title():
+    """He typed the thread with a DIFFERENT number than the label on the note - chat -24
+    opened that way. His number wins, and the note's date fills in when he leaves his off."""
+    for prompt, want in (("Mango -3 (1 Jan)", "Mango -3 (1 Jan)"), ("mango -6", "Mango -6 (1 Jan)")):
+        home = make_home({KEY + ".aaaaaaaa.md": NOTE_MANGO})
+        try:
+            ctx = context_of(run(home, "ffffffff-new", prompt))
+            check("title/his-number: " + repr(prompt) + " makes the title " + repr(want),
+                  rename_title(ctx) == want, repr(rename_title(ctx)))
+        finally:
+            shutil.rmtree(home, ignore_errors=True)
+
+
+def test_two_threads_each_offer_their_own_label_as_the_title():
+    """Two notes picked up at once: each thread's title is its own label, as it is, and no
+    raised number is invented for either."""
+    home = make_home({KEY + ".aaaaaaaa.md": NOTE_MANGO,
+                      KEY + ".bbbbbbbb.md": "HANDOFF LABEL: Barley -7 (1 Jan)" + chr(10) * 2
+                                            + "body-BARLEY" + chr(10)})
+    try:
+        ctx = context_of(run(home, "abababab-new", "mango and barley"))
+        check("title/two: both notes delivered", "body-MANGO" in ctx and "body-BARLEY" in ctx,
+              repr(ctx[:200]))
+        for label in ("Mango -4 (1 Jan)", "Barley -7 (1 Jan)"):
+            check("title/two: offers " + repr(label) + " as a title, as it is",
+                  "'" + label + "'" in ctx, repr(ctx[:600]))
+        check("title/two: no raised number is invented",
+              "Mango -5" not in ctx and "Barley -8" not in ctx, repr(ctx[:600]))
     finally:
         shutil.rmtree(home, ignore_errors=True)
 
@@ -4108,6 +4176,9 @@ if __name__ == "__main__":
               test_label_number_never_goes_backwards,
               test_ledger_prose_is_not_a_thread,
               test_pickup_renames_the_chat_to_its_own_number,
+              test_the_title_is_the_label_as_it_is,
+              test_his_typed_number_wins_the_title,
+              test_two_threads_each_offer_their_own_label_as_the_title,
               test_a_trailing_zero_usage_record_does_not_read_as_an_empty_chat,
               test_a_big_chat_with_a_zero_trailing_record_does_not_swallow_a_note,
               test_the_ceiling_fires_below_the_point_the_window_auto_compacts,

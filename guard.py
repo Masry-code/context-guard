@@ -1399,6 +1399,48 @@ def split_label_number(label):
     return s[:m.start()].strip(), int(m.group(1))
 
 
+def chat_title(label, prompt=""):
+    """The exact title a chat that picks up this note should give itself.
+
+    The label already IS the next number - the chat that wrote the note raised it when it
+    named the label - so the title is the label as it is. Until 24 Sep 2026 the pickup said
+    "this note's label with its number one higher", and read literally that named chat -25
+    as -26 and skipped a number in his sidebar; -25 only caught it from the chain (WRITTEN
+    BY -24, label -25, he typed -25). Printing the title leaves no arithmetic to get wrong.
+
+    One exception: he typed this thread with a DIFFERENT number. His number wins - chat -24
+    opened that way - and the note's date fills in when he leaves his off."""
+    base, n = split_label_number(label)
+    if not base:
+        return label
+    m = re.search(r"\b" + re.escape(base) + r"\s*-\s*(\d+)\b\s*(\([^)]*\))?",
+                  prompt or "", re.I)
+    if not m or int(m.group(1)) == n:
+        return label
+    d = LABEL_DATE_RE.search(label)
+    date = m.group(2) or (d.group(0).strip() if d else "")
+    return (base + " -" + m.group(1) + " " + date).strip()
+
+
+def rename_instruction(labels, prompt=""):
+    """The end of the pickup's rename sentence: the exact title to set, never arithmetic."""
+    labels = [l for l in labels if l]
+    titles = [chat_title(l, prompt) for l in labels]
+    tail = (" Do NOT add one to it: the chat that wrote the note already raised the number "
+            "when it named the label.")
+    if not titles:
+        return "the HANDOFF LABEL at the top of the note, exactly as it is." + tail
+    if len(titles) > 1:
+        return ("the title of the thread he picks, exactly as it is - "
+                + " or ".join("'" + t + "'" for t in titles) + "." + tail)
+    said = ""
+    if titles[0] != labels[0]:
+        said = (" He typed a different number than the label on the note, which says '"
+                + labels[0] + "'. His number wins - tell him so in half a sentence and offer "
+                "the label on the note back.")
+    return "the title '" + titles[0] + "' - exactly that, as it is." + tail + said
+
+
 def all_notes(transcript_path):
     """Every note this project ever wrote, newest first - live AND .used-* archived."""
     key = project_key(transcript_path)
@@ -1582,9 +1624,8 @@ def pending_handoff(transcript_path, prompt=""):
             "he wants first if there is more than one, and tell him in one line that you have "
             "picked up where things left off. FIRST ACTION, before anything else: rename "
             "THIS chat so he can see the order in his sidebar - call mcp__ccd_session_mgmt__"
-            "set_session_title with session_id 'self' and this note's label with its "
-            "number one higher, keeping the date (a note labelled 'Foo -3 (1 Jan)' makes "
-            "this chat 'Foo -4 (1 Jan)'). The app writes the title from the conversation "
+            "set_session_title with session_id 'self' and " + rename_instruction(picked, prompt)
+            + " The app writes the title from the conversation "
             "and drops the number - measured 17 Sep 2026: he typed 'EGX handover -2 "
             "(17 Sep)' and the chat was titled 'EGX handover' - so nothing else will do "
             "it. If you have no such tool, skip it silently and do not mention it. "
