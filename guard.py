@@ -2436,8 +2436,10 @@ def thread_project(prompt, man):
     ledger: the thread stems are "context guard", "egx handover", "egx bot",
     "streambert apk", "spotliar", "credo calc" - and a prefix match would put
     "egx handover" and "egx bot" in the same project by luck rather than by his review,
-    while landing "sticker-studio" nowhere. Five projects have an EMPTY threads list on
-    purpose: reviewed, and no label has ever named them.
+    while landing "sticker-studio" nowhere. Five projects - salary, taza, bkam,
+    sticker-studio, instagram-viewer - had an EMPTY list until 24 Sep 2026, because no
+    label had ever named them. He asked for them filled anyway ("fix 6"), so the first
+    label any of them is given already fetches its memory.
 
     Number and date come off first, so "EGX bot -3 (20 Sep)" is the same thread as
     "EGX bot" - which is the form he actually types."""
