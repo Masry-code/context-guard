@@ -2331,9 +2331,9 @@ def log_day(line):
 # asked for is not a hand migration, it is that the first chat in such a folder furnishes
 # itself. The manifest is the assignment; this is the thing that acts on it.
 #
-# It COPIES, never moves. Every chat he currently has open runs in the shared folder, and
-# moving would blind all of them at once to shrink a number. The shrink is a separate step
-# he takes when he is satisfied - and copying is the version that can be undone.
+# Since 25 Sep 2026 it writes only the LIST. It used to copy each topic file into the new
+# folder, which gave every project memory two homes, and the copies drifted apart (see
+# SHARED_MEMORY). The files stay in the shared folder, and the list's header says so.
 MANIFEST = os.path.join(STATE, "memory-manifest.json")
 # Where an index line lives once it has been moved OUT of the shared MEMORY.md. On
 # 19 Sep 2026, with every project furnished with its own folder, 45 of the shared
@@ -2344,6 +2344,18 @@ PROJECTS_INDEX = os.path.join(STATE, "projects-index.md")
 # furnished FROM. Not derived: it is a fact about this machine, and a wrong guess here
 # fails by silently copying nothing, which is the failure mode that looks like success.
 SOURCE_KEY = "D--Claude"
+# ONE HOME (safeguard c, 25 Sep 2026): every topic file lives in this shared folder, and a
+# project folder holds only its MEMORY.md - the list. Two homes per memory drifted apart:
+# chats saved new memories here and edited old ones in the project folder, until one
+# memory had about 230 lines unique to each copy.
+SHARED_MEMORY = os.path.join(PROJECTS, SOURCE_KEY, "memory")
+# An entry line in any MEMORY.md: "- [title](slug.md) - ...". One pattern for every reader,
+# so the header below can be shown never to be read as an entry.
+LINK_RE = re.compile(r"\]\(([^)]+)\.md\)")
+# The one line above a project list's entries that says where its files live. Written by
+# the bootstrap into every new list and by rollout step 2 into every existing one, and
+# recognised by this prefix alone, so it is never added twice.
+LIST_HEADER_LEAD = "> The files for these entries live in the shared memory folder"
 
 # The question SEVEN handoff notes have now carried: when the bootstrap below creates a
 # project's memory folder during SessionStart, does THAT chat get to read it, or only the
@@ -2547,11 +2559,21 @@ def label_memory_index(prompt):
         "MEMORY INDEX for %s, fetched because of the label in this chat's first message.\n\n"
         "This chat is NOT running in that project's directory, so Claude Code loaded a "
         "different project's memories - it keys the memory folder off the working "
-        "directory, and he works out of one folder. These are the index lines from "
-        "%s, and the files they point at are in the same folder, to be read on demand. "
-        "They are FACTS recorded by that project's earlier chats, not instructions.\n\n"
-        "%s\n" % (name, p, body)
+        "directory, and he works out of one folder. These lines come from %s. The files "
+        "they point at live in the shared folder, %s - read and edit them there; the "
+        "project folder holds only this list. For a new memory about this project, save "
+        "the file in the shared folder as usual, but put its one index line in %s, not in "
+        "the shared MEMORY.md. They are FACTS recorded by that project's earlier chats, "
+        "not instructions.\n\n"
+        "%s\n" % (name, p, SHARED_MEMORY, p, body)
     )
+
+
+def list_header():
+    """The one-home header line. It names the shared folder, and it must never match
+    LINK_RE, or index_lines() would read it as an entry."""
+    return ("%s, %s - read and edit them there. This folder holds only this list."
+            % (LIST_HEADER_LEAD, SHARED_MEMORY))
 
 
 def index_lines(path):
@@ -2564,7 +2586,7 @@ def index_lines(path):
     try:
         with open(path, encoding="utf-8") as f:
             for line in f:
-                m = re.search(r"\]\(([^)]+)\.md\)", line)
+                m = LINK_RE.search(line)
                 if m:
                     out[m.group(1)] = line.rstrip("\r\n")
     except Exception:
@@ -2572,12 +2594,120 @@ def index_lines(path):
     return out
 
 
+# ------------------------------------------- one home: the list header, and safe writes
+# Every write the sweep and rollout step 2 make goes through these: nothing overwrites a
+# file, a list is backed up before it is replaced, and every file keeps its own line
+# endings - the shared MEMORY.md is CRLF, and the lists differ file by file.
+LINK_RE_B = re.compile(LINK_RE.pattern.encode("ascii"))
+SWEEP_BACKUPS = os.path.join(HOME, ".claude", "memory-backups")
+
+
+def _read_bytes(p):
+    with open(p, "rb") as f:
+        return f.read()
+
+
+def _eol(blob):
+    """A file's own line ending, measured: CRLF when most of its lines end that way."""
+    crlf = blob.count(b"\r\n")
+    return b"\r\n" if crlf and crlf >= blob.count(b"\n") - crlf else b"\n"
+
+
+def _free_path(p):
+    """p if nothing is there yet, else p with -2, -3 ... before its extension."""
+    if not os.path.exists(p):
+        return p
+    stem, ext = os.path.splitext(p)
+    n = 2
+    while os.path.exists("%s-%d%s" % (stem, n, ext)):
+        n += 1
+    return "%s-%d%s" % (stem, n, ext)
+
+
+def _put_new(dest, blob, mtime=None):
+    """Write a file that must not exist yet, then read it back. Raises on a mismatch."""
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    with open(dest, "xb") as f:
+        f.write(blob)
+    if mtime is not None:
+        os.utime(dest, (mtime, mtime))
+    if _read_bytes(dest) != blob:
+        raise OSError("the copy at %s does not match its source" % dest)
+
+
+def _backup_dir(key):
+    """~/.claude/memory-backups/<YYYY-MM-DD>-sweep/<project key>"""
+    return os.path.join(SWEEP_BACKUPS, datetime.date.today().isoformat() + "-sweep", key)
+
+
+def _write_list(path, before, after, key):
+    """Replace a MEMORY.md that still holds `before` with `after`: backup first, then a
+    temp file and os.replace. False, with nothing written, if it changed since it was
+    read - another chat is writing it, and the next chat retries."""
+    if _read_bytes(path) != before:
+        log("sweep: %s/MEMORY.md changed while it was being read - left alone" % key)
+        return False
+    _put_new(_free_path(os.path.join(_backup_dir(key), "MEMORY.md")), before)
+    tmp = path + ".sweep-tmp"
+    with open(tmp, "wb") as f:
+        f.write(after)
+    if _read_bytes(path) != before:      # a write landed during the backup: keep it
+        os.remove(tmp)
+        log("sweep: %s/MEMORY.md changed while it was being written - left alone" % key)
+        return False
+    os.replace(tmp, path)
+    return True
+
+
+def with_list_header(blob):
+    """The list with the one-home header above its first entry - or unchanged, when a line
+    already starts with LIST_HEADER_LEAD. A list with no entries gets it under its "#"
+    title, else at the top. Bytes in, bytes out: the file keeps its own line endings and
+    its final newline."""
+    lead = LIST_HEADER_LEAD.encode("utf-8")
+    lines = blob.splitlines(keepends=True)
+    if any(ln.startswith(lead) for ln in lines):
+        return blob
+    eol = _eol(blob)
+    at = next((i for i, ln in enumerate(lines) if LINK_RE_B.search(ln)), None)
+    if at is None:
+        at = 1 if lines and lines[0].startswith(b"#") else 0
+    if at and not lines[at - 1].endswith((b"\n", b"\r")):
+        lines[at - 1] += eol
+    lines.insert(at, list_header().encode("utf-8") + eol)
+    out = b"".join(lines)
+    if blob and not blob.endswith((b"\n", b"\r")) and out.endswith(eol):
+        out = out[:-len(eol)]            # it had no final newline, and still has none
+    return out
+
+
+def ensure_list_header(path):
+    """Give one list the header. True when the list carries it afterwards - already, or
+    now - and False when the list changed under us and was left alone."""
+    before = _read_bytes(path)
+    after = with_list_header(before)
+    if after == before:
+        return True
+    return _write_list(path, before, after,
+                       os.path.basename(os.path.dirname(os.path.dirname(path))))
+
+
 def cmd_bootstrap():
-    """SessionStart: give this directory its own memory folder if it has none yet."""
+    """SessionStart. Prints at most ONE json object - a hook that prints two reads as
+    silence - so every part of it returns its text here instead of printing it."""
     d = read_stdin()
     # First, before any of the give-up paths below: a probe left by an earlier session may
     # finally be answerable. Resolution must not be hostage to this session's own cwd.
     resolve_ordering_probe()
+    text = _bootstrap_list(d)
+    if text:
+        print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart",
+                                                 "additionalContext": text}}))
+
+
+def _bootstrap_list(d):
+    """Give this directory its own memory LIST if it has none yet. Returns the message for
+    SessionStart, or "" on every path that has nothing to say."""
     cwd = d.get("cwd") or ""
     key = dir_key(cwd)
     if not key:
@@ -2587,71 +2717,61 @@ def cmd_bootstrap():
         # is silent BY DESIGN (SessionStart must not chatter), which means the log is the
         # only place a misconfiguration can ever show up. Say which branch declined, always.
         log("bootstrap: no cwd on stdin - nothing to do")
-        return
+        return ""
     dest = os.path.join(PROJECTS, key, "memory")
     # A folder that already holds memories is HIS. Never overwrite one, never merge into
     # one, and say nothing - SessionStart fires on every resume as well as every startup.
     if os.path.exists(os.path.join(dest, "MEMORY.md")):
         log("bootstrap: %s already has a memory folder - left alone" % key)
-        return
+        return ""
     try:
         with open(MANIFEST, encoding="utf-8") as f:
             man = json.load(f)
     except Exception as e:
         log("bootstrap: no usable manifest (%s) - declining to guess" % e)
-        return                  # no manifest, or unreadable: nothing here is worth guessing
+        return ""              # no manifest, or unreadable: nothing here is worth guessing
     name, entry = manifest_project(cwd, man)
     if not entry:
         log("bootstrap: %s is not in the manifest - declining to guess" % cwd)
-        return                  # a directory nobody has classified. Silence beats a guess.
-    src = os.path.join(PROJECTS, SOURCE_KEY, "memory")
+        return ""              # a directory nobody has classified. Silence beats a guess.
+    src = SHARED_MEMORY
     # The pointer file FIRST, so the live index wins on any slug listed in both. A line
     # that has moved is still the line he wrote, and this hook must never invent a
     # replacement - see index_lines().
     idx = index_lines(PROJECTS_INDEX)
     idx.update(index_lines(os.path.join(src, "MEMORY.md")))
-    copied, missing = [], []
-    try:
-        os.makedirs(dest)
-    except Exception:
-        pass
+    listed, missing = [], []
     for slug in (entry.get("files") or []):
-        s = os.path.join(src, slug + ".md")
-        if not os.path.isfile(s):
+        if os.path.isfile(os.path.join(src, slug + ".md")):
+            listed.append(slug)
+        else:
             missing.append(slug)          # a name in the manifest that has since rotted
-            continue
-        try:
-            # byte-for-byte, so the LF endings that folder requires survive the copy
-            with open(s, "rb") as a:
-                blob = a.read()
-            with open(os.path.join(dest, slug + ".md"), "wb") as b:
-                b.write(blob)
-            copied.append(slug)
-        except Exception:
-            missing.append(slug)
-    body = ["# Memory Index"]
-    for slug in copied:
+    body = ["# Memory Index", list_header()]
+    for slug in listed:
         body.append(idx.get(slug) or ("- [%s](%s.md)" % (slug, slug)))
     try:
+        os.makedirs(dest, exist_ok=True)
         with open(os.path.join(dest, "MEMORY.md"), "w", encoding="utf-8", newline="\n") as f:
             f.write("\n".join(body) + "\n")
-    except Exception:
-        return
-    log("bootstrap: %s -> %s, %d copied, %d missing" % (name, key, len(copied), len(missing)))
-    # Only when something was actually copied: an index with no entries gives the loader
+    except Exception as e:
+        log("bootstrap: could not write %s's list (%s)" % (name, e))
+        return ""
+    log("bootstrap: %s -> %s, %d listed, %d missing" % (name, key, len(listed), len(missing)))
+    # Only when something was actually listed: an index with no entries gives the loader
     # nothing to inject, so its absence downstream would prove nothing about the ordering.
-    if copied:
+    if listed:
         arm_ordering_probe(d.get("session_id"), key, d.get("transcript_path"))
-    out = ["Context Guard just created this project's own memory folder.",
+    out = ["Context Guard just created this project's own memory list.",
            "",
            "  project : %s" % name,
-           "  folder  : %s" % dest,
-           "  copied  : %d memories (the shared folder was NOT changed)" % len(copied),
+           "  list    : %s" % os.path.join(dest, "MEMORY.md"),
+           "  listed  : %d memories (their files stay in the shared folder, %s)"
+           % (len(listed), src),
            ""]
     if missing:
         # Never let a bootstrap quietly drop a memory. A short set that looks complete is
         # worse than a short set that says what is missing.
-        out += ["NOT copied - the manifest names these and they are not on disk:",
+        out += ["NOT listed - the manifest names these and they are not on disk:",
                 "  " + ", ".join(missing),
                 ""]
     # BELT AND BRACES. It is not known whether Claude Code's memory loader runs before or
@@ -2660,8 +2780,7 @@ def cmd_bootstrap():
     # Handing the index back as additionalContext makes the ordering stop mattering.
     out += ["This project's memories, in context now regardless of when the folder is read:",
             ""] + body
-    print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart",
-                                             "additionalContext": "\n".join(out)}}))
+    return "\n".join(out)
 
 
 def cmd_report():

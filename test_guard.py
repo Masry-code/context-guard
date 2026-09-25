@@ -3275,6 +3275,25 @@ def boot_memory(home, key):
     return sorted(os.listdir(d))
 
 
+def boot_listed(home, key):
+    """The slugs that project's MEMORY.md lists, in order - or None if it has no list."""
+    p = os.path.join(home, ".claude", "projects", key, "memory", "MEMORY.md")
+    if not os.path.isfile(p):
+        return None
+    with open(p, encoding="utf-8") as f:
+        return [m.group(1) for m in (re.search(r"\]\(([^)]+)\.md\)", ln) for ln in f) if m]
+
+
+def list_bytes(home, key):
+    """That project's MEMORY.md, byte for byte - or None."""
+    try:
+        with open(os.path.join(home, ".claude", "projects", key, "memory", "MEMORY.md"),
+                  "rb") as f:
+            return f.read()
+    except OSError:
+        return None
+
+
 def test_the_project_key_matches_the_ones_claude_code_actually_made():
     """The folder name is the ONE thing that cannot be a near miss.
 
@@ -3311,8 +3330,9 @@ def test_bootstrap_furnishes_a_fresh_directory():
         expect_clean(p, "bootstrap/fresh")
         got = boot_memory(home, "D--AI-Projects-Taza")
         check("bootstrap/fresh: the folder was created", got is not None, str(got))
-        check("bootstrap/fresh: the memory file came with it",
-              got is not None and "food-expiry-scanner-app.md" in got, str(got))
+        check("bootstrap/fresh: its memory is listed, and its file stays shared",
+              "food-expiry-scanner-app" in (boot_listed(home, "D--AI-Projects-Taza") or [])
+              and got is not None and "food-expiry-scanner-app.md" not in got, str(got))
         check("bootstrap/fresh: an index was written",
               got is not None and "MEMORY.md" in got, str(got))
         if got:
@@ -3330,7 +3350,7 @@ def test_bootstrap_gives_the_new_folder_only_its_own_memories():
     home = make_boot_home()
     try:
         boot(home, r"D:\AI Projects\Taza")
-        got = boot_memory(home, "D--AI-Projects-Taza") or []
+        got = [s + ".md" for s in (boot_listed(home, "D--AI-Projects-Taza") or [])]
         # POSITIVE CONTROL. Every other check here asserts an ABSENCE, and an absence is
         # trivially true while the feature does not exist at all - that is how a no-op
         # step reports green. This one line makes the test able to fail.
@@ -3368,24 +3388,24 @@ def test_bootstrap_puts_the_new_index_in_context_on_the_same_turn():
         shutil.rmtree(home, ignore_errors=True)
 
 
-def test_bootstrap_copies_rather_than_moves():
-    """Copy is reversible, move is not, and every existing chat runs in the shared folder.
-
-    Moving would shrink D--Claude today and blind every chat he has open. The shrink is
-    a separate, explicit step he takes when he is satisfied - not a side effect of
-    opening a chat somewhere."""
+def test_bootstrap_lists_rather_than_copies():
+    """ONE HOME: the new folder gets a list and never a copy, and the shared folder -
+    where every chat he has open reads and saves - is not touched at all."""
     home = make_boot_home()
     try:
         boot(home, r"D:\AI Projects\Taza")
         src = os.path.join(home, ".claude", "projects", KEY, "memory")
         left = sorted(os.listdir(src))
         # POSITIVE CONTROL - "the source still has it" is also true when nothing ran.
-        check("bootstrap/copy: the destination got a copy",
-              "food-expiry-scanner-app.md" in (boot_memory(home, "D--AI-Projects-Taza") or []),
+        check("bootstrap/list: the destination lists it",
+              "food-expiry-scanner-app" in (boot_listed(home, "D--AI-Projects-Taza") or []),
+              str(boot_listed(home, "D--AI-Projects-Taza")))
+        check("bootstrap/list: and holds no copy of it",
+              boot_memory(home, "D--AI-Projects-Taza") == ["MEMORY.md"],
               str(boot_memory(home, "D--AI-Projects-Taza")))
-        check("bootstrap/copy: the shared folder still has every file",
+        check("bootstrap/list: the shared folder still has every file",
               all(n + ".md" in left for n in BOOT_FILES), str(left))
-        check("bootstrap/copy: the shared index is untouched",
+        check("bootstrap/list: the shared index is untouched",
               open(os.path.join(src, "MEMORY.md"), encoding="utf-8").read() == BOOT_INDEX)
     finally:
         shutil.rmtree(home, ignore_errors=True)
@@ -3411,8 +3431,8 @@ def test_bootstrap_never_overwrites_an_existing_memory_folder():
         # furnished. Without this the whole test passes against a feature that is dead.
         boot(home, r"D:\AI Projects\StreamBERT APK", sid="boot0009")
         check("bootstrap/no-clobber: control - a fresh folder IS still furnished",
-              "streambert-pc-port.md" in (boot_memory(home, "D--AI-Projects-StreamBERT-APK") or []),
-              str(boot_memory(home, "D--AI-Projects-StreamBERT-APK")))
+              "streambert-pc-port" in (boot_listed(home, "D--AI-Projects-StreamBERT-APK") or []),
+              str(boot_listed(home, "D--AI-Projects-StreamBERT-APK")))
     finally:
         shutil.rmtree(home, ignore_errors=True)
 
@@ -3423,13 +3443,16 @@ def test_bootstrap_is_idempotent():
     try:
         boot(home, r"D:\AI Projects\Taza", sid="boot0001")
         first = boot_memory(home, "D--AI-Projects-Taza")
+        first_list = list_bytes(home, "D--AI-Projects-Taza")
         # POSITIVE CONTROL - "unchanged" is trivially true when the first run did nothing.
         check("bootstrap/idempotent: the first run actually furnished it",
-              first is not None and "food-expiry-scanner-app.md" in first, str(first))
+              "food-expiry-scanner-app" in (boot_listed(home, "D--AI-Projects-Taza") or []),
+              str(first))
         p2 = boot(home, r"D:\AI Projects\Taza", sid="boot0002")
         expect_clean(p2, "bootstrap/idempotent")
         check("bootstrap/idempotent: the folder is unchanged",
-              boot_memory(home, "D--AI-Projects-Taza") == first, str(first))
+              boot_memory(home, "D--AI-Projects-Taza") == first
+              and list_bytes(home, "D--AI-Projects-Taza") == first_list, str(first))
         check("bootstrap/idempotent: the second run is silent",
               not context_of(p2).strip(), repr(context_of(p2)[:120]))
     finally:
@@ -3444,8 +3467,8 @@ def test_bootstrap_ignores_a_directory_the_manifest_does_not_know():
         # it declines to guess. A control that cannot fire makes the finding meaningless.
         boot(home, r"D:\AI Projects\Taza", sid="boot0008")
         check("bootstrap/unknown: control - a known folder IS furnished",
-              "food-expiry-scanner-app.md" in (boot_memory(home, "D--AI-Projects-Taza") or []),
-              str(boot_memory(home, "D--AI-Projects-Taza")))
+              "food-expiry-scanner-app" in (boot_listed(home, "D--AI-Projects-Taza") or []),
+              str(boot_listed(home, "D--AI-Projects-Taza")))
         p = boot(home, r"D:\AI Projects\Something Brand New")
         expect_clean(p, "bootstrap/unknown")
         check("bootstrap/unknown: no folder invented",
@@ -3463,7 +3486,7 @@ def test_bootstrap_matches_an_also_directory():
     try:
         p = boot(home, r"D:\AI Projects\StreamBERT PC")
         expect_clean(p, "bootstrap/also")
-        got = boot_memory(home, "D--AI-Projects-StreamBERT-PC") or []
+        got = [s + ".md" for s in (boot_listed(home, "D--AI-Projects-StreamBERT-PC") or [])]
         check("bootstrap/also: the alias folder was furnished too",
               "streambert-pc-port.md" in got and "youtubedl-android-traps.md" in got, str(got))
     finally:
@@ -3484,6 +3507,36 @@ def test_bootstrap_survives_a_manifest_entry_with_no_file_on_disk():
         ctx = context_of(p)
         check("bootstrap/missing-file: it says which name it could not find",
               "food-expiry-scanner-app" in ctx, repr(ctx[:300]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_bootstrap_writes_only_the_list_with_the_header():
+    """ONE HOME, 25 Sep 2026: a new project folder gets its MEMORY.md and nothing else.
+    Copying the topic files in gave every project memory two homes, and they drifted.
+    The list carries every manifest slug the shared folder has, and one header line above
+    the entries names the shared folder as the place the files live."""
+    home = make_boot_home()
+    try:
+        p = boot(home, r"D:\AI Projects\StreamBERT APK")
+        expect_clean(p, "bootstrap/list-only")
+        key = "D--AI-Projects-StreamBERT-APK"
+        shared = os.path.join(home, ".claude", "projects", KEY, "memory")
+        check("bootstrap/list-only: the folder holds only its list",
+              boot_memory(home, key) == ["MEMORY.md"], str(boot_memory(home, key)))
+        check("bootstrap/list-only: it lists every manifest slug, in manifest order",
+              boot_listed(home, key) == ["streambert-pc-port", "youtubedl-android-traps"],
+              str(boot_listed(home, key)))
+        lines = (list_bytes(home, key) or b"").decode("utf-8").splitlines()
+        heads = [i for i, ln in enumerate(lines) if shared in ln]
+        first = next((i for i, ln in enumerate(lines) if re.search(r"\]\([^)]+\.md\)", ln)), -1)
+        check("bootstrap/list-only: exactly one line names the shared folder",
+              len(heads) == 1, repr(lines[:4]))
+        check("bootstrap/list-only: and it sits above the first entry",
+              len(heads) == 1 and 0 <= heads[0] < first, repr(lines[:4]))
+        check("bootstrap/list-only: the shared folder still has every file",
+              all(os.path.isfile(os.path.join(shared, n + ".md")) for n in BOOT_FILES),
+              str(sorted(os.listdir(shared))))
     finally:
         shutil.rmtree(home, ignore_errors=True)
 
@@ -4214,6 +4267,223 @@ def test_the_project_index_is_not_re_injected_every_turn():
         shutil.rmtree(home, ignore_errors=True)
 
 
+def test_the_label_fetch_names_the_shared_folder_and_the_project_list():
+    """ONE HOME, 25 Sep 2026. The fetch used to say the files were "in the same folder" as
+    the list, so chats edited the project copies while new memories went to the shared
+    folder, and the two drifted. It must now name BOTH places: the list it read, and the
+    shared folder where every file that list points at lives."""
+    home = make_home({KEY + ".9e19c7ab.md": NOTE_CTX, KEY + ".b0b0b0b0.md": NOTE_EGX})
+    try:
+        write_threads_manifest(home)
+        lst = os.path.join(write_project_index(home, "D--AI-Projects-EgxScannerzBot",
+                                               "# Memory Index\n- [a](b.md) - INDEX-EGX\n"),
+                           "MEMORY.md")
+        shared = os.path.join(home, ".claude", "projects", KEY, "memory")
+        # CONTROL: a label no project claims fetches nothing, so it names neither place.
+        ctl = context_of(run(home, "ee55-label-ctl", "context guard"))
+        check("label-home: control - an unmapped label fetches no index",
+              "INDEX-EGX" not in ctl, repr(ctl[-300:]))
+        check("label-home: control - and names no shared folder", shared not in ctl,
+              repr(ctl[-300:]))
+        p = run(home, "ee55-label-home", "EGX bot")
+        ctx = context_of(p)
+        expect_clean(p, "label-home")
+        check("label-home: the index arrived", "INDEX-EGX" in ctx, repr(ctx[-400:]))
+        check("label-home: it names the project list it read", lst in ctx, repr(ctx[-600:]))
+        check("label-home: it names the shared folder the files live in", shared in ctx,
+              repr(ctx[-600:]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+# ---------------------------------------------- one home: the list header and the sweep
+# His rule, 25 Sep 2026: "make sure moving forward all chats saves the memories in the
+# correct folder or at least move them when possible at the start of chat with a hook".
+# Every topic file lives in the shared folder and a project folder holds only its list;
+# the sweep tidies strays home at the start of every chat and never deletes anything.
+
+SWEEP_OLD = 3600          # an hour old: well past the sweep's ten-minute settle time
+ALPHA, BETA = "D--Work-Alpha", "D--Work-Beta"
+SWEEP_MANIFEST = {
+    "projects": {
+        "alpha": {"dir": "D:\\Work\\Alpha", "also": [], "threads": ["alpha"],
+                  "files": ["alpha-notes"]},
+        "beta": {"dir": "D:\\Work\\Beta", "also": [], "threads": ["beta"],
+                 "files": ["beta-notes"]},
+    },
+}
+
+
+def make_sweep_home(manifest=None):
+    """A fake ~ with an empty shared memory folder, the state folder and a manifest."""
+    home = tempfile.mkdtemp(prefix="guardsweep-")
+    for parts in (("projects", KEY, "memory"), ("context-guard",), ("handoff",)):
+        os.makedirs(os.path.join(home, ".claude", *parts))
+    with open(os.path.join(home, ".claude", "context-guard", "memory-manifest.json"),
+              "w", encoding="utf-8") as f:
+        json.dump(SWEEP_MANIFEST if manifest is None else manifest, f)
+    return home
+
+
+def memory_folder(home, key):
+    return os.path.join(home, ".claude", "projects", key, "memory")
+
+
+def memory_text(slug, body, modified="2026-09-01"):
+    """A topic file the way auto-memory writes one, frontmatter and all."""
+    return ("---\nname: %s\ndescription: about %s\nmodified: %s\n---\n\n%s\n"
+            % (slug, slug, modified, body))
+
+
+def index_entry(slug):
+    return "- [%s](%s.md) - about %s" % (slug, slug, slug)
+
+
+def plant(home, key, name, text, age=SWEEP_OLD, eol="\n"):
+    """Write one file into a memory folder, `age` seconds old. Returns its path."""
+    p = os.path.join(memory_folder(home, key), name)
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    with open(p, "wb") as f:
+        f.write(text.replace("\n", eol).encode("utf-8"))
+    t = time.time() - age
+    os.utime(p, (t, t))
+    return p
+
+
+def raw_bytes(p):
+    try:
+        with open(p, "rb") as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+def sweep_backups(home, key, name):
+    """Every backup of `name` (or a -N variant of it) under that key, on any day."""
+    root = os.path.join(home, ".claude", "memory-backups")
+    stem, ext = os.path.splitext(name)
+    pat = re.compile(re.escape(stem) + r"(-\d+)?" + re.escape(ext) + "$")
+    found = []
+    for day in (sorted(os.listdir(root)) if os.path.isdir(root) else []):
+        d = os.path.join(root, day, key)
+        found += [os.path.join(d, f) for f in (sorted(os.listdir(d)) if os.path.isdir(d) else [])
+                  if pat.match(f)]
+    return found
+
+
+def guard_call(home, code):
+    """Run `code` after `import guard` in a CHILD process pointed at the throwaway home -
+    never in this one, which must not be able to reach the real ~ (see guard_constant).
+    For the functions guard.py has no command for, and for injecting a fault."""
+    env = child_env(home)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
+    pre = "import sys; sys.path.insert(0, %r); import guard\n" % os.path.dirname(GUARD)
+    return subprocess.run([sys.executable, "-c", pre + code], capture_output=True,
+                          text=True, encoding="utf-8", env=env)
+
+
+def header_of(home):
+    """The header line exactly as guard.py writes it for this home."""
+    return guard_call(home, "print(guard.list_header())").stdout.strip()
+
+
+def plant_list(home, key, lines, head, eol="\n", age=SWEEP_OLD):
+    """A project list: its title, then `head` (the header line, "" for none), then lines."""
+    body = ["# Memory Index"] + ([head] if head else []) + list(lines)
+    return plant(home, key, "MEMORY.md", "\n".join(body) + "\n", age=age, eol=eol)
+
+
+def run_sweep(home, sid="sweep001"):
+    """SessionStart from the shared folder's own directory. The bootstrap does nothing
+    there - that folder already has its list, or SWEEP_MANIFEST does not name D:/Claude -
+    so whatever the hook does or says here is the sweep's."""
+    return boot(home, CWD, sid)
+
+
+def test_the_header_goes_into_an_existing_list_once_and_keeps_its_endings():
+    """Rollout step 2 gives every existing project list the header: once, above the first
+    entry, in the file's own line endings and final-newline state, backing the old list up
+    first - and never in a form index_lines() would read as an entry."""
+    home = make_sweep_home()
+    try:
+        shared = memory_folder(home, KEY).encode("utf-8")
+        a = plant(home, ALPHA, "MEMORY.md",
+                  "# Memory Index\n%s\n" % index_entry("alpha-notes"), eol="\r\n")
+        b = plant(home, BETA, "MEMORY.md", "# Memory Index\n%s" % index_entry("beta-notes"))
+        old_a, old_b = raw_bytes(a), raw_bytes(b)
+        call = "print([guard.ensure_list_header(p) for p in %r])" % ([a, b],)
+        p1 = guard_call(home, call)
+        new_a, new_b = raw_bytes(a), raw_bytes(b)
+        p2 = guard_call(home, call)
+        idx = guard_call(home, "print(sorted(guard.index_lines(%r)) + sorted(guard.index_lines(%r)))"
+                         % (a, b))
+        check("list-header: both calls ran cleanly", p1.returncode == 0 and p2.returncode == 0,
+              (p1.stderr + p2.stderr)[-300:])
+        check("list-header: the first call's stdout is exactly [True, True]",
+              p1.stdout.strip() == "[True, True]", repr(p1.stdout))
+        check("list-header: the first call gave both lists the header",
+              new_a != old_a and new_b != old_b, repr(new_a))
+        check("list-header: a second call changes nothing",
+              (raw_bytes(a), raw_bytes(b)) == (new_a, new_b), repr(raw_bytes(a)))
+        check("list-header: the header is never read as an entry",
+              idx.stdout.strip() == "['alpha-notes', 'beta-notes']",
+              (idx.stdout + idx.stderr)[-300:])
+        for tag, blob, crlf, final in (("crlf", new_a, True, True), ("lf", new_b, False, False)):
+            lines = blob.splitlines()
+            heads = [i for i, ln in enumerate(lines) if shared in ln]
+            first = next((i for i, ln in enumerate(lines) if b".md)" in ln), -1)
+            check("list-header: %s list - one header line, above its entry" % tag,
+                  len(heads) == 1 and heads[0] < first, repr(blob))
+            check("list-header: %s list - its own line endings" % tag,
+                  (blob.count(b"\n") == blob.count(b"\r\n")) if crlf else (b"\r" not in blob),
+                  repr(blob))
+            check("list-header: %s list - its final newline as it was" % tag,
+                  blob.endswith(b"\n") == final, repr(blob[-40:]))
+        check("list-header: the old list was backed up first",
+              [raw_bytes(x) for x in sweep_backups(home, ALPHA, "MEMORY.md")] == [old_a],
+              str(sweep_backups(home, ALPHA, "MEMORY.md")))
+        check("list-header: BETA's old list was backed up too",
+              [raw_bytes(x) for x in sweep_backups(home, BETA, "MEMORY.md")] == [old_b],
+              str(sweep_backups(home, BETA, "MEMORY.md")))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_a_list_that_changes_during_the_write_is_left_alone():
+    """_write_list checks the list against `before` once, before the backup is written - not
+    again right before os.replace swaps the new bytes in. A write that lands in that gap,
+    such as another chat saving a memory, is silently overwritten and lost from both the list
+    and the backup. A second check right before os.replace must catch it instead:
+    ensure_list_header returns False, the late entry stays in the list, and the temp file is
+    removed rather than left behind."""
+    home = make_sweep_home()
+    try:
+        a = plant(home, ALPHA, "MEMORY.md",
+                  "# Memory Index\n%s\n" % index_entry("alpha-notes"), eol="\r\n")
+        old_a = raw_bytes(a)
+        late = b"- [late](late.md) - saved during the write\r\n"
+        code = ("p = %r\n"
+                "real = guard._put_new\n"
+                "def put_new_then_another_chat_saves(dest, blob, mtime=None):\n"
+                "    real(dest, blob, mtime)\n"
+                "    with open(p, 'ab') as f:\n"
+                "        f.write(%r)\n"
+                "guard._put_new = put_new_then_another_chat_saves\n"
+                "print(guard.ensure_list_header(p))\n") % (a, late)
+        p1 = guard_call(home, code)
+        new_a = raw_bytes(a)
+        check("write-race: the call ran cleanly", p1.returncode == 0, p1.stderr[-300:])
+        check("write-race: ensure_list_header returned False",
+              p1.stdout.strip() == "False", p1.stdout + p1.stderr[-300:])
+        check("write-race: the late entry another chat saved is still in the list",
+              new_a == old_a + late, repr(new_a))
+        check("write-race: no MEMORY.md.sweep-tmp is left in the memory folder",
+              not os.path.exists(a + ".sweep-tmp"), str(sorted(os.listdir(os.path.dirname(a)))))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
 if __name__ == "__main__":
     for t in (test_handoff_instruction_demands_memory_consolidation,
               test_handoff_label_gets_the_next_number,
@@ -4331,7 +4601,7 @@ if __name__ == "__main__":
               test_bootstrap_furnishes_a_fresh_directory,
               test_bootstrap_gives_the_new_folder_only_its_own_memories,
               test_bootstrap_puts_the_new_index_in_context_on_the_same_turn,
-              test_bootstrap_copies_rather_than_moves,
+              test_bootstrap_lists_rather_than_copies,
               test_bootstrap_never_overwrites_an_existing_memory_folder,
               test_bootstrap_is_idempotent,
               test_bootstrap_ignores_a_directory_the_manifest_does_not_know,
@@ -4360,7 +4630,11 @@ if __name__ == "__main__":
               test_a_compaction_re_arms_the_warning_even_far_above_the_floor,
               test_growth_within_one_epoch_is_still_not_a_compaction,
               test_the_guidance_forbids_handing_him_a_path_in_both_branches,
-              test_the_note_template_names_the_log_it_is_written_from):
+              test_the_note_template_names_the_log_it_is_written_from,
+              test_the_label_fetch_names_the_shared_folder_and_the_project_list,
+              test_bootstrap_writes_only_the_list_with_the_header,
+              test_the_header_goes_into_an_existing_list_once_and_keeps_its_endings,
+              test_a_list_that_changes_during_the_write_is_left_alone):
         print(t.__name__)
         t()
     print()
