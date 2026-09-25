@@ -153,6 +153,14 @@ AWAY_ON = ("afk", "afk on", "im afk", "i m afk", "afk mode", "going afk",
 # "back" (go back, revert that) would be swallowed as a command he never issued.
 AWAY_OFF = ("back", "im back", "i m back", "afk off", "away off", "afk done",
             "back at the pc", "im at the pc", "i m at the pc", "im here", "i m here")
+# PAUSE, ONE chat. His words, 24 Sep 2026, in "EGX handover -31": "in this chat i need to
+# pause context guard until we finish all the books but keep the creating memories when you
+# can of course please". Every switch above is a FILE and machine-wide; he asked for one
+# chat, so this lives in that chat's own state and dies with it. It silences only the two
+# things that tell a chat to hand off - the size warning and the ceiling. The Stop hook
+# still records his words and still writes the auto-stub, and the memory nag stays armed,
+# because the memories were the part he asked to keep.
+PAUSE_KEY = "paused"
 # --skills scan. A repeat inside ONE chat is somebody iterating; the same shape turning up
 # in several chats is a workflow being re-derived from scratch every time, which is the
 # thing a skill actually fixes. Ranked by runs x distinct chats, his rule from 17 Sep 2026.
@@ -289,6 +297,40 @@ def cmd_checkpoint():
     add_checkpoint(sid, text, ctx)
     log("checkpoint at %d: %s" % (ctx, text))
     print("checkpoint recorded at %dk: %s" % (round(ctx / 1000), text))
+
+
+def cmd_pause():
+    """python guard.py --pause <session-id> [why]   |   python guard.py --resume <session-id>
+
+    Called by Claude from Bash when he asks for it, like --checkpoint. See PAUSE_KEY for
+    what it silences and what it deliberately leaves running."""
+    resume = "--resume" in sys.argv[1:]
+    a = [x for x in sys.argv[1:] if x not in ("--pause", "--resume")]
+    if not a:
+        print("usage: guard.py --pause <session-id> [why]  |  guard.py --resume <session-id>")
+        return
+    sid, why = a[0], " ".join(a[1:]).strip()
+    if not find_transcript(sid, None):
+        # a typo would otherwise "pause" a chat that does not exist, report success, and
+        # leave the real one nagging
+        print("no transcript for session %s - nothing paused or resumed" % sid)
+        return
+    st = load_state(sid)
+    if resume:
+        was = st.pop(PAUSE_KEY, None)
+        if was is None:
+            print("session %s was not paused - nothing to resume" % sid[:8])
+            return
+        save_state(sid, st)
+        log("pause: resumed %s (was %r)" % (sid, was))
+        print("resumed: Context Guard warns chat %s again" % sid[:8])
+        return
+    st[PAUSE_KEY] = {"since": datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+                     "why": why}
+    save_state(sid, st)
+    log("pause: paused %s - %s" % (sid, why))
+    print("paused: no handoff warnings and no ceiling for chat %s; memory saving stays on. "
+          "Undo: guard.py --resume %s" % (sid[:8], sid))
 
 
 def read_stdin():
@@ -1039,6 +1081,8 @@ def ceiling_block(d, path):
     if not sid:
         return False    # handoff_path() with no sid falls back to the LEGACY flat
                         # <KEY>.md name and every chat would look like it had handed off
+    if load_state(sid).get(PAUSE_KEY):
+        return False    # he paused THIS chat - see PAUSE_KEY
     ctx = live_context(path)
     if ctx < CEILING:
         return False
@@ -2047,6 +2091,13 @@ def _size_check(d, sid):
     elif waiting_notes(path):
         log("size: note left for a fresher chat (ctx=%d, own=%.1fMB, took=%s)"
             % (ctx, own_bytes / 1e6, st.get("took_handoff")))
+    paused = st.get(PAUSE_KEY)
+    if paused:
+        # He paused THIS chat (PAUSE_KEY). Everything below is telling - the away indicator
+        # and the warning - so the pickup above still works if he names another thread.
+        log("size: ctx=%d - paused for this chat since %s"
+            % (ctx, paused.get("since", "?") if isinstance(paused, dict) else "?"))
+        return None
     # AWAY INDICATOR. The flag is machine-wide and never expires (he declined auto-expiry
     # and that is NOT revisited here), so a chat inherits it from something he typed in a
     # different window hours earlier. Measured 19 Sep 2026: he armed it at 20:30 and
@@ -2719,6 +2770,8 @@ if __name__ == "__main__":
         cmd_ledger()
     elif "--checkpoint" in a:
         cmd_checkpoint()
+    elif "--pause" in a or "--resume" in a:
+        cmd_pause()
     elif "--skills" in a:
         cmd_skills()
     elif "--attribute" in a:

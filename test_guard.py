@@ -1128,6 +1128,91 @@ REPORT_LOG = chr(10).join([
 ]) + chr(10)
 
 
+# ------------------------------------------------ pause ONE chat, 24 Sep 2026
+def run_pause(home, sid, *why, resume=False):
+    """--pause / --resume are called by Claude from Bash, like --checkpoint: no payload."""
+    return subprocess.run([sys.executable, GUARD, "--resume" if resume else "--pause", sid]
+                          + list(why), capture_output=True, text=True, env=child_env(home))
+
+
+def test_a_paused_chat_is_not_told_to_hand_off():
+    """His words, 24 Sep 2026: "in this chat i need to pause context guard until we finish
+    all the books". The unpaused sibling in the same folder is the control - without it a
+    silent hook proves nothing, and it is also what "this chat only" means."""
+    home = make_home({})
+    try:
+        started = time.time() - 3600
+        write_big_chat(home, "pausedchat", started, 200_000)
+        write_big_chat(home, "otherchat", started, 200_000)
+        p = run_pause(home, "pausedchat", "reading", "the", "books")
+        expect_clean(p, "pause")
+        check("pause: says it paused", "paused" in (p.stdout or ""), repr(p.stdout[:200]))
+        quiet = run(home, "pausedchat", "next book please")
+        loud = run(home, "otherchat", "next book please")
+        expect_clean(quiet, "pause-size")
+        check("pause: the paused chat hears nothing at 200k", (quiet.stdout or "").strip() == "",
+              repr((quiet.stdout or "")[:200]))
+        check("pause: its sibling is still told to hand off",
+              "STOP - THIS CHAT" in context_of(loud), repr(context_of(loud)[:200]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_a_paused_chat_can_close_past_the_ceiling():
+    home = make_home({})
+    try:
+        started = time.time() - 3600
+        write_big_chat(home, "pausedbig", started, 400_000)
+        write_big_chat(home, "otherbig", started, 400_000)
+        run_pause(home, "pausedbig", "reading the books")
+        p = run_stop(home, "pausedbig")
+        expect_clean(p, "pause-ceiling")
+        check("pause-ceiling: the paused chat may close at 400k", blocked(p) == "",
+              repr(blocked(p)[:200]))
+        other = blocked(run_stop(home, "otherbig"))
+        check("pause-ceiling: its sibling is still held", "CEILING" in other, repr(other[:200]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_a_paused_chat_still_gets_the_memory_nag():
+    """"...but keep the creating memories" - the pause must never reach the memory nag."""
+    home = make_home({})
+    try:
+        started = time.time() - 3600
+        write_chat(home, "pausednote", started)
+        run_pause(home, "pausednote", "reading the books")
+        write_note(home, "pausednote")
+        write_memory(home, "old-lesson.md", started - 86400)    # yesterday, not this chat
+        why = blocked(run_stop(home, "pausednote"))
+        check("pause-memory: the memory nag still fires", "SAVED TO MEMORY" in why,
+              repr(why[:200]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_resume_brings_the_warning_back_and_a_typo_pauses_nothing():
+    home = make_home({})
+    try:
+        write_big_chat(home, "resumed", time.time() - 3600, 200_000)
+        run_pause(home, "resumed", "reading")
+        r = run_pause(home, "resumed", resume=True)
+        expect_clean(r, "resume")
+        check("resume: says it resumed", "resumed" in (r.stdout or ""), repr(r.stdout[:200]))
+        back = context_of(run(home, "resumed", "carry on"))
+        check("resume: the warning is back", "STOP - THIS CHAT" in back, repr(back[:200]))
+        again = run_pause(home, "resumed", resume=True)
+        check("resume: twice is harmless and says so", "not paused" in (again.stdout or ""),
+              repr(again.stdout[:200]))
+        bad = run_pause(home, "no-such-chat", "typo")
+        check("pause-typo: refuses a session with no transcript",
+              "nothing paused" in (bad.stdout or ""), repr(bad.stdout[:200]))
+        check("pause-typo: wrote no state for it", not os.path.exists(os.path.join(
+            home, ".claude", "context-guard", "no-such-chat.json")), "state file exists")
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
 def run_report(home, log=REPORT_LOG):
     """log=None runs against whatever is already there - needed by the writes-nothing test,
     since rewriting the log would itself change an mtime and fake a failure."""
@@ -4161,6 +4246,10 @@ if __name__ == "__main__":
               test_the_ceiling_is_satisfied_by_the_note_existing,
               test_the_ceiling_has_an_off_switch,
               test_the_ceiling_gives_up_rather_than_trapping_him,
+              test_a_paused_chat_is_not_told_to_hand_off,
+              test_a_paused_chat_can_close_past_the_ceiling,
+              test_a_paused_chat_still_gets_the_memory_nag,
+              test_resume_brings_the_warning_back_and_a_typo_pauses_nothing,
               test_the_ceiling_does_not_block_a_stop_it_already_blocked,
               test_skills_proposes_a_shape_repeated_across_chats,
               test_skills_ignores_a_shape_repeated_inside_one_chat,
