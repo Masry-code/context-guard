@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <img alt="1255 checks passing" src="https://img.shields.io/badge/checks-1255%20passing-2a78d6">
+  <img alt="1278 checks passing" src="https://img.shields.io/badge/checks-1278%20passing-2a78d6">
   <img alt="Python 3.8+" src="https://img.shields.io/badge/python-3.8%2B-2a78d6">
   <img alt="No dependencies" src="https://img.shields.io/badge/dependencies-none-1baf7a">
   <img alt="Five hooks" src="https://img.shields.io/badge/hooks-5-eda100">
@@ -199,6 +199,12 @@ note, your unfulfilled requests, the traps, the decisions. The `-4` is a running
 the order is visible in your sidebar. Several projects can share a folder; the label is how
 you summon one specifically, and the others stay waiting.
 
+At the console the old chat also drops a chip carrying the label. Tap it and choose
+**Start locally** (not "Start with worktree", which would move the chat to another folder):
+the new chat opens in the same folder, tells the old chat it has started, and the old chat
+sets the new chat's effort from the note and then archives itself. Typing the label by hand
+still works.
+
 ### Away mode
 
 If you are away from your computer and answering from the Claude mobile app, you *cannot*
@@ -259,7 +265,7 @@ is a check you will eventually disable by deleting the whole tool.
 python test_guard.py
 ```
 
-**1255 checks, no test framework required.** They run against a throwaway home directory, so
+**1278 checks, no test framework required.** They run against a throwaway home directory, so
 they cannot touch your real notes — which is worth stating plainly, because until
 18 Sep 2026 that was only true on Windows. On macOS and Linux `expanduser("~")` falls back to
 the passwd database when `HOME` is missing, so the suite would have written into the real

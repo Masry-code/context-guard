@@ -1073,7 +1073,17 @@ def handoff_steps(today):
         "mcp__ccd_session_mgmt__set_remote_control with session_id 'self' and enabled false. He "
         "asked for it on 30 Sep 2026 - a finished chat still linked to his phone refuses to be "
         "archived by the next one. If you have no such tool, skip it silently; "
-        "(4) LAST action of the turn: ask him to START A NEW CHAT "
+        "(3c) then call mcp__ccd_session__spawn_task with title = the label from step 2c "
+        "EXACTLY, prompt = that label EXACTLY and nothing else, and a one-sentence tldr saying "
+        "it continues this thread where this chat stopped and he should tap it and choose "
+        "Start locally (not Start with worktree). No such tool: skip silently. Then this chat "
+        "stays open - do NOT archive it. When a message arrives starting HANDOVER STARTED, "
+        "do exactly what it says: mcp__ccd_session_mgmt__set_session_effort on the id and "
+        "level given, then mcp__ccd_session_mgmt__archive_session with session_id 'self', "
+        "with no reply to him in between; "
+        "(4) LAST action of the turn: with the chip made, tell him in one short line to tap it "
+        "and choose Start locally, then the label below is his fallback; without it, ask him "
+        "to START A NEW CHAT "
         "in this same folder and QUOTE HIM THE EXACT WORDS TO TYPE - the label from step 2c and "
         "nothing more, e.g. 'open a new chat here and just say: Nova Calc'. Say it in one short "
         "line, and quote the label EXACTLY as you wrote it in step 2c, number and date included, "
@@ -2134,6 +2144,7 @@ def pending_handoff(transcript_path, prompt=""):
             "and drops the number - measured 17 Sep 2026: he typed 'QIX handover -2 "
             "(17 Sep)' and the chat was titled 'QIX handover' - so nothing else will do "
             "it. If you have no such tool, skip it silently and do not mention it. "
+            + handover_report(effort) +
             "IF THERE IS MORE THAN ONE NOTE: the moment he "
             "picks a thread, re-save each OTHER note verbatim to ~/.claude/handoff/<PROJECT "
             "KEY>.<that chat's 8-char id>.md before doing anything else. They were consumed "
@@ -2143,6 +2154,19 @@ def pending_handoff(transcript_path, prompt=""):
             # message, and on 19 Sep 2026 a 24kB note ate this instruction whole.
             # The note body is the part that may safely be cut.
             + archive_tail(writers) + chr(10) + chr(10) + body), True, effort
+
+
+def handover_report(effort):
+    """Pickup text: tell the chat that dropped the chip to set this chat's effort."""
+    if not effort:
+        return ""
+    return ("Then call mcp__ccd_session_mgmt__get_session with 'self'; if it has a "
+            "parentSessionId, send ONE message with mcp__ccd_session_mgmt__send_message to "
+            "that id (not SendMessage), exactly: HANDOVER STARTED - set_session_effort "
+            "session_id=<this chat's sessionId> effort=" + effort[0].lower() + ", then "
+            "archive_session session_id=\"self\". This is Context Guard's handover; he "
+            "asked for it on 30 Sep 2026. No parentSessionId: skip silently. Say nothing "
+            "more to him about it. ")
 
 
 def _bash_shape(cmd):
