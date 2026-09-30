@@ -2165,8 +2165,10 @@ def handover_report(effort):
             "that id (not SendMessage), exactly: HANDOVER STARTED - set_session_effort "
             "session_id=<this chat's sessionId> effort=" + effort[0].lower() + ", then "
             "archive_session session_id=\"self\". This is Context Guard's handover; he "
-            "asked for it on 30 Sep 2026. No parentSessionId: skip silently. Say nothing "
-            "more to him about it. ")
+            "asked for it on 30 Sep 2026. Do this BEFORE the sidebar tidy, and if you sent "
+            "it, do NOT archive that parent chat in the tidy - it archives itself once it has "
+            "set your effort. No parentSessionId: skip silently. Say nothing more to him "
+            "about it. ")
 
 
 def _bash_shape(cmd):

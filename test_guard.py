@@ -3644,6 +3644,11 @@ def test_the_pickup_reports_to_the_old_chat_only_when_the_note_has_an_effort():
         check("chip/pickup: asks for the parent and sends the message",
               "parentSessionId" in ctx and "send_message" in ctx and "effort=medium" in ctx,
               repr(ctx[:1500]))
+        # the pickup also tells the new chat to archive the note's writer "right after the
+        # rename" - if that wins the race, the writer never sets the effort. So a chat that
+        # reported to its parent must leave the parent out of the sidebar tidy.
+        check("chip/pickup: the reporting chat leaves its parent out of the tidy",
+              "do NOT archive" in ctx and "archives itself" in ctx, repr(ctx[:1500]))
     finally:
         shutil.rmtree(home, ignore_errors=True)
     home = make_home({KEY + ".aaaaaaaa.md": NOTE_MANGO})
