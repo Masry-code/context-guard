@@ -830,6 +830,10 @@ def user_messages(path, start=0):
                     continue      # a skill body that happened to be short
                 if any(n in t for n in NOISE):
                     continue      # task notifications and the like - he never typed these
+                if len(t) > LEDGER_MAX_CHARS:     # only the opening message gets this far:
+                    t = (t[:LEDGER_MAX_CHARS]     # keep what it is for, not every note's worth
+                         + " [... %d more characters of this opening message ...]"
+                         % (len(t) - LEDGER_MAX_CHARS))
                 out.append(((d.get("timestamp") or "")[:19].replace("T", " "), t))
         end = fh.tell()
     return out, end

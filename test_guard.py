@@ -1692,6 +1692,9 @@ def test_the_first_message_of_a_chip_chat_is_recorded_however_long():
         body = ledger_body(home)
         check("chip-chat: the long opening message is in the ledger",
               "Fix the Harbor parser" in body, repr(body[:200]))
+        check("chip-chat: but clipped at the cap, so a long brief cannot bloat every note",
+              brief not in body and "more characters of this opening message" in body,
+              repr(body[:300]))
         check("chip-chat: the short follow-up is still recorded",
               "short follow up" in body, repr(body[-200:]))
         check("chip-chat: control - a long message that is NOT first is still dropped",
