@@ -2551,6 +2551,22 @@ def _size_check(d, sid):
     # guard note should still work. Only an explicit label match reopens the door.
     named = bool(st.get("took_handoff")) and bool(
         named_match(waiting_notes(path), d.get("prompt") or ""))
+    # A chat opened with NO folder sits in a throwaway workspace, where no note can wait.
+    # If his first words name a saved thread, move the chat to that thread's folder.
+    try:
+        redirect = scratch_redirect(path, d.get("cwd"), d.get("prompt") or "")
+    except Exception as e:
+        redirect = None
+        log("scratch: redirect failed (%s) - falling through" % e)
+    if redirect:
+        log("scratch: label names a note in another project - asked the chat to move")
+        return {
+            "hookSpecificOutput": {"hookEventName": "UserPromptSubmit",
+                                   "additionalContext": redirect},
+            "systemMessage": with_away(
+                "This chat has no project folder - moving it to the saved thread's folder.",
+                sid, st, ctx),
+        }
     if fresh and (not st.get("took_handoff") or named):
         hand, consumed, effort = pending_handoff(path, d.get("prompt") or "")
         if hand and consumed:
@@ -2843,6 +2859,7 @@ PROJECTS_INDEX = os.path.join(STATE, "projects-index.md")
 # furnished FROM. Not derived: it is a fact about this machine, and a wrong guess here
 # fails by silently copying nothing, which is the failure mode that looks like success.
 SOURCE_KEY = "D--Claude"
+SOURCE_DIR = "D:\\Claude"      # its folder; the key above is derived from it
 # ONE HOME (safeguard c, 25 Sep 2026): every topic file lives in this shared folder, and a
 # project folder holds only its MEMORY.md - the list. Two homes per memory drifted apart:
 # chats saved new memories here and edited old ones in the project folder, until one
@@ -2983,6 +3000,107 @@ def manifest_project(cwd, man):
             if _same_dir(cwd, alt):
                 return name, e
     return None, None
+
+
+def is_scratch(cwd, transcript_path):
+    r"""Was this chat opened WITHOUT a folder? The desktop app then hands it a throwaway
+    workspace under ...\Claude\scratch-workspaces\<uuid>\<uuid>\scratch-<date>-<hex>,
+    and the project key of its transcript says so too. Either signal is enough."""
+    c = (cwd or "").replace("/", "\\").lower()
+    if "\\scratch-workspaces\\" in c + "\\":
+        return True
+    try:
+        return "-scratch-workspaces-" in project_key(transcript_path or "").lower()
+    except Exception:
+        return False
+
+
+SYSTEM_REMINDER_RE = re.compile(r"<system-reminder>.*?</system-reminder>", re.S | re.I)
+
+
+def _resolve_key_dir(key):
+    """The real folder a project key stands for, or None. The manifest first (its `dir`
+    and every `also` spelling), then the shared folder, then the `cwd` the newest
+    transcript under that key recorded. Every candidate must round-trip through dir_key
+    and be a real folder, so a stale spelling can never send the chat somewhere else."""
+    cands = [SOURCE_DIR]
+    try:
+        with open(MANIFEST, encoding="utf-8") as f:
+            man = json.load(f)
+        for _n, e in sorted((man.get("projects") or {}).items()):
+            cands.append(e.get("dir") or "")
+            cands.extend(e.get("also") or [])
+    except Exception:
+        pass
+    for c in cands:
+        if c and dir_key(c) == key and os.path.isdir(c):
+            return c
+    try:
+        logs = sorted(glob.glob(os.path.join(PROJECTS, key, "*.jsonl")),
+                      key=os.path.getmtime, reverse=True)
+        if logs:
+            with open(logs[0], encoding="utf-8", errors="replace") as f:
+                for i, line in enumerate(f):
+                    if i >= 200:
+                        break
+                    try:
+                        c = json.loads(line).get("cwd")
+                    except Exception:
+                        continue
+                    if c:
+                        if dir_key(c) == key and os.path.isdir(c):
+                            return c
+                        break
+    except Exception:
+        pass
+    return None
+
+
+def scratch_redirect(transcript_path, cwd, prompt):
+    """The text to hand a folderless chat whose first message names a saved thread that
+    waits under another project's key, or None. Measured 30 Sep 2026: he typed a label
+    into such a chat, waiting_notes() looked under the scratch key, found nothing, the
+    guard stayed silent and the chat just renamed itself after the label - two sidebar
+    rows with one title, one of them doing nothing.
+
+    The app's own boilerplate is stripped first (it says "project", "folder", "session"),
+    so it can never name a label by accident. The note file is neither read nor renamed:
+    the chat is moved into the right folder and the ordinary pickup runs on his next
+    message, with the right key."""
+    if not is_scratch(cwd, transcript_path):
+        return None
+    text = SYSTEM_REMINDER_RE.sub("", prompt or "")
+    here = project_key(transcript_path or "")
+    notes = []
+    for f in glob.glob(os.path.join(handoff_dir(), "*.md")):
+        b = os.path.basename(f)
+        if ".used" in b or b.endswith(".requests.md"):
+            continue
+        key = b.split(".")[0]
+        if not key or key == here or "-scratch-workspaces-" in key.lower():
+            continue
+        notes.append(f)
+    hits = named_match(notes, text)
+    if not hits:
+        return None
+    newest = max(hits, key=os.path.getmtime)
+    key = os.path.basename(newest).split(".")[0]
+    label = note_label(newest)
+    folder = _resolve_key_dir(key)
+    log("scratch: label %r names a note in %s (dir %s)" % (label, key, folder or "unresolved"))
+    head = ("This chat was opened without a project folder, so the saved thread '%s' cannot "
+            "load here. Do NOT rename this chat, do NOT read the note off disk, do NOT start "
+            "the thread's work and do NOT save memories here. " % label)
+    line = ("This chat opened without a folder, so I've moved it into the project's folder "
+            "- send any message and the saved thread loads.")
+    if not folder:
+        return (head + "Tell him in ONE line, naming no path: start a new chat in the "
+                "project's folder and type the label again.")
+    return (head + "Call mcp__ccd_directory__change_directory with path %s now (he approves "
+            "one card). Then tell him in ONE line, with no path in it: \"%s\" If the tool "
+            "is missing, refused or declined, tell him in ONE line to start a new chat in "
+            "the %s folder and type the label again."
+            % (folder, line, os.path.basename(folder.rstrip("\\/"))))
 
 
 def thread_project(prompt, man):

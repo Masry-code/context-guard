@@ -7007,8 +7007,162 @@ def test_install_update_flag_is_wired_and_plain_install_is_unchanged():
         rm_tree(s["tmp"])
 
 
+# ---------------------------------------------------------------- folderless chat redirect
+SCRATCH_DIRS = (r"C:\Users\someone\AppData\Roaming\Claude\scratch-workspaces"
+                r"\11111111-aaaa\22222222-bbbb\scratch-2026-09-30-8222df")
+SCRATCH_KEY = re.sub(r"[^A-Za-z0-9]", "-", SCRATCH_DIRS)
+BOILERPLATE = ("<system-reminder>\nNo folder is selected. This session runs in a scratch "
+               "workspace, not a project. Claude cannot see your directory; make a request "
+               "and choose a folder.\n</system-reminder>")
+
+
+def scratch_home():
+    """A throwaway home with a real project folder (dir), its key, and a note waiting
+    under that key labelled `Harbor -3 (30 Sep)`."""
+    home = make_home({})
+    proj = os.path.join(home, "work", "harbor-app")
+    os.makedirs(proj)
+    key = re.sub(r"[^A-Za-z0-9]", "-", proj)
+    note = os.path.join(home, ".claude", "handoff", key + ".ab12cd34.md")
+    with open(note, "w", encoding="utf-8") as f:
+        f.write("HANDOFF LABEL: Harbor -3 (30 Sep)\n\n# Handoff\n\nbody-HARBOR3\n")
+    return home, proj, key, note
+
+
+def scratch_call(home, cwd, prompt, tp=None):
+    tp = tp or os.path.join(home, ".claude", "projects", SCRATCH_KEY, "s1.jsonl")
+    code = ("print(repr(guard.scratch_redirect(%r, %r, %r)))" % (tp, cwd, prompt))
+    return guard_call(home, code)
+
+
+def write_manifest(home, projects):
+    p = os.path.join(home, ".claude", "context-guard", "memory-manifest.json")
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump({"projects": projects}, f)
+
+
+def test_a_folderless_chat_naming_a_saved_thread_is_told_to_move():
+    home, proj, key, note = scratch_home()
+    try:
+        write_manifest(home, {"Harbor": {"dir": proj, "threads": ["harbor"]}})
+        p = scratch_call(home, SCRATCH_DIRS, "Harbor -3 (30 Sep)")
+        out = p.stdout
+        check("scratch/a: ran cleanly", p.returncode == 0, p.stderr[-300:])
+        check("scratch/a: names change_directory", "change_directory" in out, out[:200])
+        check("scratch/a: names the resolved folder", proj.replace("\\", "\\\\") in out
+              or proj in out, out[:300])
+        check("scratch/a: leaves the note where it is", os.path.exists(note))
+        check("scratch/a: no rename order", "set_session_title" not in out)
+        check("scratch/a: never carries the note body", "body-HARBOR3" not in out)
+        # the hook itself: fires the redirect and does NOT take the handoff
+        payload = {"session_id": "scr-a", "cwd": SCRATCH_DIRS, "prompt": "Harbor -3 (30 Sep)",
+                   "transcript_path": os.path.join(home, ".claude", "projects", SCRATCH_KEY,
+                                                   "scr-a.jsonl"),
+                   "hook_event_name": "UserPromptSubmit"}
+        h = subprocess.run([sys.executable, GUARD, "--size"], input=json.dumps(payload),
+                           capture_output=True, text=True, env=child_env(home))
+        ctx = context_of(h)
+        check("scratch/a: the hook hands the chat the move", "change_directory" in ctx,
+              (h.stdout + h.stderr)[:300])
+        st = os.path.join(home, ".claude", "context-guard", "state", "scr-a.json")
+        stt = ""
+        for root, _d, files in os.walk(os.path.join(home, ".claude", "context-guard")):
+            for fn in files:
+                if fn.startswith("scr-a") or fn == "scr-a.json":
+                    with open(os.path.join(root, fn), encoding="utf-8", errors="replace") as f:
+                        stt += f.read()
+        check("scratch/a: took_handoff is not set", '"took_handoff": true' not in stt, stt[:200])
+        check("scratch/a: the note is still there after the hook", os.path.exists(note))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_a_folderless_chat_naming_nothing_is_untouched():
+    home, proj, key, note = scratch_home()
+    try:
+        write_manifest(home, {"Harbor": {"dir": proj}})
+        p = scratch_call(home, SCRATCH_DIRS, "what is the weather like")
+        check("scratch/b: no label -> None", p.stdout.strip() == "None", p.stdout + p.stderr[-200:])
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_an_ordinary_folder_gets_no_redirect():
+    home, proj, key, note = scratch_home()
+    try:
+        write_manifest(home, {"Harbor": {"dir": proj}})
+        tp = os.path.join(home, ".claude", "projects", KEY, "s2.jsonl")
+        p = scratch_call(home, "D:/Claude", "Harbor -3 (30 Sep)", tp)
+        check("scratch/c: non-scratch cwd -> None", p.stdout.strip() == "None",
+              p.stdout + p.stderr[-200:])
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_the_apps_boilerplate_never_names_a_label():
+    home, proj, key, note = scratch_home()
+    try:
+        write_manifest(home, {"Ws": {"dir": proj}})
+        with open(note, "w", encoding="utf-8") as f:
+            f.write("HANDOFF LABEL: Workspace Tools -2 (30 Sep)\n\n# H\n\nbody\n")
+        bare = BOILERPLATE + "\n\n | "
+        p1 = scratch_call(home, SCRATCH_DIRS, bare)
+        p2 = scratch_call(home, SCRATCH_DIRS, bare + "Workspace Tools -2 (30 Sep)")
+        check("scratch/d: boilerplate alone -> None", p1.stdout.strip() == "None",
+              p1.stdout + p1.stderr[-200:])
+        check("scratch/d: boilerplate + the label -> redirect", "change_directory" in p2.stdout,
+              p2.stdout + p2.stderr[-200:])
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_the_folder_is_read_from_a_transcripts_cwd_when_the_manifest_lacks_it():
+    home, proj, key, note = scratch_home()
+    try:
+        write_manifest(home, {})
+        pd = os.path.join(home, ".claude", "projects", key)
+        os.makedirs(pd)
+        with open(os.path.join(pd, "old.jsonl"), "w", encoding="utf-8") as f:
+            f.write(json.dumps({"type": "summary"}) + "\n")
+            f.write(json.dumps({"cwd": proj, "type": "user"}) + "\n")
+        p = scratch_call(home, SCRATCH_DIRS, "Harbor -3 (30 Sep)")
+        check("scratch/e: resolved from the transcript cwd",
+              "change_directory" in p.stdout and proj in p.stdout.replace("\\\\", "\\"),
+              p.stdout + p.stderr[-200:])
+        os.remove(os.path.join(pd, "old.jsonl"))
+        p = scratch_call(home, SCRATCH_DIRS, "Harbor -3 (30 Sep)")
+        check("scratch/e: unresolved -> the fallback line, no move, no path",
+              "change_directory" not in p.stdout and proj not in p.stdout
+              and "new chat" in p.stdout, p.stdout + p.stderr[-200:])
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_a_note_under_a_scratch_key_is_never_a_redirect_target():
+    home, proj, key, note = scratch_home()
+    try:
+        write_manifest(home, {"Harbor": {"dir": proj}})
+        os.remove(note)
+        other = os.path.join(home, ".claude", "handoff", SCRATCH_KEY + ".ff00ee11.md")
+        with open(other, "w", encoding="utf-8") as f:
+            f.write("HANDOFF LABEL: Harbor -3 (30 Sep)\n\n# H\n\nbody\n")
+        p = scratch_call(home, SCRATCH_DIRS, "Harbor -3 (30 Sep)")
+        check("scratch/f: scratch-key note ignored", p.stdout.strip() == "None",
+              p.stdout + p.stderr[-200:])
+        check("scratch/f: and left in place", os.path.exists(other))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
 if __name__ == "__main__":
-    for t in (test_update_up_to_date_says_nothing_and_behind_says_the_line,
+    for t in (test_a_folderless_chat_naming_a_saved_thread_is_told_to_move,
+              test_a_folderless_chat_naming_nothing_is_untouched,
+              test_an_ordinary_folder_gets_no_redirect,
+              test_the_apps_boilerplate_never_names_a_label,
+              test_the_folder_is_read_from_a_transcripts_cwd_when_the_manifest_lacks_it,
+              test_a_note_under_a_scratch_key_is_never_a_redirect_target,
+              test_update_up_to_date_says_nothing_and_behind_says_the_line,
               test_update_checks_at_most_once_a_day,
               test_update_offline_is_silent_fast_and_recorded,
               test_update_off_switch_and_no_git_folder_make_no_git_call,
