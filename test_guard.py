@@ -1675,6 +1675,31 @@ def test_a_chat_does_not_re_record_its_own_repeated_words():
         shutil.rmtree(home, ignore_errors=True)
 
 
+def test_the_first_message_of_a_chip_chat_is_recorded_however_long():
+    """A chat opened from a suggestion chip starts with the chip's prompt, which is a whole
+    brief - measured 29 Sep 2026, 2203 chars against a 2000 cap, so the ledger dropped the
+    one message that said what the chat was for. The cap is there to stop pasted skill
+    bodies later in a chat; it must not eat the opening message."""
+    home = make_home({})
+    try:
+        brief = "Fix the Harbor parser, test-first. " + ("More detail about the task. " * 80)
+        later = "A pasted reference dump. " + ("filler " * 400)
+        check("chip-chat: fixture brief is over the cap",
+              len(brief) > guard_constant("LEDGER_MAX_CHARS"), str(len(brief)))
+        write_chat_msgs(home, "chipchat1", time.time() - 3600,
+                        [brief, "short follow up", later])
+        expect_clean(run_stop(home, "chipchat1"), "chip-chat")
+        body = ledger_body(home)
+        check("chip-chat: the long opening message is in the ledger",
+              "Fix the Harbor parser" in body, repr(body[:200]))
+        check("chip-chat: the short follow-up is still recorded",
+              "short follow up" in body, repr(body[-200:]))
+        check("chip-chat: control - a long message that is NOT first is still dropped",
+              "A pasted reference dump" not in body, repr(body[-200:]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
 def test_harness_placeholders_are_not_recorded_as_his_words():
     """The ledger calls itself "his own words". 246 of the 292 dropped messages were the
     app's own text - image placeholders, the auto-continue line, the interrupt marker.
@@ -7001,6 +7026,7 @@ if __name__ == "__main__":
               test_the_same_words_in_two_chats_are_both_recorded,
               test_the_ledger_records_which_chat_said_each_thing,
               test_a_chat_does_not_re_record_its_own_repeated_words,
+              test_the_first_message_of_a_chip_chat_is_recorded_however_long,
               test_harness_placeholders_are_not_recorded_as_his_words,
               test_the_injected_tail_separates_this_thread_from_the_others,
               test_the_tail_still_reads_when_nothing_is_attributed,

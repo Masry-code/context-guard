@@ -64,6 +64,10 @@ FRESH_CTX = 120_000
 # it too. A genuinely fresh chat is a few hundred KB; 1.5 MB is already many turns in.
 FRESH_BYTES = 1_500_000
 LEDGER_MAX_CHARS = 2000   # longer "user messages" are pasted skill bodies, not requests
+# ...except the OPENING message of a chat. A chat started from a suggestion chip opens with
+# the chip's whole brief as its first message (2203 chars measured 29 Sep 2026), and that is
+# the one message that says what the chat is for. Still bounded, so a pasted dump cannot ride in.
+LEDGER_FIRST_MAX_CHARS = 20000
 LEDGER_TAIL = 30          # how many recent requests to inject alongside a handoff note
 LEDGER_OTHERS = 15        # ...of which this many may come from the OTHER threads sharing
                           # the folder, once the resumed thread has been given its own
@@ -819,7 +823,8 @@ def user_messages(path, start=0):
                         continue
                 elif "<system-reminder>" in t or t.startswith("<command") or t.startswith("<local-command"):
                     continue      # machine-generated, not him
-                if len(t) > LEDGER_MAX_CHARS:
+                if len(t) > LEDGER_MAX_CHARS and not (
+                        start == 0 and not out and len(t) <= LEDGER_FIRST_MAX_CHARS):
                     continue      # too long to be a request - a pasted reference
                 if t.startswith(SKILL_MARKERS):
                     continue      # a skill body that happened to be short
