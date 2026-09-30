@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+
+# Not part of Context Guard - an unrelated local script that happens to live in this folder.
+spotwatch.py
+
+# Nothing personal should ever end up in this repo. These are the shapes that would:
+# handoff notes, the request ledger and its attribution sidecar, session state, logs.
+*.log
+*.checkpoints
+*.requests.md
+*.attrib.json
+handoff/
+notes/

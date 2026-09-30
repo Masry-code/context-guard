@@ -1,0 +1,7 @@
+# Store and check out every file byte-for-byte, with no end-of-line conversion.
+#
+# This is not a style preference. guard.py is CRLF on disk and test_guard.py is LF, on the
+# same machine, in the same folder - and that has already been measured and depended upon.
+# With Git's default autocrlf on Windows, a checkout would silently rewrite one of them,
+# which is the single most repeated way files get mangled in this project.
+* -text
