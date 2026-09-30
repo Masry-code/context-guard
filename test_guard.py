@@ -7078,6 +7078,30 @@ def test_a_folderless_chat_naming_a_saved_thread_is_told_to_move():
         shutil.rmtree(home, ignore_errors=True)
 
 
+def test_a_big_folderless_chat_is_not_told_to_move():
+    """Only a FRESH chat is redirected, the same gate as the pickup. Measured 30 Sep: the
+    real folderless chat worked for 20 minutes with the thread's word in most messages,
+    so an ungated redirect would have ordered a move on every one of them."""
+    home, proj, key, note = scratch_home()
+    try:
+        write_manifest(home, {"Harbor": {"dir": proj, "threads": ["harbor"]}})
+        tp = os.path.join(home, ".claude", "projects", SCRATCH_KEY, "scr-g.jsonl")
+        os.makedirs(os.path.dirname(tp), exist_ok=True)
+        with open(tp, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"cwd": SCRATCH_DIRS, "message": {"usage": {
+                "cache_read_input_tokens": 200_000, "cache_creation_input_tokens": 0}}}) + "\n")
+        payload = {"session_id": "scr-g", "cwd": SCRATCH_DIRS,
+                   "prompt": "the harbor photos look off", "transcript_path": tp,
+                   "hook_event_name": "UserPromptSubmit"}
+        h = subprocess.run([sys.executable, GUARD, "--size"], input=json.dumps(payload),
+                           capture_output=True, text=True, env=child_env(home))
+        check("scratch/g: a 200k chat is not told to move", "change_directory" not in h.stdout,
+              h.stdout[:300])
+        check("scratch/g: and the note stays put", os.path.exists(note))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
 def test_a_folderless_chat_naming_nothing_is_untouched():
     home, proj, key, note = scratch_home()
     try:
@@ -7157,6 +7181,7 @@ def test_a_note_under_a_scratch_key_is_never_a_redirect_target():
 
 if __name__ == "__main__":
     for t in (test_a_folderless_chat_naming_a_saved_thread_is_told_to_move,
+              test_a_big_folderless_chat_is_not_told_to_move,
               test_a_folderless_chat_naming_nothing_is_untouched,
               test_an_ordinary_folder_gets_no_redirect,
               test_the_apps_boilerplate_never_names_a_label,

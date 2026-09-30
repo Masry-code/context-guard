@@ -2553,8 +2553,11 @@ def _size_check(d, sid):
         named_match(waiting_notes(path), d.get("prompt") or ""))
     # A chat opened with NO folder sits in a throwaway workspace, where no note can wait.
     # If his first words name a saved thread, move the chat to that thread's folder.
+    # FRESH only, the pickup's own gate: a folderless chat 20 minutes into the work
+    # says the thread's word in most messages and must not be told to move on each.
     try:
-        redirect = scratch_redirect(path, d.get("cwd"), d.get("prompt") or "")
+        redirect = (scratch_redirect(path, d.get("cwd"), d.get("prompt") or "")
+                    if fresh else None)
     except Exception as e:
         redirect = None
         log("scratch: redirect failed (%s) - falling through" % e)
