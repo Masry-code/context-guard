@@ -1051,6 +1051,11 @@ PATH_RULE = (
     "to find things on disk; the label is for him. ")
 
 
+# Why there is no suggestion chip (spawn_task) any more - measured 30 Sep 2026: the chip chat
+# stays the parent's "running task" for its whole life, so archive_session on the parent was
+# refused "live work" four times (from the parent, from the child, after 120 s and 180 s
+# waits); only his sidebar tap archived it. His decision: back to the label in the copy box,
+# the old chat archives itself, and the new chat's effort is still set automatically.
 def handoff_steps(today):
     """Steps 3 and 4 of the handoff instruction - the only part that differs while away.
 
@@ -1073,17 +1078,7 @@ def handoff_steps(today):
         "mcp__ccd_session_mgmt__set_remote_control with session_id 'self' and enabled false. He "
         "asked for it on 30 Sep 2026 - a finished chat still linked to his phone refuses to be "
         "archived by the next one. If you have no such tool, skip it silently; "
-        "(3c) then call mcp__ccd_session__spawn_task with title = the label from step 2c "
-        "EXACTLY, prompt = that label EXACTLY and nothing else, and a one-sentence tldr saying "
-        "it continues this thread where this chat stopped and he should tap it and choose "
-        "Start locally (not Start with worktree). No such tool: skip silently. Then this chat "
-        "stays open - do NOT archive it. When a message arrives starting HANDOVER STARTED, "
-        "do exactly what it says: mcp__ccd_session_mgmt__set_session_effort on the id and "
-        "level given, then mcp__ccd_session_mgmt__archive_session with session_id 'self', "
-        "with no reply to him in between; "
-        "(4) LAST action of the turn: with the chip made, tell him in one short line to tap it "
-        "and choose Start locally, then the label below is his fallback; without it, ask him "
-        "to START A NEW CHAT "
+        "(4) LAST action of the turn: ask him to START A NEW CHAT "
         "in this same folder and QUOTE HIM THE EXACT WORDS TO TYPE - the label from step 2c and "
         "nothing more, e.g. 'open a new chat here and just say: Nova Calc'. Say it in one short "
         "line, and quote the label EXACTLY as you wrote it in step 2c, number and date included, "
@@ -1093,6 +1088,10 @@ def handoff_steps(today):
         "Typing that label loads this note and only this note, so the other threads waiting "
         "in this folder stay untouched for later. He need do nothing else, and this conversation "
         "stays readable under 'Resume previous session'. "
+        "Then end your turn. If a message later arrives starting HANDOVER STARTED, do exactly "
+        "what it says: mcp__ccd_session_mgmt__set_session_effort on the id and level given, "
+        "then mcp__ccd_session_mgmt__archive_session with session_id 'self', with no reply to "
+        "him in between. "
         + PATH_RULE)
 
 
@@ -2144,7 +2143,7 @@ def pending_handoff(transcript_path, prompt=""):
             "and drops the number - measured 17 Sep 2026: he typed 'QIX handover -2 "
             "(17 Sep)' and the chat was titled 'QIX handover' - so nothing else will do "
             "it. If you have no such tool, skip it silently and do not mention it. "
-            + handover_report(effort) +
+            + handover_report(effort, writers) +
             "IF THERE IS MORE THAN ONE NOTE: the moment he "
             "picks a thread, re-save each OTHER note verbatim to ~/.claude/handoff/<PROJECT "
             "KEY>.<that chat's 8-char id>.md before doing anything else. They were consumed "
@@ -2156,19 +2155,24 @@ def pending_handoff(transcript_path, prompt=""):
             + archive_tail(writers) + chr(10) + chr(10) + body), True, effort
 
 
-def handover_report(effort):
-    """Pickup text: tell the chat that dropped the chip to set this chat's effort."""
-    if not effort:
+def handover_report(effort, writers):
+    """Pickup text: tell the chat that wrote the note to set this chat's effort, then archive
+    itself. Only when the note carries an effort AND names exactly one real writer - with
+    none or several there is no single chat to message, and the sidebar tidy handles it."""
+    real = [w for w in writers if _real_writer(w)]
+    if not effort or len(real) != 1:
         return ""
-    return ("Then call mcp__ccd_session_mgmt__get_session with 'self'; if it has a "
-            "parentSessionId, send ONE message with mcp__ccd_session_mgmt__send_message to "
-            "that id (not SendMessage), exactly: HANDOVER STARTED - set_session_effort "
-            "session_id=<this chat's sessionId> effort=" + effort[0].lower() + ", then "
-            "archive_session session_id=\"self\". This is Context Guard's handover; he "
-            "asked for it on 30 Sep 2026. Do this BEFORE the sidebar tidy, and if you sent "
-            "it, do NOT archive that parent chat in the tidy - it archives itself once it has "
-            "set your effort. No parentSessionId: skip silently. Say nothing more to him "
-            "about it. ")
+    return ("Then call mcp__ccd_session_mgmt__get_session with 'self' for this chat's sessionId, "
+            "and find the chat titled EXACTLY '" + real[0] + "' in the list_sessions (limit 200) "
+            "call the sidebar tidy below makes. If exactly ONE matches and it is not this chat, "
+            "send ONE message to its sessionId with mcp__ccd_session_mgmt__send_message (not "
+            "SendMessage), exactly: HANDOVER STARTED - set_session_effort session_id=<this "
+            "chat's sessionId> effort=" + effort[0].lower() + ", then archive_session "
+            "session_id=\"self\". This is Context Guard's handover; he asked for it on "
+            "30 Sep 2026. Do this BEFORE the sidebar tidy, and if you sent it, do NOT archive "
+            "that chat in the tidy - it archives itself once it has set your effort. Zero or "
+            "several matches: send nothing and let the tidy handle it as usual. Say nothing "
+            "more to him about it. ")
 
 
 def _bash_shape(cmd):

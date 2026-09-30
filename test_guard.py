@@ -3600,34 +3600,38 @@ def test_the_label_is_handed_over_in_a_code_box():
         shutil.rmtree(home, ignore_errors=True)
 
 
-def test_the_handover_drops_a_chip_and_finishes_when_the_new_chat_reports():
-    """His ask, 30 Sep 2026: a chip carrying the label, and the old chat sets the new chat's
-    effort. Console only - the away branch is untested on a phone and stays as it was."""
+def test_the_handover_shows_the_label_and_finishes_when_the_new_chat_reports():
+    """His decision, 30 Sep 2026: no chip (a chip chat stays its parent's running task, so the
+    parent's archive was refused four times); the label in the copy box, the old chat archives
+    itself and the effort is still set automatically. Console only - away is unchanged."""
     home = make_home({})
     try:
-        write_big_chat(home, "chip-hand", time.time() - 3600, 250_000)
-        p = run(home, "chip-hand", "carry on")
-        expect_clean(p, "chip/console")
+        write_big_chat(home, "hand-con", time.time() - 3600, 250_000)
+        p = run(home, "hand-con", "carry on")
+        expect_clean(p, "handover/console")
         ctx = context_of(p)
-        check("chip/console: the handover drops a chip with spawn_task",
-              "spawn_task" in ctx, repr(ctx[-900:]))
-        check("chip/console: and says Start locally", "Start locally" in ctx, repr(ctx[-900:]))
-        check("chip/console: and waits for HANDOVER STARTED before it archives itself",
-              "HANDOVER STARTED" in ctx and "set_session_effort" in ctx, repr(ctx[-900:]))
-        check("chip/console: the inline-code fallback is still there",
+        check("handover/console: no spawn_task chip any more",
+              "spawn_task" not in ctx and "Start locally" not in ctx, repr(ctx[-900:]))
+        check("handover/console: the phone link still goes off",
+              "set_remote_control" in ctx, repr(ctx[-900:]))
+        check("handover/console: the label goes in inline code on its own line",
               "inline code" in ctx and "own line" in ctx, repr(ctx[-900:]))
+        check("handover/console: and the HANDOVER STARTED instruction is there",
+              "HANDOVER STARTED" in ctx and "set_session_effort" in ctx
+              and "archive_session" in ctx and "'self'" in ctx, repr(ctx[-1200:]))
     finally:
         shutil.rmtree(home, ignore_errors=True)
     home = make_home({})
     try:
-        write_big_chat(home, "chip-away", time.time() - 3600, 250_000)
+        write_big_chat(home, "hand-away", time.time() - 3600, 250_000)
         arm_away(home)
-        p = run(home, "chip-away", "carry on")
-        expect_clean(p, "chip/away")
+        p = run(home, "hand-away", "carry on")
+        expect_clean(p, "handover/away")
         ctx = context_of(p)
-        check("chip/away: no chip and no handover message while he is away",
-              "spawn_task" not in ctx and "HANDOVER STARTED" not in ctx, repr(ctx[-900:]))
-        check("chip/away: control - the path rule is still there", "NEVER hand him a filesystem path" in ctx,
+        check("handover/away: no handover message and no phone-link change while he is away",
+              "spawn_task" not in ctx and "HANDOVER STARTED" not in ctx
+              and "set_remote_control" not in ctx, repr(ctx[-900:]))
+        check("handover/away: control - the path rule is still there", "NEVER hand him a filesystem path" in ctx,
               repr(ctx[-400:]))
     finally:
         shutil.rmtree(home, ignore_errors=True)
@@ -3638,24 +3642,36 @@ def test_the_pickup_reports_to_the_old_chat_only_when_the_note_has_an_effort():
             + "NEXT CHAT EFFORT: medium - x" + chr(10) * 2 + "body-MANGO" + chr(10))
     home = make_home({KEY + ".aaaaaaaa.md": note})
     try:
-        p = run(home, "chip-pick1", "mango")
-        expect_clean(p, "chip/pickup")
+        p = run(home, "hand-pick1", "mango")
+        expect_clean(p, "handover/pickup")
         ctx = context_of(p)
-        check("chip/pickup: asks for the parent and sends the message",
-              "parentSessionId" in ctx and "send_message" in ctx and "effort=medium" in ctx,
-              repr(ctx[:1500]))
+        check("handover/pickup: finds the writer by its exact title and sends the message",
+              "list_sessions" in ctx and "'Mango -3 (1 Jan)'" in ctx and "send_message" in ctx
+              and "effort=medium" in ctx and "HANDOVER STARTED" in ctx, repr(ctx[:1800]))
+        check("handover/pickup: a label-opened chat has no parent to ask",
+              "parentSessionId" not in ctx, repr(ctx[:1800]))
         # the pickup also tells the new chat to archive the note's writer "right after the
-        # rename" - if that wins the race, the writer never sets the effort. So a chat that
-        # reported to its parent must leave the parent out of the sidebar tidy.
-        check("chip/pickup: the reporting chat leaves its parent out of the tidy",
-              "do NOT archive" in ctx and "archives itself" in ctx, repr(ctx[:1500]))
+        # rename" - if that wins the race, the writer never sets the effort. So the chat
+        # that was sent HANDOVER STARTED must be left out of the sidebar tidy.
+        check("handover/pickup: the chat it messaged is left out of the tidy",
+              "do NOT archive" in ctx and "archives itself" in ctx, repr(ctx[:1800]))
     finally:
         shutil.rmtree(home, ignore_errors=True)
     home = make_home({KEY + ".aaaaaaaa.md": NOTE_MANGO})
     try:
-        p = run(home, "chip-pick2", "mango")
-        expect_clean(p, "chip/pickup-none")
-        check("chip/pickup-none: no effort line, no HANDOVER STARTED",
+        p = run(home, "hand-pick2", "mango")
+        expect_clean(p, "handover/pickup-none")
+        check("handover/pickup-none: no effort line, no HANDOVER STARTED",
+              "HANDOVER STARTED" not in context_of(p), repr(context_of(p)[:600]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+    note = ("HANDOFF LABEL: Mango -4 (1 Jan)" + chr(10)
+            + "NEXT CHAT EFFORT: medium - x" + chr(10) * 2 + "body-MANGO" + chr(10))
+    home = make_home({KEY + ".aaaaaaaa.md": note})
+    try:
+        p = run(home, "hand-pick3", "mango")
+        expect_clean(p, "handover/pickup-nowriter")
+        check("handover/pickup-nowriter: an effort but no real writer, no HANDOVER STARTED",
               "HANDOVER STARTED" not in context_of(p), repr(context_of(p)[:600]))
     finally:
         shutil.rmtree(home, ignore_errors=True)
@@ -7393,7 +7409,7 @@ if __name__ == "__main__":
               test_a_live_work_refusal_switches_remote_control_off_unless_away,
               test_the_handover_switches_its_own_remote_control_off_unless_away,
               test_the_label_is_handed_over_in_a_code_box,
-              test_the_handover_drops_a_chip_and_finishes_when_the_new_chat_reports,
+              test_the_handover_shows_the_label_and_finishes_when_the_new_chat_reports,
               test_the_pickup_reports_to_the_old_chat_only_when_the_note_has_an_effort,
               test_an_entry_is_offered_only_when_due,
               test_one_instruction_covers_every_due_title_and_stays_short,

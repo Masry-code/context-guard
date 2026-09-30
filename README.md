@@ -199,11 +199,12 @@ note, your unfulfilled requests, the traps, the decisions. The `-4` is a running
 the order is visible in your sidebar. Several projects can share a folder; the label is how
 you summon one specifically, and the others stay waiting.
 
-At the console the old chat also drops a chip carrying the label. Tap it and choose
-**Start locally** (not "Start with worktree", which would move the chat to another folder):
-the new chat opens in the same folder, tells the old chat it has started, and the old chat
-sets the new chat's effort from the note and then archives itself. Typing the label by hand
-still works.
+The label comes in a copy box, so it is one click to copy. Once the new chat has picked
+the note up, it tells the old chat it has started; the old chat sets the new chat's effort
+from the note and then archives itself, so your sidebar keeps one live chat per thread.
+
+Opened a chat without choosing a folder? Type the label anyway: the chat asks to move
+itself into the thread's folder (one approval), and your next message loads the thread.
 
 ### Away mode
 
