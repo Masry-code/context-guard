@@ -7750,6 +7750,89 @@ def test_recall_lists_the_best_five_and_says_so_when_nothing_matches():
         rm_tree(home)
 
 
+HINT_MEMS = {
+    (KEY, "android-adb"): mem_text("android-adb", "adb on the phone", ["adb", "usb debugging"]),
+    (KEY, "own-thing"): mem_text("own-thing", "o", ["kettle", "teapot"]),
+    (KEY, "rule-thing"): mem_text("rule-thing", "r", ["spoon", "fork"]),
+    (KEY, "label-thing"): mem_text("label-thing", "l", ["anchor", "rope"]),
+}
+HINT_LISTS = {KEY: "# Memory Index\n- [Own](own-thing.md) - o\n",
+              DROID_KEY: "# Memory Index\n- [Android adb](android-adb.md) - x\n"}
+
+
+def test_the_hint_names_another_projects_memory_once():
+    """Spec section 3, the whole path: his prompt names it, the chat gets one line with
+    the project and the path, the search tip rides the first hint only, never twice."""
+    home = kw_home(HINT_MEMS, lists=HINT_LISTS, manifest=KW_MANIFEST)
+    try:
+        p = run(home, "hint1", "why does adb not see my phone today")
+        expect_clean(p, "kw-hint")
+        c = context_of(p)
+        check("kw-hint: the matching memory is named with its project",
+              "Android adb (droid)" in c and "android-adb.md" in c, c[:400])
+        check("kw-hint: the first hint carries the search tip", "--recall" in c, c[:400])
+        check("kw-hint: within the cap", len(c) <= guard_constant("HINT_CHARS"), str(len(c)))
+        q = run(home, "hint1", "adb still does not see my phone")
+        check("kw-hint: the same memory is never hinted twice",
+              "android-adb.md" not in context_of(q), context_of(q)[:300])
+    finally:
+        rm_tree(home)
+
+
+def test_the_hint_skips_what_the_chat_already_has():
+    """The chat's own list, CLAUDE.md's [[rules]] and the label-fetched list are already in
+    front of it; hinting them is the bloat this tool exists to remove."""
+    home = kw_home(HINT_MEMS, lists=HINT_LISTS, manifest=KW_MANIFEST,
+                   claude_md="- a rule `[[rule-thing]]`\n")
+    try:
+        lst = os.path.join(home, "label-list.md")   # outside every memory folder
+        with open(lst, "w", encoding="utf-8") as f:
+            f.write("- [L](label-thing.md) - l\n")
+        guard_call(home, "guard.save_state('hint2', {'label_list': %r})" % lst)
+        for words, what in (("the kettle and the teapot again", "own list"),
+                            ("a spoon and a fork please now", "CLAUDE.md rule"),
+                            ("the anchor and the rope today", "label list")):
+            c = context_of(run(home, "hint2", words))
+            check("kw-hint-skip: " + what, "MEMORIES FROM OTHER PROJECTS" not in c, c[:200])
+    finally:
+        rm_tree(home)
+
+
+def test_the_hint_stays_quiet_when_it_should():
+    """A short prompt, the off switch and a busy turn get nothing, and nothing is recorded."""
+    home = kw_home(HINT_MEMS, lists=HINT_LISTS, manifest=KW_MANIFEST)
+    try:
+        check("kw-hint-quiet: three words or fewer",
+              "android-adb" not in context_of(run(home, "hint3", "adb help now")))
+        r = kw_json(home, "import json\n"
+                    "o = {'hookSpecificOutput': {'additionalContext': 'busy'}}\n"
+                    "d = {'session_id': 'hint3', 'prompt': 'why does adb not see my phone'}\n"
+                    "r = guard.memory_hints(o, d, 'hint3')\n"
+                    "print(json.dumps([r['hookSpecificOutput']['additionalContext'],\n"
+                    "  guard.load_state('hint3').get('memory_hints')]))")
+        check("kw-hint-quiet: a busy turn is returned unchanged and nothing recorded",
+              r == ["busy", None], repr(r))
+        open(os.path.join(home, ".claude", "context-guard", "no-memory-hints"), "w").close()
+        check("kw-hint-quiet: the off switch",
+              "android-adb" not in context_of(run(home, "hint4", "why does adb not see my phone")))
+    finally:
+        rm_tree(home)
+
+
+def test_the_hint_shows_at_most_three():
+    mems = {(KEY, "w%d" % i): mem_text("w%d" % i, "d" * 120, ["sprocket", "flange"])
+            for i in range(6)}
+    home = kw_home(mems)
+    try:
+        c = context_of(run(home, "hint5", "the sprocket and the flange broke"))
+        n = sum(1 for l in c.splitlines() if l.startswith("- "))
+        check("kw-hint-cap: at most three memories", 1 <= n <= 3, c[:400])
+        check("kw-hint-cap: under the character cap",
+              len(c) <= guard_constant("HINT_CHARS"), str(len(c)))
+    finally:
+        rm_tree(home)
+
+
 if __name__ == "__main__":
     for t in (test_a_folderless_chat_naming_a_saved_thread_is_told_to_move,
               test_a_big_folderless_chat_is_not_told_to_move,
@@ -8007,7 +8090,11 @@ if __name__ == "__main__":
               test_the_catalogue_prefers_the_shared_copy_and_names_each_project,
               test_the_catalogue_cache_rereads_only_a_changed_file_and_survives_corruption,
               test_the_scorer_asks_for_two_keywords_or_one_rare_one,
-              test_recall_lists_the_best_five_and_says_so_when_nothing_matches):
+              test_recall_lists_the_best_five_and_says_so_when_nothing_matches,
+              test_the_hint_names_another_projects_memory_once,
+              test_the_hint_skips_what_the_chat_already_has,
+              test_the_hint_stays_quiet_when_it_should,
+              test_the_hint_shows_at_most_three):
         print(t.__name__)
         t()
     print()

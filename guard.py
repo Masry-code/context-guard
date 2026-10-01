@@ -2701,6 +2701,7 @@ def cmd_size():
         out = out or {}
         out["systemMessage"] = (back + " " + (out.get("systemMessage") or "")).strip()
     out = archive_step(out, d, sid)
+    out = memory_hints(out, d, sid)
     if out:
         print(json.dumps(out))
 
@@ -2759,6 +2760,10 @@ def _size_check(d, sid):
             # ...and the memory that belongs to the thread he just named. This is
             # the only call site: it rides the pickup turn, never every turn.
             hand += label_memory_index(d.get("prompt") or "")
+            lp = label_list_path(d.get("prompt") or "")
+            if lp and os.path.exists(lp):
+                st["label_list"] = lp     # memory_hints must not re-offer what this put
+                save_state(sid, st)       # in front of the chat
             picked = "Picked up the handoff note from your last chat."
             if effort:
                 # a chat cannot set its own effort, so the pickup tells HIM
@@ -3317,6 +3322,19 @@ def thread_project(prompt, man):
             if (t or "").strip().lower() == want:
                 return name, e
     return None, None
+
+
+def label_list_path(prompt):
+    """The project list label_memory_index() fetches for this label, or None."""
+    try:
+        with open(MANIFEST, encoding="utf-8") as f:
+            man = json.load(f)
+    except Exception:
+        return None
+    _name, entry = thread_project(prompt, man)
+    if not entry:
+        return None
+    return os.path.join(PROJECTS, dir_key(entry.get("dir") or ""), "memory", "MEMORY.md")
 
 
 def label_memory_index(prompt):
@@ -4111,6 +4129,90 @@ def cmd_recall():
     for _s, _m, e, _h in res:
         print("%s (%s) - %s" % (e["title"], e["project"], e["path"]))
         print("  keywords: " + ", ".join(e.get("keywords") or []))
+
+
+HINTS_OFF = "no-memory-hints"
+HINT_MAX = 3
+HINT_CHARS = 900
+HINT_DESC = 140
+HINT_MIN_WORDS = 4
+CLAUDE_MD = os.path.join(HOME, ".claude", "CLAUDE.md")
+WIKI_RE = re.compile(r"\[\[([^\]\s]+)\]\]")
+
+
+def _linked_slugs(path):
+    try:
+        with open(path, encoding="utf-8-sig", errors="replace") as f:
+            text = f.read()
+    except Exception:
+        return set()
+    return {os.path.basename(s) for _t, s in TITLE_RE.findall(text)}
+
+
+def memory_hints(out, d, sid):
+    """Merge, into the prompt hook's ONE json object, a line for each memory from ANOTHER
+    project that his message matches - titles only, at most HINT_MAX, never the same one
+    twice in a chat. Never raises, never prints."""
+    try:
+        return _memory_hints(out, d, sid)
+    except Exception as e:
+        log("hints: failed (%r)" % (e,))
+        return out
+
+
+def _memory_hints(out, d, sid):
+    if not sid or os.path.exists(os.path.join(STATE, HINTS_OFF)):
+        return out
+    hso0 = (out or {}).get("hookSpecificOutput")
+    if isinstance(hso0, dict) and hso0.get("additionalContext"):
+        return out          # a pickup, menu, warning or archive offer: the app cuts the tail
+                            # of a long injection, so the hint waits for an ordinary prompt
+    prompt = d.get("prompt") or ""
+    if ledger_noise(prompt) or len(_words(prompt)) < HINT_MIN_WORDS:
+        return out
+    path = find_transcript(sid, d.get("transcript_path")) or virtual_transcript(d, sid)
+    st = load_state(sid)
+    shown = list(st.get("memory_hints") or [])
+    exclude = set(shown) | _linked_slugs(os.path.join(memory_dir(path), "MEMORY.md"))
+    if st.get("label_list"):
+        exclude |= _linked_slugs(st["label_list"])
+    try:
+        with open(CLAUDE_MD, encoding="utf-8-sig", errors="replace") as f:
+            exclude |= set(WIKI_RE.findall(f.read()))
+    except Exception:
+        pass
+    res = score_memories(prompt, memory_catalogue(), exclude, strict=True)[:HINT_MAX]
+    if not res:
+        return out
+    lines = ["MEMORIES FROM OTHER PROJECTS that match his message. Titles only: open a file "
+             "only if it helps with what he just asked, and say nothing about this list "
+             "otherwise."]
+    tail = [] if shown else [
+        "To search every memory yourself mid-task: python \"%s\" --recall <words>"
+        % os.path.abspath(__file__)]
+    used = []
+    for _s, _m, e, _h in res:
+        desc = e.get("description") or ""
+        if len(desc) > HINT_DESC:
+            desc = desc[:HINT_DESC - 3].rstrip() + "..."
+        line = "- %s (%s) - %s: %s" % (e["title"], e["project"], desc, e["path"])
+        if len(chr(10).join(lines + [line] + tail)) > HINT_CHARS:
+            break
+        lines.append(line)
+        used.append(e["slug"])
+    if not used:
+        return out
+    st["memory_hints"] = shown + used
+    save_state(sid, st)
+    out = out or {}
+    hso = out.get("hookSpecificOutput")
+    if not isinstance(hso, dict):
+        hso = {}
+        out["hookSpecificOutput"] = hso
+    hso["hookEventName"] = "UserPromptSubmit"
+    hso["additionalContext"] = chr(10).join(lines + tail)
+    log("hints: %d memory hint(s): %s" % (len(used), ", ".join(used)))
+    return out
 
 
 def cmd_bootstrap():
