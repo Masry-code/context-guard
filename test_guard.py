@@ -3701,6 +3701,46 @@ def test_the_first_chat_after_install_shows_the_tour_once():
         shutil.rmtree(home, ignore_errors=True)
 
 
+def test_a_fresh_install_leaves_the_tour_for_the_first_chat():
+    """Only a FRESH install earns the tour - a re-install, an update over an older copy, a
+    dry run and an uninstall never set it, so existing users are never surprised by it."""
+    home = make_home({})
+    try:
+        seed_settings(home, FOREIGN)
+        p = run_install(home)
+        check("tour/install: a fresh install sets the flag", os.path.exists(tour_flag(home)),
+              p.stdout[-400:])
+        check("tour/install: and says the first chat will show you around",
+              "show you around" in p.stdout and "context guard tour" in p.stdout, p.stdout[-400:])
+        os.remove(tour_flag(home))
+        run_install(home)
+        check("tour/install: installing again does not set it",
+              not os.path.exists(tour_flag(home)), "")
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+    home = make_home({})
+    try:
+        seed_settings(home, {"hooks": {"Stop": [{"hooks": [
+            {"type": "command", "command": '"python" "/old/place/guard.py" --ledger'}]}]}})
+        p = run_install(home)
+        check("tour/install: control - an install over an older copy did write",
+              "Installed" in p.stdout, p.stdout[-400:])
+        check("tour/install: but does not set the flag", not os.path.exists(tour_flag(home)), "")
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+    home = make_home({})
+    try:
+        seed_settings(home, {})
+        run_install(home, "--dry-run")
+        check("tour/install: a dry run does not set it", not os.path.exists(tour_flag(home)), "")
+        run_install(home)
+        os.remove(tour_flag(home))
+        run_install(home, "--uninstall")
+        check("tour/install: an uninstall does not set it", not os.path.exists(tour_flag(home)), "")
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
 def test_the_handover_shows_the_label_and_finishes_when_the_new_chat_reports():
     """His decision, 30 Sep 2026: no chip (a chip chat stays its parent's running task, so the
     parent's archive was refused four times); the label in the copy box, the old chat archives
@@ -7514,6 +7554,7 @@ if __name__ == "__main__":
               test_the_handover_stops_background_work_and_ends_on_the_label,
               test_typing_context_guard_tour_shows_it_again,
               test_the_first_chat_after_install_shows_the_tour_once,
+              test_a_fresh_install_leaves_the_tour_for_the_first_chat,
               test_the_handover_shows_the_label_and_finishes_when_the_new_chat_reports,
               test_the_pickup_reports_to_the_old_chat_only_when_the_note_has_an_effort,
               test_an_entry_is_offered_only_when_due,

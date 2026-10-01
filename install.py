@@ -101,6 +101,32 @@ def build(current, remove=False):
     return out
 
 
+TOUR_LINES = ("Open a new chat in Claude Code - it will show you around once.",
+              'Type "context guard tour" in any chat to see it again.')
+
+
+def is_fresh(current):
+    """No Context Guard hook in these settings yet - the only install that earns the tour."""
+    hooks = current.get("hooks")
+    if not isinstance(hooks, dict):
+        return True
+    return not any(is_ours(e) for entries in hooks.values() if isinstance(entries, list)
+                   for e in entries if isinstance(e, dict))
+
+
+def flag_tour(home=None):
+    """Leave the flag guard.py's SessionStart spends on the first chat. False on failure."""
+    d = os.path.join(home or os.path.expanduser("~"), ".claude", "context-guard")
+    try:
+        if not os.path.isdir(d):
+            os.makedirs(d)
+        open(os.path.join(d, "tour-pending"), "w").close()
+        return True
+    except OSError as e:
+        print("note: could not set up the first-chat tour (%s)" % e)
+        return False
+
+
 def dumps(d):
     return json.dumps(d, indent=2, ensure_ascii=False) + "\n"
 
@@ -133,6 +159,7 @@ def main():
         print("note: %s does not exist yet; it will be created." % path)
 
     wanted = build(current, remove=a.uninstall)
+    fresh = not a.uninstall and is_fresh(current)
     before, after = dumps(current), dumps(wanted)
     if before == after:
         print("Already up to date - nothing to change in " + path)
@@ -162,6 +189,10 @@ def main():
         print("window (e.g. 350000). Context Guard derives its ceiling from it, and without")
         print("it the ceiling falls back to a flat 300k.")
         print("Restart Claude Code, or open a new chat, for the hooks to load.")
+        if fresh and flag_tour(a.home):
+            print("")
+            for line in TOUR_LINES:
+                print(line)
     return 0
 
 
