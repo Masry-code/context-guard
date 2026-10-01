@@ -35,7 +35,7 @@ then a numbered list, then answers whatever the user actually asked:
 2. **Away mode** - `afk` when leaving the desk, `back` on return. Explained, NOT armed.
 3. **Pause it for one chat** - demo: Claude pauses THIS chat for real
    (`guard.py --pause <session-id> "<reason>"`) and says how to undo it (`--resume`).
-4. **See what costs you** - demo: Claude runs `audit.py --deep` and sums up their own most
+4. **See what costs you** - demo: Claude runs `audit.py` (the summary table) and sums up their own most
    expensive old chats in plain words.
 5. **Updates** - it says once a day when one is ready; `python install.py --update` applies it.
    Explained only.

@@ -106,12 +106,19 @@ TOUR_LINES = ("Open a new chat in Claude Code - it will show you around once.",
 
 
 def is_fresh(current):
-    """No Context Guard hook in these settings yet - the only install that earns the tour."""
+    """No Context Guard hook in these settings yet - the only install that earns the tour.
+
+    Walks EVERY event, where build() walks only ours, so another tool's malformed entry
+    reaches is_ours here first. Any surprise means "not fresh": no tour is the safe side,
+    and an install that used to work must not become a traceback."""
     hooks = current.get("hooks")
     if not isinstance(hooks, dict):
         return True
-    return not any(is_ours(e) for entries in hooks.values() if isinstance(entries, list)
-                   for e in entries if isinstance(e, dict))
+    try:
+        return not any(is_ours(e) for entries in hooks.values() if isinstance(entries, list)
+                       for e in entries if isinstance(e, dict))
+    except Exception:
+        return False
 
 
 def flag_tour(home=None):

@@ -2551,9 +2551,6 @@ def cmd_bash():
 def cmd_size():
     d = read_stdin()
     sid = d.get("session_id")
-    # Away mode is toggled before anything else, so the very turn he says it is already
-    # quiet. Confirming it out loud is not nagging - a switch he cannot see is a switch he
-    # cannot trust, and this is the one turn where he asked to be told.
     # The tour on request. Whole message only, like the away phrases, and this turn is
     # spent on it: nothing else is consumed, so a waiting note is still there next turn.
     if normalised_prompt(d.get("prompt") or "") == TOUR_PHRASE:
@@ -2563,6 +2560,9 @@ def cmd_size():
             print(json.dumps({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit",
                                                      "additionalContext": t}}))
             return
+    # Away mode is toggled before anything else, so the very turn he says it is already
+    # quiet. Confirming it out loud is not nagging - a switch he cannot see is a switch he
+    # cannot trust, and this is the one turn where he asked to be told.
     toggled = away_toggle(d.get("prompt") or "")
     if toggled is True:
         print(json.dumps({"systemMessage": (

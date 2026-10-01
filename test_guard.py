@@ -3739,6 +3739,18 @@ def test_a_fresh_install_leaves_the_tour_for_the_first_chat():
         check("tour/install: an uninstall does not set it", not os.path.exists(tour_flag(home)), "")
     finally:
         shutil.rmtree(home, ignore_errors=True)
+    # Review finding, 1 Oct 2026: is_fresh walks EVERY event, build() only ours - so another
+    # tool's malformed entry must not turn an install that used to work into a traceback.
+    for odd in ({"hooks": "bad"}, {"hooks": [1]}, {"hooks": [{"command": 5}]}):
+        home = make_home({})
+        try:
+            seed_settings(home, {"hooks": {"Notification": [odd]}})
+            p = run_install(home)
+            expect_clean(p, "tour/install-odd %s" % json.dumps(odd))
+            check("tour/install-odd %s: still installs" % json.dumps(odd),
+                  "Installed" in p.stdout, p.stdout[-300:] + p.stderr[-300:])
+        finally:
+            shutil.rmtree(home, ignore_errors=True)
 
 
 def test_the_tour_names_no_private_project():
