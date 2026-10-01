@@ -42,7 +42,8 @@ keywords: adb, android, phone, apk, usb debugging, install fails
 
 ## 3. The automatic hint (UserPromptSubmit, `--size`)
 
-**`memory_hints(d, path, sid)`** returns a text block or "". `cmd_size` merges it into the hook's ONE JSON object, as `additionalContext`. It runs after `_size_check` and before `archive_step`, through the same merge pattern, and on paused chats too: the hint isn't a handoff warning.
+**`memory_hints(out, d, sid)`** takes the hook's output object and returns it, with the hint merged in as `additionalContext` or unchanged. `cmd_size` calls it after `archive_step`, so the hook still prints ONE JSON object. It runs on paused chats too, because the hint isn't a handoff warning.
+- **A busy turn gets no hint.** When the object already carries `additionalContext` (a pickup, a menu, a size warning or an archive offer), the hint waits for the next ordinary prompt and nothing is recorded. The app cuts the tail of a long injection, and an archive offer outranks a hint.
 
 **Already in the chat, so never hinted:**
 - every slug linked in this chat's own `memory_dir(path)/MEMORY.md`;
@@ -85,7 +86,7 @@ keywords: adb, android, phone, apk, usb debugging, install fails
   1. It finds the memory topic files this chat wrote: Write/Edit `tool_use` blocks whose `file_path` sits in any `PROJECTS/*/memory/` and isn't `MEMORY.md`. It reads positionally, like `chat_wrote_memory()`.
   2. If any of those files still exists and has no `keywords:` line, it blocks once, naming those files and asking for the line to be added with the Edit tool. The block says nothing else.
   3. **Brakes**, the same shape as `note_head_block`: skip when `stop_hook_active` is set; the switch `STATE/no-keywords-check`; at most `NAG_MAX` blocks per chat; never twice for the same set of files and mtimes.
-- **Order in `cmd_ledger`:** ceiling, then note head, then keywords, then the memory nag. That's still one decision per Stop. When `keywords_block` blocks, it carries `memory_nag_text()` in the same reason, as `note_head_block` does, because the next Stop has `stop_hook_active` set.
+- **Order in `cmd_ledger`:** ceiling, then note head, then keywords, then the memory nag. That's still one decision per Stop. `keywords_block` never needs to carry the memory nag: it only fires when this chat wrote a memory, and `chat_wrote_memory()` then keeps the nag quiet anyway.
 - **Known gap:** a chat whose last Stop is spent on a note-head block can still end with an unkeyworded memory. The fallback in section 1 covers it until a later chat edits the file.
 
 ## 6. The one-time fill (rollout, outside the repo)
@@ -114,14 +115,14 @@ keywords: adb, android, phone, apk, usb debugging, install fails
     - Arabic matches Arabic;
     - a prompt of 3 words or fewer gets no hint.
   - Exclusions: the chat's own list, the label-fetched list, CLAUDE.md `[[slug]]`s, and memories already hinted.
-  - Output: at most 3 memories; the 900-character cap holds; the search tip appears once per chat; the off switch silences everything; it merges with a size warning and with an archive offer into ONE JSON object.
+  - Output: at most 3 memories; the 900-character cap holds, tip included; the search tip appears once per chat; the off switch silences everything; the hook prints ONE JSON object.
   - `--recall` gives the top 5, and the empty case prints its one line.
   - `keywords_block`:
     - it fires on an unkeyworded memory this chat wrote;
     - it doesn't fire on a memory only mentioned in a hook's text;
     - it doesn't fire on `MEMORY.md`;
-    - the brakes hold: `stop_hook_active`, the switch, the cap, and the same files and mtimes not blocked twice;
-    - it carries the memory nag.
+    - the brakes hold: `stop_hook_active`, the switch, the cap, and the same files and mtimes not blocked twice.
+  - A busy turn (output that already carries `additionalContext`) is returned unchanged, and nothing is recorded.
 - Run the full suite, and prove the commits on a fresh clone. Assert on structure, never on prose.
 
 ## Out of scope
