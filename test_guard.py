@@ -3655,6 +3655,27 @@ def test_the_handover_stops_background_work_and_ends_on_the_label():
         shutil.rmtree(home, ignore_errors=True)
 
 
+def test_typing_context_guard_tour_shows_it_again():
+    """His ask, 25 Sep 2026: "for github users on first run give them the option list of what
+    they can do ... like a small non heavy tutorial". The exact phrase brings it back, the way
+    'afk' works - a sentence that merely mentions it does nothing."""
+    home = make_home({})
+    try:
+        p = run(home, "tour0002", "Context Guard tour!")
+        expect_clean(p, "tour/phrase")
+        ctx = context_of(p)
+        check("tour/phrase: the exact phrase brings the tour", "Hand a chat over" in ctx,
+              repr(ctx[:400]))
+        check("tour/phrase: filled in with this chat's id and the real paths",
+              "tour0002" in ctx and "{GUARD}" not in ctx and "{AUDIT}" not in ctx,
+              repr(ctx[:1500]))
+        ctx = context_of(run(home, "tour0003", "what is the context guard tour?"))
+        check("tour/phrase: a sentence that mentions it does not", "Hand a chat over" not in ctx,
+              repr(ctx[:400]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
 def test_the_handover_shows_the_label_and_finishes_when_the_new_chat_reports():
     """His decision, 30 Sep 2026: no chip (a chip chat stays its parent's running task, so the
     parent's archive was refused four times); the label in the copy box, the old chat archives
@@ -7466,6 +7487,7 @@ if __name__ == "__main__":
               test_the_handover_switches_its_own_remote_control_off_unless_away,
               test_the_label_is_handed_over_in_a_code_box,
               test_the_handover_stops_background_work_and_ends_on_the_label,
+              test_typing_context_guard_tour_shows_it_again,
               test_the_handover_shows_the_label_and_finishes_when_the_new_chat_reports,
               test_the_pickup_reports_to_the_old_chat_only_when_the_note_has_an_effort,
               test_an_entry_is_offered_only_when_due,

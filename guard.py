@@ -1003,6 +1003,29 @@ def away_toggle(prompt):
     return None
 
 
+# His ask, 25 Sep 2026: "for github users on first run give them the option list of what
+# they can do ... like a small non heavy tutorial". The words live in tour.md beside this
+# file - one source for the first chat and for the phrase - and only the paths and this
+# chat's id are filled in here.
+TOUR_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tour.md")
+TOUR_FLAG = "tour-pending"
+TOUR_PHRASE = "context guard tour"
+
+
+def tour_text(sid):
+    """The tour filled in for this chat, or "" when tour.md is missing or unreadable."""
+    try:
+        with open(TOUR_FILE, encoding="utf-8") as f:
+            t = f.read()
+    except Exception as e:
+        log("tour: could not read %s (%s)" % (TOUR_FILE, e))
+        return ""
+    here = os.path.dirname(os.path.abspath(__file__))
+    return (t.replace("{GUARD}", os.path.join(here, "guard.py").replace("\\", "/"))
+             .replace("{AUDIT}", os.path.join(here, "audit.py").replace("\\", "/"))
+             .replace("{SESSION_ID}", sid or "<this chat's session id>"))
+
+
 def away_notice(sid, st, ctx):
     """The once-per-chat away indicator, or "" when it is not due. Spends itself: the
     caller that gets a string MUST show it, because the state is already saved.
@@ -2515,6 +2538,15 @@ def cmd_size():
     # Away mode is toggled before anything else, so the very turn he says it is already
     # quiet. Confirming it out loud is not nagging - a switch he cannot see is a switch he
     # cannot trust, and this is the one turn where he asked to be told.
+    # The tour on request. Whole message only, like the away phrases, and this turn is
+    # spent on it: nothing else is consumed, so a waiting note is still there next turn.
+    if normalised_prompt(d.get("prompt") or "") == TOUR_PHRASE:
+        t = tour_text(sid)
+        if t:
+            log("tour: shown on request")
+            print(json.dumps({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit",
+                                                     "additionalContext": t}}))
+            return
     toggled = away_toggle(d.get("prompt") or "")
     if toggled is True:
         print(json.dumps({"systemMessage": (
