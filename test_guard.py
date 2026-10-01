@@ -3288,6 +3288,34 @@ def test_pickup_names_the_finished_chat_for_archiving():
         shutil.rmtree(home, ignore_errors=True)
 
 
+def test_pickup_files_the_new_chat_in_the_old_chats_group():
+    """His ask, 1 Oct 2026: "is there a way to make the chat appear where its pervious one was
+    like this chat was in the group "Apps"". The tidy's list_sessions row already carries the
+    old chat's group, so the new chat moves itself there before it archives the old one."""
+    home = make_home({KEY + ".9e19c7ab.md": WRITER_NOTE})
+    try:
+        p = run(home, "grp00001-new", "context guard")
+        ctx = context_of(p)
+        expect_clean(p, "pickup/group")
+        check("pickup/group: moves THIS chat with move_sessions into the old row's group",
+              "mcp__ccd_sidebar__move_sessions" in ctx and "group.id" in ctx
+              and "['self']" in ctx, repr(ctx[:1500]))
+        check("pickup/group: the move comes before the archive",
+              0 <= ctx.find("move_sessions") < ctx.find("archive_session on it"),
+              repr(ctx[:1500]))
+        check("pickup/group: says where this chat's pinned flag lives",
+              "get_session with 'self'" in ctx, repr(ctx[:1500]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+    home = make_home({KEY + ".9e19c7ab.md": NOTE_CTX})
+    try:
+        ctx = context_of(run(home, "grp00002-new", "context guard"))
+        check("pickup/group: no writer line, no move", "move_sessions" not in ctx,
+              repr(ctx[-500:]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
 def test_pickup_without_a_writer_line_says_nothing_about_archiving():
     """Every note written before today lacks the line, and so will any note a chat
     forgets. Missing must be SILENT - not an error, and above all not a guess. The
@@ -7360,6 +7388,7 @@ if __name__ == "__main__":
               test_the_away_indicator_survives_a_handoff_pickup,
               test_a_note_that_mentions_the_marker_is_not_a_stub,
               test_pickup_names_the_finished_chat_for_archiving,
+              test_pickup_files_the_new_chat_in_the_old_chats_group,
               test_pickup_without_a_writer_line_says_nothing_about_archiving,
               test_a_writer_line_deep_in_the_body_is_not_the_writer,
               test_the_note_instruction_asks_for_the_writer_line,

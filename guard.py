@@ -1055,7 +1055,7 @@ PATH_RULE = (
 # archive_session was refused "live work" from that chat and from the next one; no other
 # chat may kill it. A writer with no background task archived itself ~16 s after the handover.
 BACKGROUND_RULE = (
-    "BEFORE you write the final state into the note and before you end the turn, STOP every "
+    "BEFORE you end the turn, STOP every "
     "background task THIS chat started: call TaskStop on each run_in_background task id and "
     "on each agent still running (check your task notifications and task list; one that has "
     "already finished needs nothing). NEVER leave or start an unbounded poll loop such as "
@@ -1879,7 +1879,16 @@ def archive_tail(writers):
             "work, tidy his sidebar without "
             "mentioning it: call mcp__ccd_session_mgmt__list_sessions with limit 200 (it "
             "leaves archived chats out), and for each title above find the sessions "
-            "matching it EXACTLY. If exactly ONE matches and it is not running and not "
+            "matching it EXACTLY. FIRST put THIS chat where the old one sat: if a title "
+            "matches exactly ONE session and that row has a group, call "
+            "mcp__ccd_sidebar__move_sessions with session_ids ['self'] and that row's "
+            "group.id (load it with ToolSearch if it is deferred) - he asked on 1 Oct 2026 "
+            "for the new chat to appear in the old chat's group. Skip it if the old row has "
+            "no group, if this chat is pinned (list_sessions leaves this chat out - read "
+            "pinned from mcp__ccd_session_mgmt__get_session with 'self'; a move into a "
+            "group unpins it) or if two "
+            "finished chats sit in different groups; \"Nothing to move\" means it is "
+            "already there. Then, if exactly ONE matches and it is not running and not "
             "this chat, call mcp__ccd_session_mgmt__archive_session on it. If nothing "
             "matches, it is already archived or gone: run python \""
             + os.path.abspath(__file__) + "\" --archived <id> (the id is beside the title). "
