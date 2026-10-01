@@ -100,6 +100,14 @@ moves to that project's list. Nothing is ever deleted, anything changed in the l
 minutes waits for the next chat, and it says nothing unless one memory has two different
 copies — then it tells you once and leaves both alone.
 
+### Memory keywords
+
+Every memory can carry a `keywords:` line in its frontmatter, straight after `description:`. When your message matches a memory that belongs to another project, Context Guard adds one short line naming it: its title, its project and where the file is. It never adds the file itself, never more than 3 memories, and never the same one twice in a chat. A chat can also search every memory on its own:
+
+    python guard.py --recall gradle build fails
+
+A memory saved without keywords is sent back once, so the line gets added. A memory with no keywords still works: its title and summary stand in. Off switches go in the state folder, as empty files: `no-memory-hints` turns off the hint, and `no-keywords-check` turns off the check.
+
 ---
 
 ## How it works
