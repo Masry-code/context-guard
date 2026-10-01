@@ -7910,6 +7910,23 @@ def test_the_saving_instructions_ask_for_keywords():
         rm_tree(home)
 
 
+def test_the_label_belongs_only_to_the_handover_reply():
+    """2 Oct 2026: a note said 'label in a code box as the LAST line' and the next chat ended
+    every reply with its own label. Both ends are told: the writer how to phrase the rule,
+    the reader never to end a reply with its own label."""
+    home = make_home({KEY + ".lab12345.md": "HANDOFF LABEL: Harbor -4 (2 Oct)\n"
+                      "WRITTEN BY: Harbor -3 (1 Oct)\nNEXT CHAT EFFORT: high - x\n\nbody\n"})
+    try:
+        steps = guard_call(home, "print(guard.handoff_steps('2 Oct'))").stdout
+        check("label-only: the writer is told it is the handover reply only",
+              "HANDOVER reply only" in steps, steps[:300])
+        c = context_of(run(home, "labchat1", "Harbor -4 (2 Oct)"))
+        check("label-only: the pickup says never end a reply with its own label",
+              "Never end a reply with this chat's own label" in c, c[:600])
+    finally:
+        rm_tree(home)
+
+
 if __name__ == "__main__":
     for t in (test_a_folderless_chat_naming_a_saved_thread_is_told_to_move,
               test_a_big_folderless_chat_is_not_told_to_move,
@@ -8174,7 +8191,8 @@ if __name__ == "__main__":
               test_the_hint_shows_at_most_three,
               test_a_memory_saved_without_keywords_is_sent_back_once,
               test_the_keywords_check_has_an_off_switch_and_a_cap,
-              test_the_saving_instructions_ask_for_keywords):
+              test_the_saving_instructions_ask_for_keywords,
+              test_the_label_belongs_only_to_the_handover_reply):
         print(t.__name__)
         t()
     print()
