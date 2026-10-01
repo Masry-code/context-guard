@@ -7680,6 +7680,21 @@ def test_the_catalogue_cache_rereads_only_a_changed_file_and_survives_corruption
                   "w", encoding="utf-8") as f:
             f.write("{not json")
         check("kw-cache: a corrupt cache is rebuilt", kw_json(home, count) == 2)
+        # Measured 2 Oct 2026: a reader fix shipped and a memory whose file had not changed
+        # kept the OLD reader's answer, because the sig still matched. A cache entry written
+        # by another reader version is a stale answer, not a saving.
+        cpath = os.path.join(home, ".claude", "context-guard", "memory-catalogue.json")
+        with open(cpath, encoding="utf-8") as f:
+            cache = json.load(f)
+        for c in cache.values():
+            c.pop("v", None)
+            c["kw"]["keywords"] = ["stale"]
+        with open(cpath, "w", encoding="utf-8") as f:
+            json.dump(cache, f)
+        check("kw-cache: an older reader's cache is re-read", kw_json(home, count) == 2)
+        r = kw_json(home, "import json\nprint(json.dumps(sorted(k for e in "
+                          "guard.memory_catalogue() for k in e['keywords'])))")
+        check("kw-cache: ...and gives the real keywords", r == ["alpha", "beta"], repr(r))
     finally:
         rm_tree(home)
 
@@ -8084,6 +8099,26 @@ def test_a_spec_slug_linked_by_two_project_lists_is_general():
         rm_tree(home)
 
 
+def test_odd_state_and_short_arabic_words_are_safe():
+    """Review Minors, 2 Oct 2026: a state file of the wrong shape must not crash the Stop
+    hook, and the article strip must leave 3+ letters (a 4-letter word starting with alef-lam
+    is not 'the' + a 2-letter word)."""
+    home = kw_home({})
+    try:
+        r = kw_json(home, "import json\n"
+                    "guard.save_state('odd1', {'kw_written': 5, 'kw_scan_offset': 'x'})\n"
+                    "a = guard.memory_files_written('nowhere.jsonl', 'odd1')\n"
+                    "w = guard._words('الله الفاتورة')\n"
+                    "print(json.dumps([a, w]))")
+        check("kw-odd: a wrong-shaped state gives an empty list, no crash",
+              isinstance(r, list) and r[0] == [], ascii(r))
+        check("kw-odd: a 4-letter word keeps its alef-lam, an 8-letter one loses it",
+              isinstance(r, list) and r[1] == ["الله",
+                                               "فاتورة"], ascii(r))
+    finally:
+        rm_tree(home)
+
+
 def test_the_written_memories_scan_is_incremental():
     """Second review fix 9: a Stop must not re-read the whole transcript. Proved by counting
     json.loads on tool_use lines: the second call parses only what was appended."""
@@ -8462,6 +8497,7 @@ if __name__ == "__main__":
               test_a_cross_session_message_gets_no_hint,
               test_a_spec_slug_linked_by_two_project_lists_is_general,
               test_the_written_memories_scan_is_incremental,
+              test_odd_state_and_short_arabic_words_are_safe,
               test_a_real_label_pickup_keeps_its_list_out_of_the_hints,
               test_a_stop_over_a_string_message_record_does_not_crash):
         print(t.__name__)

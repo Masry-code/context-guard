@@ -3927,12 +3927,12 @@ AR_ARTICLE = "\u0627\u0644"      # the Arabic definite article, alef-lam
 
 def _words(text):
     """Letters and digits in any script, lowercased. Arabic vowel marks are dropped (not split
-    on) and a word of 4+ characters loses a leading article, so 'the bill' meets 'bill'.
+    on) and a word of 5+ characters loses a leading article, so 'the bill' meets 'bill'.
     Prompts and keywords both pass through here, so the two sides stay symmetric."""
     t = "".join(c for c in (text or "") if unicodedata.category(c) != "Mn")
     out = []
     for w in WORD_RE.findall(t.lower()):
-        if w.startswith(AR_ARTICLE) and len(w) >= 4:
+        if w.startswith(AR_ARTICLE) and len(w) >= 5:     # 3+ letters must remain
             w = w[2:]
         out.append(w)
     return out
@@ -3995,6 +3995,10 @@ def memory_keywords(path):
 
 
 CATALOGUE = os.path.join(STATE, "memory-catalogue.json")
+# Bump whenever memory_keywords() changes what it returns. Measured 2 Oct 2026: a reader
+# fix shipped, and a memory whose file had not changed kept the OLD reader's answer,
+# because its path, mtime and size still matched the cache.
+CATALOGUE_VERSION = 2
 TITLE_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\.md\)")
 
 
@@ -4090,11 +4094,12 @@ def memory_catalogue():
                 continue
             sig = [s.st_mtime, s.st_size]
             c = cache.get(p)
-            if isinstance(c, dict) and c.get("sig") == sig and _kw_ok(c.get("kw", False)):
+            if (isinstance(c, dict) and c.get("sig") == sig and c.get("v") == CATALOGUE_VERSION
+                    and _kw_ok(c.get("kw", False))):
                 kw = c["kw"]
             else:
                 kw = memory_keywords(p)
-            fresh[p] = {"sig": sig, "kw": kw}
+            fresh[p] = {"sig": sig, "kw": kw, "v": CATALOGUE_VERSION}
             if not isinstance(kw, dict):
                 continue
             e = dict(kw)
@@ -4288,7 +4293,9 @@ def memory_files_written(transcript_path, sid=None):
     appended - measured 4.67 s for a whole 327 MB transcript on every Stop. Only complete
     lines are consumed, and a file smaller than the offset is rescanned from the start."""
     st = load_state(sid) if sid else {}
-    found = list(st.get("kw_written") or [])
+    st = st if isinstance(st, dict) else {}      # a state of the wrong shape never raises
+    kw = st.get("kw_written")
+    found = [x for x in kw if isinstance(x, str)] if isinstance(kw, list) else []
     off = st.get("kw_scan_offset", 0)
     if not isinstance(off, int) or st.get("kw_scan_path") != transcript_path:
         off, found = 0, []
