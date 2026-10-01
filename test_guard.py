@@ -3600,6 +3600,33 @@ def test_the_label_is_handed_over_in_a_code_box():
         shutil.rmtree(home, ignore_errors=True)
 
 
+def test_the_handover_stops_background_work_and_ends_on_the_label():
+    """1 Oct 2026: a live background task makes archive_session refuse "live work"; and his
+    ask that the label be the very last thing in the reply (console only)."""
+    home = make_home({})
+    try:
+        write_big_chat(home, "bg-con", time.time() - 3600, 250_000)
+        ctx = context_of(run(home, "bg-con", "carry on"))
+        check("bg/console: TaskStop, run_in_background and 'very last line' are named",
+              "TaskStop" in ctx and "run_in_background" in ctx and "very last line" in ctx,
+              repr(ctx[-1200:]))
+        check("bg/console: control - the label inline-code rule is still there",
+              "inline code" in ctx and "own line" in ctx, repr(ctx[-1200:]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+    home = make_home({})
+    try:
+        write_big_chat(home, "bg-away", time.time() - 3600, 250_000)
+        arm_away(home)
+        ctx = context_of(run(home, "bg-away", "carry on"))
+        check("bg/away: TaskStop and run_in_background are named",
+              "TaskStop" in ctx and "run_in_background" in ctx, repr(ctx[-1200:]))
+        check("bg/away: no label line, so no 'very last line'",
+              "very last line" not in ctx, repr(ctx[-1200:]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
 def test_the_handover_shows_the_label_and_finishes_when_the_new_chat_reports():
     """His decision, 30 Sep 2026: no chip (a chip chat stays its parent's running task, so the
     parent's archive was refused four times); the label in the copy box, the old chat archives
@@ -7409,6 +7436,7 @@ if __name__ == "__main__":
               test_a_live_work_refusal_switches_remote_control_off_unless_away,
               test_the_handover_switches_its_own_remote_control_off_unless_away,
               test_the_label_is_handed_over_in_a_code_box,
+              test_the_handover_stops_background_work_and_ends_on_the_label,
               test_the_handover_shows_the_label_and_finishes_when_the_new_chat_reports,
               test_the_pickup_reports_to_the_old_chat_only_when_the_note_has_an_effort,
               test_an_entry_is_offered_only_when_due,

@@ -1050,6 +1050,20 @@ PATH_RULE = (
     "him the full path of its own note instead of the words to type. Paths are for YOU, "
     "to find things on disk; the label is for him. ")
 
+# Measured 30 Sep and 1 Oct 2026: a live background task pins a chat. The writer left an
+# `until grep ...; do sleep 5; done` loop running on a file that never changed, and
+# archive_session was refused "live work" from that chat and from the next one; no other
+# chat may kill it. A writer with no background task archived itself ~16 s after the handover.
+BACKGROUND_RULE = (
+    "BEFORE you write the final state into the note and before you end the turn, STOP every "
+    "background task THIS chat started: call TaskStop on each run_in_background task id and "
+    "on each agent still running (check your task notifications and task list; one that has "
+    "already finished needs nothing). NEVER leave or start an unbounded poll loop such as "
+    "`until ...; do sleep 5; done`: use run_in_background and wait for the completion "
+    "notification, or bound the loop, e.g. `for i in $(seq 120); do ...; done`. Why: a live "
+    "background task makes archive_session refuse \"live work\", from this chat and from the "
+    "next one, and no other chat is allowed to kill it. ")
+
 
 # Why there is no suggestion chip (spawn_task) any more - measured 30 Sep 2026: the chip chat
 # stays the parent's "running task" for its whole life, so archive_session on the parent was
@@ -1070,7 +1084,7 @@ def handoff_steps(today):
             "your normal voice, as though this warning had not appeared; "
             "(4) the note is written and nothing is lost, so when he says he is back the very "
             "next chat picks it up as usual. He clears away mode by typing 'back'. "
-            + PATH_RULE)
+            + PATH_RULE + BACKGROUND_RULE)
     return (
         "(3) tell the user briefly and warmly that this chat has grown expensive, that you have "
         "ALREADY saved everything to that note, and that the next chat carries on exactly where "
@@ -1085,6 +1099,11 @@ def handoff_steps(today):
         "as inline code on its own line - the box he copies from, never plain, bold or quoted "
         "text (he asked for this on 30 Sep 2026): 'open a new chat here and just say:' and "
         "then a line holding only `Nova Calc -5 (" + today + ")`. "
+        "The end-of-build report (what changed / worked / failed and the two Still open tables) "
+        "goes BEFORE the 'open a new chat' line, and the line holding only the label is the "
+        "very last line of the reply - nothing after it, not a table, not a sign-off. His words, "
+        "1 Oct 2026: \"make a note that this label in the red box should be the last thing in "
+        "chat or else someone can miss it\". "
         "Typing that label loads this note and only this note, so the other threads waiting "
         "in this folder stay untouched for later. He need do nothing else, and this conversation "
         "stays readable under 'Resume previous session'. "
@@ -1092,7 +1111,7 @@ def handoff_steps(today):
         "what it says: mcp__ccd_session_mgmt__set_session_effort on the id and level given, "
         "then mcp__ccd_session_mgmt__archive_session with session_id 'self', with no reply to "
         "him in between. "
-        + PATH_RULE)
+        + PATH_RULE + BACKGROUND_RULE)
 
 
 def ceiling_block(d, path):
@@ -2751,9 +2770,10 @@ def _size_check(d, sid):
         "one applies and hand off at the next clean break instead. Deferring is safe: this warning "
         "comes back every " + str(REWARN_STEP // 1000) + "k of further growth, so nothing is "
         "forgotten." + chr(10)
-        + "  (a) A background job may still be running. Handing off with one in flight is UNTESTED, "
-        "so treat it as unsafe - check your task notifications and task output first, and wait "
-        "for it if in any doubt." + chr(10)
+        + "  (a) A background job may still be running. Measured 30 Sep 2026: one still in flight "
+        "pins this chat, so archive_session refuses \"live work\" and the old chat never leaves "
+        "his sidebar. Check your task notifications and task output first; wait for a job whose "
+        "result matters, TaskStop the rest - none may be running when you hand over." + chr(10)
         + "  (b) The user has told you to finish something first. THE USER OUTRANKS THIS WARNING, "
         "always. Honour that without arguing and without re-raising it the same turn." + chr(10)
         + "  (c) You are mid-edit, mid-build, or anything is left broken. Finish it - step 1 "
