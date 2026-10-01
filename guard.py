@@ -4048,6 +4048,71 @@ def memory_catalogue():
     return list(entries.values())
 
 
+RARE_MAX = 2        # a keyword carried by this many memories or fewer is rare
+RECALL_TOP = 5
+
+
+def _has_phrase(words, phrase):
+    n = len(phrase)
+    return n > 0 and any(words[i:i + n] == phrase for i in range(len(words) - n + 1))
+
+
+def score_memories(text, catalogue, exclude=(), strict=True):
+    """[(score, mtime, entry, hits)], best first. score = distinct keywords whose words all
+    appear in `text`, in order. strict (the prompt hook) asks for two, or one RARE keyword of
+    3+ characters, and always two when the keywords are derived; loose (--recall, which the
+    chat asked for on purpose) takes one."""
+    words = _words(text)
+    if not words:
+        return []
+    carried = {}
+    for e in catalogue:
+        if not e.get("derived"):
+            for k in set(e.get("keywords") or []):
+                carried[k] = carried.get(k, 0) + 1
+    out = []
+    for e in catalogue:
+        if e.get("slug") in exclude:
+            continue
+        hits = [k for k in dict.fromkeys(e.get("keywords") or [])
+                if _has_phrase(words, _words(k))]
+        if not hits:
+            continue
+        if strict and len(hits) < 2:
+            if e.get("derived"):
+                continue
+            if not any(carried.get(k, 0) <= RARE_MAX and len(k) >= 3 for k in hits):
+                continue
+        out.append((len(hits), e.get("mtime") or 0, e, hits))
+    out.sort(key=lambda t: (-t[0], -t[1]))
+    return out
+
+
+def cmd_recall():
+    """--recall <words>: the chat's own search, for the moment mid-task when something comes
+    up that his message never named. Prints; reads no stdin; exits 0 either way."""
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+    a = sys.argv[1:]
+    words = " ".join(a[a.index("--recall") + 1:]).strip()
+    if not words:
+        print("--recall needs some words to search for.")
+        return
+    try:
+        res = score_memories(words, memory_catalogue(), strict=False)[:RECALL_TOP]
+    except Exception as e:
+        log("recall: failed (%r)" % (e,))
+        res = []
+    if not res:
+        print("No memory matches: " + words)
+        return
+    for _s, _m, e, _h in res:
+        print("%s (%s) - %s" % (e["title"], e["project"], e["path"]))
+        print("  keywords: " + ", ".join(e.get("keywords") or []))
+
+
 def cmd_bootstrap():
     """SessionStart. Prints at most ONE json object - a hook that prints two reads as
     silence - so every part of it returns its text here instead of printing it."""
@@ -4246,7 +4311,9 @@ def report_ordering():
 
 if __name__ == "__main__":
     a = sys.argv[1:]
-    if "--archived" in a:
+    if "--recall" in a:
+        cmd_recall()
+    elif "--archived" in a:
         cmd_archived()
     elif "--size" in a:
         cmd_size()

@@ -7684,6 +7684,72 @@ def test_the_catalogue_cache_rereads_only_a_changed_file_and_survives_corruption
         rm_tree(home)
 
 
+SCORE_MEMS = {
+    (KEY, "adb-setup"): mem_text("adb-setup", "a", ["adb", "android phone"]),
+    (KEY, "gradle-wsl"): mem_text("gradle-wsl", "g", ["gradle build", "android phone"]),
+    (KEY, "emulator-notes"): mem_text("emulator-notes", "e", ["android phone", "emulator"]),
+    (KEY, "telegram-bot-traps"): mem_text("telegram-bot-traps",
+                                          "Telegram polling and webhook conflict"),
+    (KEY, "bank-bill"): mem_text("bank-bill", "b", ["فاتورة"]),
+}
+
+
+def scored(home, text, strict=True):
+    return kw_json(home, "import json\nprint(json.dumps([e['slug'] for _s, _m, e, _h in "
+                         "guard.score_memories(%r, guard.memory_catalogue(), set(), %r)]))"
+                   % (text, strict))
+
+
+def test_the_scorer_asks_for_two_keywords_or_one_rare_one():
+    """Spec section 3: a common keyword alone never qualifies, a rare one does, a phrase
+    needs its words in order, derived keywords need two, and Arabic matches Arabic."""
+    home = kw_home(SCORE_MEMS)
+    try:
+        check("kw-score: one common keyword is not enough",
+              scored(home, "my android phone is slow") == [], repr(scored(home, "my android phone is slow")))
+        check("kw-score: one rare keyword is enough",
+              scored(home, "can adb see the device") == ["adb-setup"])
+        check("kw-score: two keywords qualify",
+              scored(home, "android phone and the emulator crashed") == ["emulator-notes"])
+        check("kw-score: a phrase needs its words in order",
+              scored(home, "phone android is slow", strict=False) == [])
+        check("kw-score: a derived keyword alone is not enough",
+              scored(home, "telegram is down again") == [])
+        check("kw-score: two derived keywords qualify",
+              scored(home, "telegram webhook broke again") == ["telegram-bot-traps"])
+        check("kw-score: Arabic matches Arabic",
+              scored(home, "اين فاتورة الشهر الماضي") == ["bank-bill"])
+        check("kw-score: loose mode takes one common keyword",
+              len(scored(home, "my android phone is slow", strict=False)) == 3)
+    finally:
+        rm_tree(home)
+
+
+def run_recall(home, *words):
+    env = child_env(home)
+    env["PYTHONIOENCODING"] = "utf-8"
+    return subprocess.run([sys.executable, GUARD, "--recall"] + list(words),
+                          capture_output=True, text=True, encoding="utf-8", env=env)
+
+
+def test_recall_lists_the_best_five_and_says_so_when_nothing_matches():
+    """Spec section 4: the chat's own search - loose, top 5, title, project, path, keywords."""
+    mems = {(KEY, "m%d" % i): mem_text("m%d" % i, "d", ["widget", "w%d" % i]) for i in range(7)}
+    home = kw_home(mems)
+    try:
+        p = run_recall(home, "widget")
+        expect_clean(p, "kw-recall")
+        heads = [l for l in p.stdout.splitlines() if l and not l.startswith(" ")]
+        check("kw-recall: at most five results", len(heads) == 5, p.stdout[:300])
+        check("kw-recall: each result names its path and keywords",
+              ".md" in heads[0] and "  keywords: widget" in p.stdout, p.stdout[:300])
+        q = run_recall(home, "nothing", "here")
+        check("kw-recall: the empty case says so in one line",
+              q.stdout.strip() == "No memory matches: nothing here", q.stdout)
+    finally:
+        rm_tree(home)
+
+
 if __name__ == "__main__":
     for t in (test_a_folderless_chat_naming_a_saved_thread_is_told_to_move,
               test_a_big_folderless_chat_is_not_told_to_move,
@@ -7939,7 +8005,9 @@ if __name__ == "__main__":
               test_an_entry_has_a_short_stable_id_and_the_flag_takes_it,
               test_the_keywords_reader_reads_the_line_and_falls_back_to_the_summary,
               test_the_catalogue_prefers_the_shared_copy_and_names_each_project,
-              test_the_catalogue_cache_rereads_only_a_changed_file_and_survives_corruption):
+              test_the_catalogue_cache_rereads_only_a_changed_file_and_survives_corruption,
+              test_the_scorer_asks_for_two_keywords_or_one_rare_one,
+              test_recall_lists_the_best_five_and_says_so_when_nothing_matches):
         print(t.__name__)
         t()
     print()
