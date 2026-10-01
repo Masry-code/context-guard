@@ -3676,6 +3676,31 @@ def test_typing_context_guard_tour_shows_it_again():
         shutil.rmtree(home, ignore_errors=True)
 
 
+def tour_flag(home):
+    return os.path.join(home, ".claude", "context-guard", "tour-pending")
+
+
+def test_the_first_chat_after_install_shows_the_tour_once():
+    """The installer leaves a flag; the first chat's SessionStart shows the tour and spends
+    it, like a handoff note, so the second chat is quiet."""
+    home = make_home({})
+    try:
+        os.makedirs(os.path.dirname(tour_flag(home)), exist_ok=True)
+        open(tour_flag(home), "w").close()
+        p = boot(home, CWD, sid="tour0001")
+        expect_clean(p, "tour/first")
+        ctx = context_of(p)
+        check("tour/first: the first chat gets the tour", "Hand a chat over" in ctx,
+              repr(ctx[:400]))
+        check("tour/first: with this chat's id filled in", "tour0001" in ctx, repr(ctx[:1500]))
+        check("tour/first: and the flag is spent", not os.path.exists(tour_flag(home)), "")
+        ctx = context_of(boot(home, CWD, sid="tour0004"))
+        check("tour/first: the second chat is quiet", "Hand a chat over" not in ctx,
+              repr(ctx[:400]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
 def test_the_handover_shows_the_label_and_finishes_when_the_new_chat_reports():
     """His decision, 30 Sep 2026: no chip (a chip chat stays its parent's running task, so the
     parent's archive was refused four times); the label in the copy box, the old chat archives
@@ -7488,6 +7513,7 @@ if __name__ == "__main__":
               test_the_label_is_handed_over_in_a_code_box,
               test_the_handover_stops_background_work_and_ends_on_the_label,
               test_typing_context_guard_tour_shows_it_again,
+              test_the_first_chat_after_install_shows_the_tour_once,
               test_the_handover_shows_the_label_and_finishes_when_the_new_chat_reports,
               test_the_pickup_reports_to_the_old_chat_only_when_the_note_has_an_effort,
               test_an_entry_is_offered_only_when_due,

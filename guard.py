@@ -1026,6 +1026,22 @@ def tour_text(sid):
              .replace("{SESSION_ID}", sid or "<this chat's session id>"))
 
 
+def tour_pending_text(sid):
+    """SessionStart: the tour once after a fresh install, or "". The flag is spent BEFORE the
+    text is read, so a broken tour.md cannot nag every chat - and a flag that cannot be
+    removed shows nothing, for the same reason."""
+    p = os.path.join(STATE, TOUR_FLAG)
+    if not os.path.exists(p):
+        return ""
+    try:
+        os.remove(p)
+    except Exception as e:
+        log("tour: could not spend the flag (%s) - not shown" % e)
+        return ""
+    log("tour: shown once after install")
+    return tour_text(sid)
+
+
 def away_notice(sid, st, ctx):
     """The once-per-chat away indicator, or "" when it is not due. Spends itself: the
     caller that gets a string MUST show it, because the state is already saved.
@@ -3765,7 +3781,8 @@ def cmd_bootstrap():
         swept = ""
     else:
         swept = sweep_memory_strays()
-    text = "\n\n".join(t for t in (swept, _bootstrap_list(d)) if t)
+    text = "\n\n".join(t for t in (swept, _bootstrap_list(d),
+                                   tour_pending_text(d.get("session_id"))) if t)
     if text:
         print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart",
                                                  "additionalContext": text}}))
