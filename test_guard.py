@@ -7833,6 +7833,83 @@ def test_the_hint_shows_at_most_three():
         rm_tree(home)
 
 
+def write_mem_writes(home, sid, paths, tool="Write", mention=()):
+    """A transcript in which this chat used `tool` on each of `paths`, and only MENTIONED
+    each of `mention` in a message."""
+    p = os.path.join(home, ".claude", "projects", KEY, sid + ".jsonl")
+    started = time.time() - 600
+    with open(p, "w", encoding="utf-8") as f:
+        f.write(json.dumps({"type": "user", "timestamp": time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ", time.gmtime(started)),
+            "message": {"role": "user", "content": "save it " + " ".join(mention)}}) + chr(10))
+        for fp in paths:
+            f.write(json.dumps({"type": "assistant", "message": {"role": "assistant",
+                    "content": [{"type": "tool_use", "name": tool,
+                                 "input": {"file_path": fp, "content": "x"}}]}}) + chr(10))
+    return p
+
+
+def test_a_memory_saved_without_keywords_is_sent_back_once():
+    """Spec section 5: Claude Code's own memory format has no keywords field, so asking is
+    not enough - the Stop hook checks what this chat actually wrote."""
+    home = kw_home({(KEY, "bare-one"): mem_text("bare-one", "no keywords here"),
+                    (KEY, "good-one"): mem_text("good-one", "fine", ["alpha", "beta"]),
+                    (KEY, "said-only"): mem_text("said-only", "only mentioned")})
+    try:
+        md = os.path.join(home, ".claude", "projects", KEY, "memory")
+        write_mem_writes(home, "kwstop", [os.path.join(md, "bare-one.md"),
+                                          os.path.join(md, "good-one.md"),
+                                          os.path.join(md, "MEMORY.md")],
+                         mention=[os.path.join(md, "said-only.md")])
+        p = run_stop(home, "kwstop")
+        expect_clean(p, "kw-stop")
+        why = blocked(p)
+        check("kw-stop: blocked", why != "", (p.stdout or "")[:200])
+        check("kw-stop: names the bare memory", "bare-one.md" in why, why[:300])
+        check("kw-stop: not the good one, MEMORY.md or a mere mention",
+              "good-one.md" not in why and "MEMORY.md" not in why and "said-only" not in why,
+              why[:300])
+        check("kw-stop: names its off switch", "no-keywords-check" in why, why[-200:])
+        check("kw-stop: never twice in a row", blocked(run_stop(home, "kwstop", active=True)) == "")
+        check("kw-stop: never twice for the same files", blocked(run_stop(home, "kwstop")) == "")
+    finally:
+        rm_tree(home)
+
+
+def test_the_keywords_check_has_an_off_switch_and_a_cap():
+    home = kw_home({(KEY, "bare-two"): mem_text("bare-two", "x")})
+    try:
+        md = os.path.join(home, ".claude", "projects", KEY, "memory")
+        bare = os.path.join(md, "bare-two.md")
+        write_mem_writes(home, "kwcap", [bare], tool="Edit")
+        n = 0
+        for i in range(4):
+            os.utime(bare, (time.time() + i + 1, time.time() + i + 1))  # a new version each time
+            n += 1 if blocked(run_stop(home, "kwcap")) else 0
+        check("kw-stop-cap: at most NAG_MAX blocks", n == guard_constant("NAG_MAX"), str(n))
+        write_mem_writes(home, "kwoff", [bare])
+        open(os.path.join(home, ".claude", "context-guard", "no-keywords-check"), "w").close()
+        check("kw-stop-off: the switch", blocked(run_stop(home, "kwoff")) == "")
+    finally:
+        rm_tree(home)
+
+
+def test_the_saving_instructions_ask_for_keywords():
+    home = kw_home({}, manifest={"projects": {"droid": {"dir": "D:\\Demo\\Droid",
+                                                         "threads": ["droid"], "files": []}}},
+                   lists={DROID_KEY: "# Memory Index\n- [A](a.md) - a\n"})
+    try:
+        t = kw_json(home, "import json\nprint(json.dumps(guard.label_memory_index('droid -2 (1 Oct)')))")
+        check("kw-ask: the label fetch asks for keywords", "keywords:" in (t or ""), repr(t)[:300])
+        started = time.time() - 3600
+        write_chat(home, "kwnag", started)
+        write_note(home, "kwnag")
+        check("kw-ask: the memory nag asks for keywords",
+              "keywords:" in blocked(run_stop(home, "kwnag")))
+    finally:
+        rm_tree(home)
+
+
 if __name__ == "__main__":
     for t in (test_a_folderless_chat_naming_a_saved_thread_is_told_to_move,
               test_a_big_folderless_chat_is_not_told_to_move,
@@ -8094,7 +8171,10 @@ if __name__ == "__main__":
               test_the_hint_names_another_projects_memory_once,
               test_the_hint_skips_what_the_chat_already_has,
               test_the_hint_stays_quiet_when_it_should,
-              test_the_hint_shows_at_most_three):
+              test_the_hint_shows_at_most_three,
+              test_a_memory_saved_without_keywords_is_sent_back_once,
+              test_the_keywords_check_has_an_off_switch_and_a_cap,
+              test_the_saving_instructions_ask_for_keywords):
         print(t.__name__)
         t()
     print()
