@@ -53,7 +53,7 @@ The list ends: "Type a number to try one, or just carry on."
   this run, it is not `--dry-run`, `--uninstall` or `--update` - create the empty flag
   `~/.claude/context-guard/tour-pending` (respecting `--home`) and print the 3 lines.
   A re-install that changes nothing, an update, and an uninstall never create it.
-- **`audit.py --alert`** (SessionStart, already delivers the daily update notice): when the
+- **`guard.py --bootstrap`** (SessionStart; it reads stdin, so it knows the session id the pause demo needs): when the
   flag exists, read `tour.md`, add it to `additionalContext` with a one-line instruction (show
   this once at the top of your first reply, then answer the user), and delete the flag - it
   spends itself, like a handoff note. A missing or unreadable `tour.md` logs and shows nothing
@@ -74,7 +74,7 @@ The list ends: "Type a number to try one, or just carry on."
 
 1. Fresh install into a temp home creates `tour-pending` and prints the 3 lines; a second
    install, `--dry-run`, `--uninstall` and an install over existing hooks do not create it.
-2. `audit.py --alert` with the flag: the context carries the tour, and the flag is gone; a
+2. `guard.py --bootstrap` with the flag: the context carries the tour, and the flag is gone; a
    second run carries no tour. Without the flag: no tour.
 3. `guard.py --size` with exactly `context guard tour` (any case, trailing punctuation as the
    away phrases allow) carries the tour; `what is the context guard tour?` does not.

@@ -159,6 +159,9 @@ python install.py --uninstall
 
 Then restart Claude Code. Python 3.8+, nothing to `pip install`.
 
+Your first chat after installing opens with a short tour - six things Context Guard does,
+each one tryable on the spot. Type `context guard tour` in any chat to see it again.
+
 ## Updating
 
 Context Guard checks for a newer version once a day and tells you when one is ready. Run

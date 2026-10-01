@@ -3741,6 +3741,24 @@ def test_a_fresh_install_leaves_the_tour_for_the_first_chat():
         shutil.rmtree(home, ignore_errors=True)
 
 
+def test_the_tour_names_no_private_project():
+    """His project names are private. Compared against his own list when this machine has
+    one; the failure prints a count, never the names."""
+    names_file = os.path.join(os.path.expanduser("~"), ".claude", "context-guard",
+                              "private-names.txt")
+    with open(os.path.join(HERE_DIR, "tour.md"), encoding="utf-8") as f:
+        tour = f.read().lower()
+    if not os.path.exists(names_file):
+        check("tour/names: no private-names list on this machine - nothing to compare", True)
+        return
+    with open(names_file, encoding="utf-8") as f:
+        names = [l.strip().lower() for l in f
+                 if l.strip() and not l.strip().startswith("#")]
+    hits = [n for n in names if n in tour]
+    check("tour/names: tour.md carries none of the private names", not hits,
+          "%d hit(s)" % len(hits))
+
+
 def test_the_handover_shows_the_label_and_finishes_when_the_new_chat_reports():
     """His decision, 30 Sep 2026: no chip (a chip chat stays its parent's running task, so the
     parent's archive was refused four times); the label in the copy box, the old chat archives
@@ -7555,6 +7573,7 @@ if __name__ == "__main__":
               test_typing_context_guard_tour_shows_it_again,
               test_the_first_chat_after_install_shows_the_tour_once,
               test_a_fresh_install_leaves_the_tour_for_the_first_chat,
+              test_the_tour_names_no_private_project,
               test_the_handover_shows_the_label_and_finishes_when_the_new_chat_reports,
               test_the_pickup_reports_to_the_old_chat_only_when_the_note_has_an_effort,
               test_an_entry_is_offered_only_when_due,
