@@ -3868,6 +3868,67 @@ def _sweep_folder(d, now, pairs):
                 % (key, name, type(e).__name__, e))
 
 
+# --------------------------------------------------- memory keywords (spec 2026-10-02)
+# His ask, 25 Sep 2026: "can you put keywords for each memory so when a new chat with a
+# different topic needs sth it can take it from the other folder memory??". Every memory
+# lives in one shared folder, but a chat only SEES its own project's list - the memory that
+# would have saved an hour sits one folder away, unread. Keywords let the prompt hook tell
+# the chat, in one line, that it exists; --recall lets the chat search for itself mid-task.
+KEYWORDS_RE = re.compile(r"^keywords\s*:\s*(.*)$", re.I)
+WORD_RE = re.compile(r"[^\W_]+")       # letters and digits in ANY script - Arabic included
+FRONT_LINES = 40
+DERIVED_MAX = 8
+KW_STOP = LABEL_STOP | {"when", "what", "have", "into", "never", "only", "they", "them",
+                        "then", "than", "were", "will", "your", "does", "done", "each",
+                        "every", "must", "also", "because", "before", "after", "still",
+                        "here", "there", "which", "while", "used", "uses", "same"}
+
+
+def _words(text):
+    return WORD_RE.findall((text or "").lower())
+
+
+def memory_keywords(path):
+    """A memory's slug, description and keywords, read from its frontmatter only.
+
+    No keywords line - every memory written before 2 Oct 2026, and any chat that forgets -
+    still works: the words of the slug and the description stand in, marked derived, and the
+    scorer asks more of them. Returns None for a file with no frontmatter or one it cannot
+    read; the catalogue skips it."""
+    try:
+        with open(path, encoding="utf-8-sig", errors="replace") as f:
+            head = []
+            for i, line in enumerate(f):
+                if i >= FRONT_LINES:
+                    break
+                head.append(line.rstrip("\r\n"))
+    except Exception as e:
+        log("keywords: cannot read %s (%r)" % (path, e))
+        return None
+    if not head or head[0].strip() != "---":
+        return None
+    slug = os.path.splitext(os.path.basename(path))[0]
+    desc, kws = "", None
+    for line in head[1:]:
+        if line.strip() == "---":
+            break
+        m = KEYWORDS_RE.match(line)
+        if m:
+            kws = [k.strip().lower() for k in m.group(1).split(",") if k.strip()]
+        elif line.startswith("description:"):
+            desc = line.split(":", 1)[1].strip()
+            if len(desc) >= 2 and desc[0] == desc[-1] and desc[0] in "\"'":
+                desc = desc[1:-1]
+    derived = not kws
+    if derived:
+        kws = []
+        for w in _words(slug.replace("-", " ")) + _words(desc):
+            if len(w) >= 4 and w not in KW_STOP and w not in kws:
+                kws.append(w)
+        kws = kws[:DERIVED_MAX]
+    return {"slug": slug, "description": desc, "keywords": kws, "derived": derived}
+
+
 def cmd_bootstrap():
     """SessionStart. Prints at most ONE json object - a hook that prints two reads as
     silence - so every part of it returns its text here instead of printing it."""

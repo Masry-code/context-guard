@@ -7540,6 +7540,92 @@ def test_a_note_under_a_scratch_key_is_never_a_redirect_target():
         shutil.rmtree(home, ignore_errors=True)
 
 
+# ------------------------------------------------------------------ memory keywords
+def mem_text(slug, desc, kws=None, eol="\n"):
+    """A memory file the way Claude Code writes one, with an optional keywords line."""
+    lines = ["---", "name: " + slug, 'description: "' + desc + '"']
+    if kws is not None:
+        lines.append("keywords: " + ", ".join(kws))
+    lines += ["metadata:", "  type: project", "---", "", "body of " + slug]
+    return eol.join(lines) + eol
+
+
+def kw_home(memories, lists=None, manifest=None, claude_md=None):
+    """A throwaway home holding memory files. memories: {(key, slug): text};
+    lists: {key: MEMORY.md text}; manifest: the memory-manifest.json dict."""
+    home = make_home({})
+    for (key, slug), body in memories.items():
+        d = os.path.join(home, ".claude", "projects", key, "memory")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, slug + ".md"), "w", encoding="utf-8", newline="") as f:
+            f.write(body)
+    for key, text in (lists or {}).items():
+        d = os.path.join(home, ".claude", "projects", key, "memory")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "MEMORY.md"), "w", encoding="utf-8") as f:
+            f.write(text)
+    state = os.path.join(home, ".claude", "context-guard")
+    os.makedirs(state, exist_ok=True)
+    if manifest is not None:
+        with open(os.path.join(state, "memory-manifest.json"), "w", encoding="utf-8") as f:
+            json.dump(manifest, f)
+    if claude_md is not None:
+        with open(os.path.join(home, ".claude", "CLAUDE.md"), "w", encoding="utf-8") as f:
+            f.write(claude_md)
+    return home
+
+
+def kw_json(home, code):
+    """Run `code` (which must print one JSON value) inside guard, and parse it."""
+    p = guard_call(home, code)
+    try:
+        return json.loads(p.stdout.strip().splitlines()[-1])
+    except Exception:
+        return {"_error": (p.stderr or p.stdout)[-400:]}
+
+
+def test_the_keywords_reader_reads_the_line_and_falls_back_to_the_summary():
+    """Spec 2026-10-02 section 1: a keywords line is read as given; a file without one
+    still works, from its slug and description; CRLF and a BOM change nothing."""
+    home = kw_home({
+        (KEY, "android-adb"): mem_text("android-adb", "adb on the phone",
+                                       ["adb", "Android Phone", "usb debugging"]),
+        (KEY, "crlf-one"): mem_text("crlf-one", "x", ["alpha", "beta"], eol="\r\n"),
+        (KEY, "telegram-bot-traps"): mem_text("telegram-bot-traps",
+                                              "Telegram polling and webhook conflict"),
+        (KEY, "no-front"): "# just a heading\n",
+    })
+    try:
+        p = os.path.join(home, ".claude", "projects", KEY, "memory")
+        with open(os.path.join(p, "bom-one.md"), "w", encoding="utf-8-sig") as f:
+            f.write(mem_text("bom-one", "y", ["gamma"]))
+        r = kw_json(home, "import json, os\n"
+                    "p = %r\n"
+                    "print(json.dumps({n: guard.memory_keywords(os.path.join(p, n + '.md'))\n"
+                    "  for n in ['android-adb','crlf-one','telegram-bot-traps','no-front','bom-one']}))"
+                    % p)
+        a = r.get("android-adb") or {}
+        check("kw-read: keywords are read and lowercased",
+              a.get("keywords") == ["adb", "android phone", "usb debugging"], repr(a))
+        check("kw-read: a written line is not derived", a.get("derived") is False, repr(a))
+        check("kw-read: the description is read without its quotes",
+              a.get("description") == "adb on the phone", repr(a))
+        check("kw-read: CRLF changes nothing",
+              (r.get("crlf-one") or {}).get("keywords") == ["alpha", "beta"], repr(r.get("crlf-one")))
+        check("kw-read: a BOM changes nothing",
+              (r.get("bom-one") or {}).get("keywords") == ["gamma"], repr(r.get("bom-one")))
+        t = r.get("telegram-bot-traps") or {}
+        check("kw-read: no line -> derived from slug and description",
+              t.get("derived") is True and "telegram" in t.get("keywords", [])
+              and "webhook" in t.get("keywords", []), repr(t))
+        check("kw-read: derived words are 4+ chars, at most 8",
+              all(len(w) >= 4 for w in t.get("keywords", [])) and len(t.get("keywords", [])) <= 8,
+              repr(t))
+        check("kw-read: no frontmatter -> None", r.get("no-front") is None, repr(r.get("no-front")))
+    finally:
+        rm_tree(home)
+
+
 if __name__ == "__main__":
     for t in (test_a_folderless_chat_naming_a_saved_thread_is_told_to_move,
               test_a_big_folderless_chat_is_not_told_to_move,
@@ -7792,7 +7878,8 @@ if __name__ == "__main__":
               test_hooks_running_at_once_lose_no_pickup,
               test_non_finite_numbers_and_a_huge_file_are_survived,
               test_an_untitled_writer_is_ignored,
-              test_an_entry_has_a_short_stable_id_and_the_flag_takes_it):
+              test_an_entry_has_a_short_stable_id_and_the_flag_takes_it,
+              test_the_keywords_reader_reads_the_line_and_falls_back_to_the_summary):
         print(t.__name__)
         t()
     print()
