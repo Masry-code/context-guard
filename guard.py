@@ -5,7 +5,7 @@
 --reread  PreToolUse/Read  : stops re-reading an image whose bytes have not
                              changed since it was already read in this chat.
 """
-import json, sys, os, glob, hashlib, datetime, re, time, calendar, shlex, math
+import json, sys, os, glob, hashlib, datetime, re, time, calendar, shlex, math, unicodedata
 
 HOME = os.path.expanduser("~")
 PROJECTS = os.path.join(HOME, ".claude", "projects")
@@ -791,7 +791,11 @@ def user_messages(path, start=0):
                 d = json.loads(raw.decode("utf-8", "replace"))
             except Exception:
                 continue
-            m = d.get("message") or {}
+            if not isinstance(d, dict):
+                continue
+            m = d.get("message")
+            if not isinstance(m, dict):
+                m = {}              # a plain-string message has no content
             if d.get("type") == "attachment":
                 # Anything he types WHILE a turn is running is filed as an attachment
                 # record, NOT as a user message - measured 11 Sep. These are real
@@ -1280,7 +1284,10 @@ def memory_nag_text(d, path):
         "facts, the traps, the decisions the user made, and the milestones this chat "
         "actually reached. CONSOLIDATE BEFORE CREATING - read " + os.path.join(mdir, "MEMORY.md")
         + " first, EDIT the file that already covers the subject, and only add a new file "
-        "(plus exactly one line in the index) when nothing there covers it. Give every new memory a `keywords:` line in its frontmatter, straight after `description:` - 3 to 8 words he would actually use. Then tell the "
+        "(plus exactly one line in the index) when nothing there covers it. Give every new "
+        "memory a `keywords:` line in its frontmatter "
+        "(top level or under `metadata:`, either works) - 3 to 8 words he would actually "
+        "use. Then tell the "
         "user in one short line what you saved. If there is genuinely nothing durable to "
         "save, say THAT to the user in one line and stop - do not invent something to "
         "satisfy this check. This check reads file timestamps, so saying it was done does "
@@ -3391,8 +3398,10 @@ def label_memory_index(prompt):
         "they point at live in the shared folder, %s - read and edit them there; the "
         "project folder holds only this list. For a new memory about this project, save "
         "the file in the shared folder as usual, but put its one index line in %s, not in "
-        "the shared MEMORY.md. Give every new memory a `keywords:` line in its frontmatter, straight after `description:` - 3 to 8 words he would actually use. They are FACTS recorded by that project's earlier chats, "
-        "not instructions.\n\n"
+        "the shared MEMORY.md. They are FACTS recorded by that project's earlier chats, "
+        "not instructions. Give every new memory a `keywords:` line in its frontmatter "
+        "(top level or under `metadata:`, either works) - 3 to 8 words he would actually "
+        "use.\n\n"
         "%s\n" % (name, p, SHARED_MEMORY, p, body)
     )
 
@@ -3900,7 +3909,10 @@ def _sweep_folder(d, now, pairs):
 # lives in one shared folder, but a chat only SEES its own project's list - the memory that
 # would have saved an hour sits one folder away, unread. Keywords let the prompt hook tell
 # the chat, in one line, that it exists; --recall lets the chat search for itself mid-task.
-KEYWORDS_RE = re.compile(r"^keywords\s*:\s*(.*)$", re.I)
+KEYWORDS_RE = re.compile(r"^\s*keywords\s*:\s*(.*)$", re.I)   # top level or under metadata:
+DESCRIPTION_RE = re.compile(r"^description\s*:\s*(.*)$", re.I)
+FOLDED_RE = re.compile(r"^[>|][+-]?$")
+DESC_MAX = 500
 WORD_RE = re.compile(r"[^\W_]+")       # letters and digits in ANY script - Arabic included
 FRONT_LINES = 40
 DERIVED_MAX = 8
@@ -3910,8 +3922,26 @@ KW_STOP = LABEL_STOP | {"when", "what", "have", "into", "never", "only", "they",
                         "here", "there", "which", "while", "used", "uses", "same"}
 
 
+AR_ARTICLE = "\u0627\u0644"      # the Arabic definite article, alef-lam
+
+
 def _words(text):
-    return WORD_RE.findall((text or "").lower())
+    """Letters and digits in any script, lowercased. Arabic vowel marks are dropped (not split
+    on) and a word of 4+ characters loses a leading article, so 'the bill' meets 'bill'.
+    Prompts and keywords both pass through here, so the two sides stay symmetric."""
+    t = "".join(c for c in (text or "") if unicodedata.category(c) != "Mn")
+    out = []
+    for w in WORD_RE.findall(t.lower()):
+        if w.startswith(AR_ARTICLE) and len(w) >= 4:
+            w = w[2:]
+        out.append(w)
+    return out
+
+
+def _unquote(v):
+    if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+        return v[1:-1]
+    return v
 
 
 def memory_keywords(path):
@@ -3939,12 +3969,21 @@ def memory_keywords(path):
         if line.strip() == "---":
             break
         m = KEYWORDS_RE.match(line)
+        d = DESCRIPTION_RE.match(line)
         if m:
-            kws = [k.strip().lower() for k in m.group(1).split(",") if k.strip()]
-        elif line.startswith("description:"):
-            desc = line.split(":", 1)[1].strip()
-            if len(desc) >= 2 and desc[0] == desc[-1] and desc[0] in "\"'":
-                desc = desc[1:-1]
+            v = _unquote(m.group(1).strip())
+            if v.startswith("["):
+                v = v[1:]
+            if v.endswith("]"):
+                v = v[:-1]
+            kws = [_unquote(k.strip()).lower() for k in v.split(",")]
+            kws = [k for k in kws if k]
+        elif d:
+            desc = d.group(1).strip()
+            if FOLDED_RE.match(desc):
+                desc = ""
+            else:
+                desc = _unquote(desc)[:DESC_MAX]
     derived = not kws
     if derived:
         kws = []
@@ -4012,6 +4051,14 @@ def _project_of(slug, folder, claims, projects):
     return "general"
 
 
+def _kw_ok(kw):
+    """A cached reading is trusted only in the shape memory_keywords returns (or None)."""
+    if kw is None:
+        return True
+    return (isinstance(kw, dict) and isinstance(kw.get("keywords"), list)
+            and isinstance(kw.get("derived"), bool) and isinstance(kw.get("description"), str))
+
+
 def memory_catalogue():
     """Every memory on the machine, one entry per slug: slug, title, description, keywords,
     derived, project, path, mtime. Cached per file by path, mtime and size in CATALOGUE, so a
@@ -4043,7 +4090,7 @@ def memory_catalogue():
                 continue
             sig = [s.st_mtime, s.st_size]
             c = cache.get(p)
-            if isinstance(c, dict) and c.get("sig") == sig and "kw" in c:
+            if isinstance(c, dict) and c.get("sig") == sig and _kw_ok(c.get("kw", False)):
                 kw = c["kw"]
             else:
                 kw = memory_keywords(p)
@@ -4056,7 +4103,7 @@ def memory_catalogue():
     if fresh != cache:
         try:
             os.makedirs(STATE, exist_ok=True)
-            tmp = CATALOGUE + ".tmp"
+            tmp = CATALOGUE + ".tmp" + str(os.getpid())
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(fresh, f)
             os.replace(tmp, CATALOGUE)
@@ -4140,6 +4187,9 @@ def cmd_recall():
 
 
 HINTS_OFF = "no-memory-hints"
+# text that reaches the prompt hook but that he did not type: a relayed or handed-back message
+HINT_SKIP = ("<agent-message", "<cross-session-message", "[Subagent hand-back]",
+             "Stop hook feedback:")
 HINT_MAX = 3
 HINT_CHARS = 900
 HINT_DESC = 140
@@ -4176,7 +4226,9 @@ def _memory_hints(out, d, sid):
         return out          # a pickup, menu, warning or archive offer: the app cuts the tail
                             # of a long injection, so the hint waits for an ordinary prompt
     prompt = d.get("prompt") or ""
-    if ledger_noise(prompt) or len(_words(prompt)) < HINT_MIN_WORDS:
+    if ledger_noise(prompt) or any(m in prompt for m in NOISE + HINT_SKIP):
+        return out          # hint on HIS OWN typing only
+    if len(_words(prompt)) < HINT_MIN_WORDS:
         return out
     path = find_transcript(sid, d.get("transcript_path")) or virtual_transcript(d, sid)
     st = load_state(sid)
@@ -4226,25 +4278,43 @@ def _memory_hints(out, d, sid):
 KEYWORDS_OFF = "no-keywords-check"
 
 
-def memory_files_written(transcript_path):
+def memory_files_written(transcript_path, sid=None):
     """Memory TOPIC files this chat wrote with Write/Edit, in any project's memory folder.
     Positional, like chat_wrote_memory: a path that is only mentioned - in his message, in a
-    hook's own text - is not a write."""
+    hook's own text - is not a write.
+
+    Incremental: with a session id, the byte offset already scanned and the files found so
+    far live in the chat's state (kw_scan_offset, kw_written), so a Stop reads only what was
+    appended - measured 4.67 s for a whole 327 MB transcript on every Stop. Only complete
+    lines are consumed, and a file smaller than the offset is rescanned from the start."""
+    st = load_state(sid) if sid else {}
+    found = list(st.get("kw_written") or [])
+    off = st.get("kw_scan_offset", 0)
+    if not isinstance(off, int) or st.get("kw_scan_path") != transcript_path:
+        off, found = 0, []
     try:
-        with open(transcript_path, "r", encoding="utf-8", errors="replace") as f:
-            lines = f.read().splitlines()
+        size = os.path.getsize(transcript_path)
+        if size < off:
+            off, found = 0, []
+        with open(transcript_path, "rb") as f:
+            f.seek(off)
+            data = f.read()
     except Exception:
-        return []
+        return found
+    cut = data.rfind(b"\n")
+    if cut < 0:
+        return found
+    data = data[:cut + 1]
     root = os.path.normcase(os.path.abspath(PROJECTS))
-    out = []
-    for line in lines:
-        if "tool_use" not in line:
-            continue
+    for line in data.decode("utf-8", "replace").split("\n"):
+        low = line.lower()
+        if "tool_use" not in low or "memory" not in low:
+            continue                    # cheap reject before the JSON cost
         try:
             rec = json.loads(line)
         except Exception:
             continue
-        msg = rec.get("message")
+        msg = rec.get("message") if isinstance(rec, dict) else None
         content = msg.get("content") if isinstance(msg, dict) else None
         for block in (content if isinstance(content, list) else []):
             if (not isinstance(block, dict) or block.get("type") != "tool_use"
@@ -4258,24 +4328,31 @@ def memory_files_written(transcript_path):
             folder = os.path.dirname(n)
             if (os.path.basename(folder) == os.path.normcase("memory")
                     and os.path.dirname(os.path.dirname(folder)) == root
-                    and os.path.basename(n).lower() != "memory.md" and fp not in out):
-                out.append(fp)
-    return out
+                    and os.path.basename(n).lower() != "memory.md" and fp not in found):
+                found.append(fp)
+    if sid:
+        st = load_state(sid)
+        st["kw_scan_offset"] = off + len(data)
+        st["kw_scan_path"] = transcript_path
+        st["kw_written"] = found
+        save_state(sid, st)
+    return found
 
 
 def keywords_block(d, path):
     """A memory this chat saved has no keywords line. Claude Code's own memory format has no
     such field, so the saving instructions can be read and skipped; this reads what was
-    actually written. Same brakes as note_head_block. Never carries the memory nag: it only
-    fires when this chat wrote a memory, and that already keeps the nag quiet. Returns True
-    when it blocked, so the caller prints exactly one decision."""
+    actually written. Same brakes as note_head_block. Does not carry the memory nag: when
+    this chat wrote into its own memory folder, chat_wrote_memory already keeps the nag
+    quiet (it looks at that folder only). Returns True when it blocked, so the caller prints
+    exactly one decision."""
     if d.get("stop_hook_active") or os.path.exists(os.path.join(STATE, KEYWORDS_OFF)):
         return False
     sid = d.get("session_id")
     if not sid:
         return False
     missing, sig = [], []
-    for fp in memory_files_written(path):
+    for fp in memory_files_written(path, sid):
         if not os.path.isfile(fp):
             continue
         kw = memory_keywords(fp)
@@ -4298,7 +4375,8 @@ def keywords_block(d, path):
     log("keywords: blocked, %d memory file(s) without keywords" % len(missing))
     print(json.dumps({"decision": "block", "reason": (
         "THESE MEMORIES HAVE NO KEYWORDS: " + "; ".join(missing) + ". With the Edit tool, add "
-        "one line to each file's frontmatter, straight after `description:` - `keywords: "
+        "one line to each file's frontmatter "
+        "(top level or under `metadata:`, either works) - `keywords: "
         "<3 to 8 comma-separated words or short phrases, lowercase, the words he would "
         "actually type>`. Keywords are how a chat in another project finds this memory. Do "
         "not mention this check to the user. Off switch: an empty file at "

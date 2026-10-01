@@ -7705,8 +7705,8 @@ def test_the_scorer_asks_for_two_keywords_or_one_rare_one():
     needs its words in order, derived keywords need two, and Arabic matches Arabic."""
     home = kw_home(SCORE_MEMS)
     try:
-        check("kw-score: one common keyword is not enough",
-              scored(home, "my android phone is slow") == [], repr(scored(home, "my android phone is slow")))
+        common = scored(home, "my android phone is slow")
+        check("kw-score: one common keyword is not enough", common == [], repr(common))
         check("kw-score: one rare keyword is enough",
               scored(home, "can adb see the device") == ["adb-setup"])
         check("kw-score: two keywords qualify",
@@ -7763,7 +7763,8 @@ HINT_LISTS = {KEY: "# Memory Index\n- [Own](own-thing.md) - o\n",
 def test_the_hint_names_another_projects_memory_once():
     """Spec section 3, the whole path: his prompt names it, the chat gets one line with
     the project and the path, the search tip rides the first hint only, never twice."""
-    home = kw_home(HINT_MEMS, lists=HINT_LISTS, manifest=KW_MANIFEST)
+    home = kw_home({**HINT_MEMS, (KEY, "sprocket-two"): mem_text(
+        "sprocket-two", "s", ["sprocket", "flange"])}, lists=HINT_LISTS, manifest=KW_MANIFEST)
     try:
         p = run(home, "hint1", "why does adb not see my phone today")
         expect_clean(p, "kw-hint")
@@ -7775,6 +7776,9 @@ def test_the_hint_names_another_projects_memory_once():
         q = run(home, "hint1", "adb still does not see my phone")
         check("kw-hint: the same memory is never hinted twice",
               "android-adb.md" not in context_of(q), context_of(q)[:300])
+        s = context_of(run(home, "hint1", "the sprocket and the flange broke again today"))
+        check("kw-hint: a second hint names its memory but carries no search tip",
+              "sprocket-two.md" in s and "--recall" not in s, s[:300])
     finally:
         rm_tree(home)
 
@@ -7923,6 +7927,263 @@ def test_the_label_belongs_only_to_the_handover_reply():
         c = context_of(run(home, "labchat1", "Harbor -4 (2 Oct)"))
         check("label-only: the pickup says never end a reply with its own label",
               "Never end a reply with this chat's own label" in c, c[:600])
+    finally:
+        rm_tree(home)
+
+
+def test_arabic_forms_meet_in_the_word_splitter():
+    """Review fix 1: one splitter serves prompts and keywords, so 'the bill' and 'bill' meet
+    and a vowel mark does not split a word."""
+    home = kw_home({(KEY, "bank-bill"): mem_text("bank-bill", "b", ["فاتورة"]),
+                    (KEY, "marked-bill"): mem_text("marked-bill", "m", ["مَدْرَسَة"])})
+    try:
+        r = kw_json(home, "import json\nprint(json.dumps([guard._words(%r), guard._words(%r),"
+                          " guard._words(%r), guard._words(%r)]))"
+                    % ("الفاتورة", "فَاتُورَة", "Hello World", "ال"))
+        check("kw-ar: the article is dropped from a long word", r[0] == ["فاتورة"], ascii(r))
+        check("kw-ar: vowel marks are dropped, not split on", r[1] == ["فاتورة"], ascii(r))
+        check("kw-ar: English is unchanged", r[2] == ["hello", "world"], ascii(r))
+        check("kw-ar: a short word keeps its letters", r[3] == ["ال"], ascii(r))
+        check("kw-ar: keyword and prompt-with-article meet",
+              scored(home, "اين الفاتورة الشهر الماضي") == ["bank-bill"])
+        check("kw-ar: a marked keyword meets the bare word",
+              scored(home, "اين المدرسة اليوم الان") == ["marked-bill"])
+    finally:
+        rm_tree(home)
+
+
+def test_odd_frontmatter_is_read_sensibly():
+    """Review fix 2: a bracket list, a capitalised key, a folded marker and a long description."""
+    def raw(slug, *front):
+        return "\n".join(["---", "name: " + slug] + list(front) + ["---", "", "body", ""])
+    home = kw_home({
+        (KEY, "listed"): raw("listed", "description: Cased words here",
+                             "keywords: [alpha, \"beta\", 'gamma']"),
+        (KEY, "cap"): raw("cap", "Description: Capital Key", "Keywords: delta"),
+        (KEY, "folded"): raw("folded", "description: >-", "  the real text is on later lines"),
+        (KEY, "bar"): raw("bar", "description: |"),
+        (KEY, "long"): raw("long", "description: " + "x" * 600, "keywords: k"),
+        (KEY, "many"): raw("many", "description: " + " ".join(
+            "word%s" % c for c in "abcdefghijklmnopqrst")),
+    })
+    try:
+        p = os.path.join(home, ".claude", "projects", KEY, "memory")
+        r = kw_json(home, "import json, os\np = %r\nprint(json.dumps({n: guard.memory_keywords("
+                          "os.path.join(p, n + '.md')) for n in "
+                          "['listed','cap','folded','bar','long','many']}))" % p)
+        check("kw-front: a bracket list is split and unquoted",
+              r["listed"]["keywords"] == ["alpha", "beta", "gamma"], repr(r["listed"]))
+        check("kw-front: Description is matched case-insensitively",
+              r["cap"]["description"] == "Capital Key" and r["cap"]["keywords"] == ["delta"],
+              repr(r["cap"]))
+        check("kw-front: a folded marker -> empty description",
+              r["folded"]["description"] == "" and r["bar"]["description"] == "",
+              repr([r["folded"], r["bar"]]))
+        check("kw-front: the description is capped at 500",
+              len(r["long"]["description"]) == 500, str(len(r["long"]["description"])))
+        check("kw-front: derived keywords stop at 8 even with a long description",
+              r["many"]["derived"] is True and len(r["many"]["keywords"]) == 8, repr(r["many"]))
+    finally:
+        rm_tree(home)
+
+
+def test_the_catalogue_distrusts_a_malformed_cache_entry_and_names_its_temp_by_pid():
+    """Review fix 3."""
+    home = kw_home({(KEY, "one"): mem_text("one", "a", ["alpha"])})
+    try:
+        r = kw_json(home, "import json, os\n"
+                    "guard.memory_catalogue()\n"
+                    "c = json.load(open(guard.CATALOGUE))\n"
+                    "for p in c: c[p]['kw'] = {'slug': 'x'}\n"
+                    "json.dump(c, open(guard.CATALOGUE, 'w'))\n"
+                    "src = []\nreal = os.replace\n"
+                    "os.replace = lambda a, b: (src.append(a), real(a, b))[1]\n"
+                    "e = guard.memory_catalogue()\n"
+                    "print(json.dumps([[x.get('keywords') for x in e], src, os.getpid()]))")
+        check("kw-cache: a malformed cached kw is re-read",
+              r[0] == [["alpha"]], repr(r))
+        check("kw-cache: the temp file name carries the pid",
+              len(r[1]) == 1 and r[1][0].endswith(".tmp" + str(r[2])), repr(r))
+    finally:
+        rm_tree(home)
+
+
+def test_rarity_boundary_and_recall_with_a_flag_word():
+    """Review fix 4: 2 carriers is rare, 3 is not, a 2-letter keyword never counts alone,
+    and --recall --size searches for the words instead of running --size."""
+    mems = {}
+    for i in range(2):
+        mems[(KEY, "z%d" % i)] = mem_text("z%d" % i, "d", ["zebra", "zz%d" % i])
+    for i in range(3):
+        mems[(KEY, "y%d" % i)] = mem_text("y%d" % i, "d", ["yakkity", "yy%d" % i])
+    mems[(KEY, "q0")] = mem_text("q0", "d", ["qa", "qq0"])
+    mems[(KEY, "w0")] = mem_text("w0", "d", ["widget", "ww0"])
+    home = kw_home(mems)
+    try:
+        check("kw-rare: a keyword carried by exactly two memories qualifies alone",
+              sorted(scored(home, "the zebra is here today")) == ["z0", "z1"])
+        check("kw-rare: a keyword carried by three does not",
+              scored(home, "the yakkity is here today") == [])
+        check("kw-rare: a rare two-character keyword does not",
+              scored(home, "the qa is here today") == [])
+        p = run_recall(home, "--size", "widget")
+        check("kw-recall: --size is searched for, not run",
+              p.returncode == 0 and "w0.md" in p.stdout, repr((p.returncode, p.stdout[:200],
+                                                               p.stderr[-200:])))
+    finally:
+        rm_tree(home)
+
+
+def test_keywords_under_metadata_are_read_and_the_instructions_allow_both_places():
+    """Review fix 8: Claude Code's memory system moves a top-level keywords line under
+    metadata: and quotes it. Both shapes must read."""
+    six = "usage credits, red bar, extra usage, credit limit, scary red, billing"
+    moved = ['---', 'name: moved', 'description: "d"', 'metadata:', '  node_type: memory',
+             '  keywords: "%s"' % six, '  type: reference', '---', '', 'body', '']
+    single = ['---', 'name: single', 'description: "d"', 'metadata:',
+              "  keywords: 'one, two'", '---', '', 'body', '']
+    top = ['---', 'name: top', 'description: "d"', 'keywords: three, four', '---', '', 'b', '']
+    home = kw_home({(KEY, "moved"): "\n".join(moved), (KEY, "crlf"): "\r\n".join(moved),
+                    (KEY, "single"): "\n".join(single), (KEY, "top"): "\n".join(top)})
+    try:
+        p = os.path.join(home, ".claude", "projects", KEY, "memory")
+        r = kw_json(home, "import json, os\np = %r\nprint(json.dumps({n: guard.memory_keywords("
+                          "os.path.join(p, n + '.md')) for n in ['moved','crlf','single','top']}))"
+                    % p)
+        want = [k.strip() for k in six.split(",")]
+        check("kw-meta: indented and quoted under metadata reads the six",
+              r["moved"]["keywords"] == want and r["moved"]["derived"] is False, repr(r["moved"]))
+        check("kw-meta: a CRLF file of that shape too", r["crlf"]["keywords"] == want,
+              repr(r["crlf"]))
+        check("kw-meta: single quotes", r["single"]["keywords"] == ["one", "two"], repr(r["single"]))
+        check("kw-meta: the top-level form still reads", r["top"]["keywords"] == ["three", "four"],
+              repr(r["top"]))
+        with open(GUARD, encoding="utf-8") as f:
+            src = f.read()
+        check("kw-meta: no instruction says 'straight after description'",
+              "straight after `description:`" not in src)
+        check("kw-meta: the instructions allow either place",
+              src.count("top level or under `metadata:`, either works") >= 3)
+    finally:
+        rm_tree(home)
+
+
+def test_a_spec_slug_linked_by_two_project_lists_is_general():
+    """Review fix 6: two project lists claiming a slug name no single project."""
+    home = kw_home(
+        {(KEY, "shared-lesson"): mem_text("shared-lesson", "s", ["lesson"])},
+        lists={DROID_KEY: "# Memory Index\n- [Shared lesson](shared-lesson.md) - x\n",
+               "D--Demo-Tides": "# Memory Index\n- [Shared lesson](shared-lesson.md) - x\n"},
+        manifest=KW_MANIFEST)
+    try:
+        r = kw_json(home, "import json\nprint(json.dumps({e['slug']: e['project'] for e in "
+                          "guard.memory_catalogue()}))")
+        check("kw-cat: a slug linked by two project lists is general",
+              r.get("shared-lesson") == "general", repr(r))
+    finally:
+        rm_tree(home)
+
+
+def test_the_written_memories_scan_is_incremental():
+    """Second review fix 9: a Stop must not re-read the whole transcript. Proved by counting
+    json.loads on tool_use lines: the second call parses only what was appended."""
+    home = kw_home({(KEY, "a"): mem_text("a", "x"), (KEY, "b"): mem_text("b", "x"),
+                    (KEY, "c"): mem_text("c", "x")})
+    try:
+        md = os.path.join(home, ".claude", "projects", KEY, "memory")
+        pa, pb, pc = (os.path.join(md, n + ".md") for n in "abc")
+        tp = write_mem_writes(home, "kwinc", [pa, pb])
+        code = ("import json, os\n"
+                "P = %r\n"
+                "n = [0]\nreal = json.loads\n"
+                "def counted(s, *a, **k):\n"
+                "    if 'tool_use' in s: n[0] += 1\n"
+                "    return real(s, *a, **k)\n"
+                "json.loads = counted\n"
+                "r1 = guard.memory_files_written(P, 'kwinc')\n"
+                "first = n[0]\n"
+                "rec = {'type': 'assistant', 'message': {'role': 'assistant', 'content': ["
+                "{'type': 'tool_use', 'name': 'Write', 'input': {'file_path': %r, 'content': 'x'}}]}}\n"
+                "line = real and json.dumps(rec)\n"
+                "with open(P, 'a', encoding='utf-8') as f: f.write(line)\n"   # no newline yet
+                "r2 = guard.memory_files_written(P, 'kwinc')\n"
+                "with open(P, 'a', encoding='utf-8') as f: f.write(chr(10))\n"
+                "n[0] = 0\n"
+                "r3 = guard.memory_files_written(P, 'kwinc')\n"
+                "again = n[0]\n"
+                "with open(P, 'w', encoding='utf-8') as f: f.write(line + chr(10))\n"
+                "r4 = guard.memory_files_written(P, 'kwinc')\n"
+                "print(json.dumps([r1, first, r2, r3, again, r4]))") % (tp, pc)
+        r = kw_json(home, code)
+        base = lambda xs: [os.path.basename(x) for x in xs]
+        check("kw-scan: the first call finds both writes",
+              base(r[0]) == ["a.md", "b.md"] and r[1] == 2, repr(r))
+        check("kw-scan: a half-written last line is not consumed", base(r[2]) == ["a.md", "b.md"],
+              repr(r))
+        check("kw-scan: once complete it is found, and only it was parsed",
+              base(r[3]) == ["a.md", "b.md", "c.md"] and r[4] == 1, repr(r))
+        check("kw-scan: a smaller file is rescanned from the start", base(r[5]) == ["c.md"],
+              repr(r))
+    finally:
+        rm_tree(home)
+
+
+def test_a_real_label_pickup_keeps_its_list_out_of_the_hints():
+    """Second review fix 11a: the list a label pickup put in front of the chat is never hinted."""
+    home = kw_home(HINT_MEMS, lists=HINT_LISTS, manifest=KW_MANIFEST)
+    try:
+        with open(os.path.join(home, ".claude", "handoff", KEY + ".lab12345.md"), "w",
+                  encoding="utf-8") as f:
+            f.write("HANDOFF LABEL: droid -2 (1 Oct)\nWRITTEN BY: droid -1 (30 Sep)\n"
+                    "NEXT CHAT EFFORT: high - x\n\nbody\n")
+        c0 = context_of(run(home, "labh", "droid -2 (1 Oct)"))
+        lp = kw_json(home, "import json\nprint(json.dumps(guard.load_state('labh').get('label_list')))")
+        check("kw-hint-label: the pickup happened and recorded the list",
+              "HANDOFF NOTE" in c0 and bool(lp) and "MEMORY.md" in lp, repr((c0[:100], lp)))
+        c = context_of(run(home, "labh", "why does adb not see my phone"))
+        check("kw-hint-label: a slug in that list is not hinted", "android-adb" not in c, c[:200])
+    finally:
+        rm_tree(home)
+
+
+def test_a_stop_over_a_string_message_record_does_not_crash():
+    """Second review fix 13: a transcript record whose message is a plain string."""
+    home = kw_home({})
+    try:
+        p = os.path.join(home, ".claude", "projects", KEY, "strmsg.jsonl")
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"type": "user", "message": "just a string"}) + chr(10))
+            f.write(json.dumps({"type": "assistant", "message": "another"}) + chr(10))
+            f.write(json.dumps({"type": "user", "timestamp": "2026-10-01T10:00:00Z",
+                                "message": {"role": "user", "content": "a real ask"}}) + chr(10))
+        pr = run_stop(home, "strmsg")
+        expect_clean(pr, "kw-strmsg")
+        check("kw-strmsg: exit 0, no traceback", pr.returncode == 0 and "Traceback" not in pr.stderr,
+              pr.stderr[-300:])
+    finally:
+        rm_tree(home)
+
+
+def test_a_cross_session_message_gets_no_hint():
+    """Review fix 7: hints are for HIS typing - not a hand-back or a relayed message."""
+    home = kw_home(HINT_MEMS, lists=HINT_LISTS, manifest=KW_MANIFEST)
+    try:
+        said = "why does adb not see my phone"
+        for i, wrap in enumerate(("<cross-session-message from=x>%s</cross-session-message>",
+                                  "<agent-message>%s</agent-message>",
+                                  "[Subagent hand-back] %s",
+                                  "Stop hook feedback: %s",
+                                  "<task-notification>%s</task-notification>")):
+            c = context_of(run(home, "hintx%d" % i, wrap % said))
+            check("kw-hint-from-others: " + wrap[:22], "android-adb" not in c, c[:200])
+        c = context_of(run(home, "hintx9", said))
+        check("kw-hint-from-others: the bare sentence still hints", "android-adb.md" in c, c[:200])
+        p = kw_json(home, "import json\n"
+                    "d = {'session_id': 'hinty', 'prompt': '[Image: x] why does adb not see my phone'}\n"
+                    "r = guard.memory_hints({}, d, 'hinty')\n"
+                    "print(json.dumps([r, guard.load_state('hinty').get('memory_hints')]))")
+        check("kw-hint-from-others: ledger noise gets nothing and records nothing",
+              p == [{}, None], repr(p))
     finally:
         rm_tree(home)
 
@@ -8192,7 +8453,17 @@ if __name__ == "__main__":
               test_a_memory_saved_without_keywords_is_sent_back_once,
               test_the_keywords_check_has_an_off_switch_and_a_cap,
               test_the_saving_instructions_ask_for_keywords,
-              test_the_label_belongs_only_to_the_handover_reply):
+              test_the_label_belongs_only_to_the_handover_reply,
+              test_arabic_forms_meet_in_the_word_splitter,
+              test_odd_frontmatter_is_read_sensibly,
+              test_the_catalogue_distrusts_a_malformed_cache_entry_and_names_its_temp_by_pid,
+              test_rarity_boundary_and_recall_with_a_flag_word,
+              test_keywords_under_metadata_are_read_and_the_instructions_allow_both_places,
+              test_a_cross_session_message_gets_no_hint,
+              test_a_spec_slug_linked_by_two_project_lists_is_general,
+              test_the_written_memories_scan_is_incremental,
+              test_a_real_label_pickup_keeps_its_list_out_of_the_hints,
+              test_a_stop_over_a_string_message_record_does_not_crash):
         print(t.__name__)
         t()
     print()

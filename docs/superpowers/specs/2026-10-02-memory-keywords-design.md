@@ -20,7 +20,7 @@ keywords: adb, android, phone, apk, usb debugging, install fails
 
 - 3 to 8 comma-separated entries, lowercase. An entry may be a phrase of up to 3 words.
 - Include the other words the author actually uses for the same thing, not only the technical term.
-- Top level, not under `metadata:`, so a reader never needs a YAML parser.
+- Either place is read: top level, or indented under `metadata:`. Claude Code's memory system moves the line under `metadata:` and quotes it when it saves a file, so the reader matches the key with leading whitespace and strips one pair of surrounding quotes (and one pair of square brackets) before splitting on commas. It still needs no YAML parser.
 
 **Reader: `memory_keywords(path)`** returns `(slug, title, description, keywords, derived)`.
 - It reads the frontmatter only, at most the first 40 lines, and stops at the closing `---`.
@@ -35,8 +35,9 @@ keywords: adb, android, phone, apk, usb debugging, install fails
 - When a slug has copies in several folders, the shared folder's copy wins, then the first copy in sorted folder order. The spare copies left until sweep Task 15 are therefore never shown twice.
 - **Project of a slug, in this order:**
   1. the manifest project whose `files` list names it;
-  2. the one project list that has a line for it;
-  3. otherwise `general`.
+  2. the one project list, other than the shared folder's own, that links it. The shared list holds every project's lines, so it never names one;
+  3. the folder the winning copy sits in, when that is not the shared folder;
+  4. otherwise `general`.
 - **Cache:** `STATE/memory-catalogue.json`, keyed per file by path, mtime and size. Only changed files are re-read, so a prompt doesn't pay for 141 file reads. If the cache is corrupt, it's rebuilt from scratch, never trusted.
 - **Budget:** under 150 ms warm and under 1 s cold, measured on the author's real folders, 141 files today.
 
@@ -81,12 +82,12 @@ keywords: adb, android, phone, apk, usb debugging, install fails
 
 ## 5. Keeping keywords written
 
-- **Saving instructions:** `memory_nag_text()` and `label_memory_index()` gain one sentence: *"Give every new memory a `keywords:` line in its frontmatter, straight after `description:` - 3 to 8 words he would actually use."*
+- **Saving instructions:** `memory_nag_text()` and `label_memory_index()` gain one sentence: *"Give every new memory a `keywords:` line in its frontmatter (top level or under `metadata:`, either works) - 3 to 8 words he would actually use."*
 - **The Stop check, `keywords_block(d, path)`:**
-  1. It finds the memory topic files this chat wrote: Write/Edit `tool_use` blocks whose `file_path` sits in any `PROJECTS/*/memory/` and isn't `MEMORY.md`. It reads positionally, like `chat_wrote_memory()`.
+  1. It finds the memory topic files this chat wrote: Write/Edit `tool_use` blocks whose `file_path` sits in any `PROJECTS/*/memory/` and isn't `MEMORY.md`. It reads positionally, like `chat_wrote_memory()`, and incrementally: the chat's state keeps the byte offset already scanned (`kw_scan_offset`) and the files found so far (`kw_written`), only complete lines are consumed, and a file smaller than the offset is rescanned from the start.
   2. If any of those files still exists and has no `keywords:` line, it blocks once, naming those files and asking for the line to be added with the Edit tool. The block says nothing else.
   3. **Brakes**, the same shape as `note_head_block`: skip when `stop_hook_active` is set; the switch `STATE/no-keywords-check`; at most `NAG_MAX` blocks per chat; never twice for the same set of files and mtimes.
-- **Order in `cmd_ledger`:** ceiling, then note head, then keywords, then the memory nag. That's still one decision per Stop. `keywords_block` never needs to carry the memory nag: it only fires when this chat wrote a memory, and `chat_wrote_memory()` then keeps the nag quiet anyway.
+- **Order in `cmd_ledger`:** ceiling, then note head, then keywords, then the memory nag. That's still one decision per Stop. `keywords_block` does not carry the memory nag: when this chat wrote into its own memory folder, `chat_wrote_memory()` (which looks at that folder only) keeps the nag quiet anyway.
 - **Known gap:** a chat whose last Stop is spent on a note-head block can still end with an unkeyworded memory. The fallback in section 1 covers it until a later chat edits the file.
 
 ## 6. The one-time fill (rollout, outside the repo)

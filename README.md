@@ -102,11 +102,18 @@ copies — then it tells you once and leaves both alone.
 
 ### Memory keywords
 
-Every memory can carry a `keywords:` line in its frontmatter, straight after `description:`. When your message matches a memory that belongs to another project, Context Guard adds one short line naming it: its title, its project and where the file is. It never adds the file itself, never more than 3 memories, and never the same one twice in a chat. A chat can also search every memory on its own:
+Every memory can carry a `keywords:` line in its frontmatter (top level or under
+`metadata:`, either works). When your message matches a memory that belongs to another
+project, Context Guard adds one short line naming it: its title, its project and where the
+file is. It never adds the file itself, never more than 3 memories, and never the same one
+twice in a chat. A chat can also search every memory on its own:
 
     python guard.py --recall gradle build fails
 
-A memory saved without keywords is sent back once, so the line gets added. A memory with no keywords still works: its title and summary stand in. Off switches go in the state folder, as empty files: `no-memory-hints` turns off the hint, and `no-keywords-check` turns off the check.
+A memory saved without keywords is sent back once, so the line gets added. A memory with no
+keywords still works: its title and summary stand in. Off switches go in the state folder,
+as empty files: `no-memory-hints` turns off the hint, and `no-keywords-check` turns off the
+check.
 
 ---
 
@@ -250,6 +257,7 @@ The flag is machine-wide and does not expire, so the next chat you open says so 
 | `guard.py --skills` | yes — counts repeated command patterns |
 | `guard.py --checkpoint <session-id> "<text>"` | yes — records a milestone |
 | `guard.py --attribute` | yes — backfills ledger attribution |
+| `guard.py --recall <words>` | yes — searches every memory by keyword, writes nothing |
 | `ledger-budget.py [project-key]` | yes — prints what the request budget keeps and drops |
 | `guard.py --size` / `--ledger` / `--bootstrap`, `audit.py --alert` | **no** — hook entry points with side effects, including consuming a handoff note and moving memory files |
 
@@ -270,6 +278,8 @@ Create an empty file in `~/.claude/context-guard/`:
 * `no-heredoc-guard` — allow heredocs again (or put `# heredoc-ok` in a single command)
 * `no-memory-sweep` — stop the SessionStart sweep moving memory files and index lines
 * `no-update-check` — stop the once-a-day look for a newer version
+* `no-memory-hints` — stop the one-line hint about another project's matching memory
+* `no-keywords-check` — stop it sending back a memory saved without a `keywords:` line
 
 Every automatic behaviour has an override. That is deliberate: a check you cannot switch off
 is a check you will eventually disable by deleting the whole tool.
