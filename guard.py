@@ -103,6 +103,7 @@ LEDGER_OLDEST_SHARE = 0.2   # of a thread's budget, reserved for its OLDEST entr
 # He approved the check on 17 Sep 2026 and asked for the switch in the same breath -
 # his standing rule is that anything automated leaves him an override.
 NAG_OFF = "no-memory-nag"
+HEAD_OFF = "no-note-head-check"   # his override for note_head_block
 # ...and a hard cap on top of stop_hook_active. That flag is something THIS build happens
 # to send; the design must not rest on it. A chat that decides there is genuinely nothing
 # durable to save never changes a memory mtime, so an uncapped nag would block its own Stop
@@ -855,6 +856,8 @@ def cmd_ledger():
     if ceiling_block(d, path):
         return          # exactly one decision per Stop, and the ceiling outranks the
                         # nag: with no note written there is nothing for the nag to check
+    if note_head_block(d, path):
+        return          # one decision per Stop; the head outranks the memory nag
     memory_nag(d, path)
 
 
@@ -1207,32 +1210,36 @@ def ceiling_block(d, path):
     return True
 
 
-def memory_nag(d, path):
+def memory_nag_text(d, path):
     """This chat wrote a handoff note but nothing in the memory folder was touched.
 
     The note is read once and archived; memory is what every FUTURE chat inherits, so a
     handoff with no memory silently drops everything durable the chat learned. Claude
     saying "I saved the memories" is not evidence, so this reads file timestamps instead
     - a claim cannot satisfy it. Approved by the user 17 Sep 2026 after the mechanism was
-    explained to him in plain words, together with the NAG_OFF override."""
+    explained to him in plain words, together with the NAG_OFF override.
+
+    Returns the reason text and counts it (st["memory_nags"]), or "" when the nag would
+    not fire. memory_nag prints it; note_head_block appends it to its own block, because
+    the Stop after a head block has stop_hook_active set and the nag would be lost."""
     if d.get("stop_hook_active"):
-        return          # Claude Code is ALREADY continuing because this hook blocked;
+        return ""          # Claude Code is ALREADY continuing because this hook blocked;
                         # blocking again is a loop nobody can interrupt
     if os.path.exists(os.path.join(STATE, NAG_OFF)):
-        return
+        return ""
     sid = d.get("session_id")
     if not sid:
-        return          # handoff_path() with no sid falls back to the LEGACY flat
+        return ""          # handoff_path() with no sid falls back to the LEGACY flat
                         # <KEY>.md name, and every chat in the folder would then
                         # think it had handed off
     note = handoff_path(path, sid)
     if not real_note(note):
-        return          # this chat never handed off - and most chats never do. Tying the
+        return ""          # this chat never handed off - and most chats never do. Tying the
                         # nag to the note is what stops it firing on every ordinary reply
     since = session_start_ts(path)
     if since is None:
         log("memory-nag: could not date this session - staying quiet")
-        return
+        return ""
     # Two questions, and until 19 Sep 2026 only the weaker one was asked. mtimes answer
     # "did anyone touch the shared folder"; the transcript answers "did THIS chat write
     # to it". Ask the transcript first and fall back to mtimes only when it cannot be
@@ -1240,10 +1247,10 @@ def memory_nag(d, path):
     wrote = chat_wrote_memory(path)
     if wrote is True:
         log("memory-nag: skipped - this chat wrote to the memory folder")
-        return
+        return ""
     if wrote is None and memory_touched_since(path, since):
         log("memory-nag: skipped - no transcript to read, but the folder changed")
-        return
+        return ""
     if wrote is False and memory_touched_since(path, since):
         # The hole this closes: `--report` read "memory nags 0, never fired" for eight
         # days and 82 pickups, and with five chats sharing one folder a neighbour's save
@@ -1254,12 +1261,12 @@ def memory_nag(d, path):
     said = int(st.get("memory_nags", 0) or 0)
     if said >= NAG_MAX:
         log("memory-nag: already said it %d times - letting the chat go" % said)
-        return
+        return ""
     st["memory_nags"] = said + 1
     save_state(sid, st)
     mdir = memory_dir(path)
     log("memory-nag: note written, nothing saved to memory since the session started")
-    print(json.dumps({"decision": "block", "reason": (
+    return (
         "THE HANDOFF NOTE IS WRITTEN BUT NOTHING WAS SAVED TO MEMORY. Not one file in "
         + mdir + " has changed since this chat started. The note is read once and then "
         "archived; memory is what every FUTURE chat inherits - so everything durable this "
@@ -1272,7 +1279,101 @@ def memory_nag(d, path):
         "save, say THAT to the user in one line and stop - do not invent something to "
         "satisfy this check. This check reads file timestamps, so saying it was done does "
         "not clear it. The user can switch it off for good by creating an empty file at "
-        + os.path.join(STATE, NAG_OFF) + " .")}))
+        + os.path.join(STATE, NAG_OFF) + " .")
+
+
+def memory_nag(d, path):
+    why = memory_nag_text(d, path)
+    if why:
+        print(json.dumps({"decision": "block", "reason": why}))
+
+
+HEAD_NAG_MAX = NAG_MAX
+
+
+def note_head_block(d, path):
+    """A handoff note whose head lacks the label number, the writer or the effort line.
+
+    Measured 1 Oct 2026: those rules are only taught by the size warning, which fires from
+    ~200k, so a chat that hands over earlier writes its note freehand. A real one began
+    `HANDOFF LABEL: My App` with no number, no WRITTEN BY and no effort line: the new chat
+    was titled without a number, nothing found the old chat, so it was never moved into the
+    group, never sent HANDOVER STARTED and never archived. Same brakes as memory_nag. Returns
+    True when it blocked, so the caller prints exactly one decision.
+
+    When it blocks it also carries the memory nag's text if that would fire: the Stop after
+    this block has stop_hook_active set, so memory_nag would return early and a chat that is
+    handing over never gets a later Stop - the nag would be lost for exactly these chats."""
+    if d.get("stop_hook_active"):
+        return False
+    if os.path.exists(os.path.join(STATE, HEAD_OFF)):
+        return False
+    sid = d.get("session_id")
+    if not sid:
+        return False
+    note = handoff_path(path, sid)
+    if not real_note(note):
+        return False        # a stub never counts
+    label = ""
+    try:
+        with open(note, encoding="utf-8-sig", errors="replace") as f:
+            for i, line in enumerate(f):
+                if i >= WRITER_HEAD_LINES:
+                    break
+                m = LABEL_RE.search(line)
+                if m:
+                    label = m.group(1).strip().strip("*_`# ")
+                    break
+    except Exception:
+        return False        # unreadable: never accuse
+    missing = []
+    if not label or not split_label_number(label)[1]:
+        missing.append("a running number on the HANDOFF LABEL line (`-<n>`)")
+    if not note_writer(note):
+        missing.append("the WRITTEN BY line")
+    if note_effort(note) is None:
+        missing.append("the NEXT CHAT EFFORT line")
+    if not missing:
+        return False
+    try:
+        mtime = os.path.getmtime(note)
+    except Exception:
+        return False
+    st = load_state(sid)
+    if st.get("head_nag_mtime") == mtime:
+        return False        # said it about this very version already
+    said = int(st.get("head_nags", 0) or 0)
+    if said >= HEAD_NAG_MAX:
+        log("note-head: already said it %d times - letting the chat go" % said)
+        return False
+    st["head_nags"] = said + 1
+    st["head_nag_mtime"] = mtime
+    save_state(sid, st)
+    today = datetime.datetime.now().strftime("%d %b").lstrip("0")
+    log("note-head: blocked, missing " + "; ".join(missing))
+    reason = (
+        "THE HANDOFF NOTE HEAD IS INCOMPLETE. The note at " + note + " is missing: "
+        + "; ".join(missing) + ". Put these three lines at the very TOP of the note, in this "
+        "order: `HANDOFF LABEL: <thread name> -<n> (" + today + ")`, then `WRITTEN BY: <this "
+        "chat's exact sidebar title>`, then `NEXT CHAT EFFORT: <low|medium|high|xhigh|max> - "
+        "<one short reason>`. The number <n> is one more than the running number in this chat's "
+        "own sidebar title (read it with mcp__ccd_session_mgmt__get_session 'self'); if the "
+        "title has no number, use 2. The date is today, " + today + ". WRITTEN BY is the title "
+        "exactly as get_session 'self' returns it; if the chat has never been titled, write "
+        "`WRITTEN BY: (untitled)`. Why: without these the new chat cannot number itself, find "
+        "this chat, join its sidebar group or archive it. Add the lines with the Edit tool "
+        "(do not rewrite the body), then re-tell the user the CORRECTED label as inline code "
+        "on its own line, as the very last line of your reply.")
+    mem = memory_nag_text(d, path)
+    if mem:
+        log("note-head: memory nag carried in the same block")
+        reason += (" ALSO, BEFORE YOU STOP: " + mem + " ORDER OF THE REPLY: the one line "
+                   "about what you saved comes FIRST, and the corrected label, as inline "
+                   "code on its own line, is still the very last line - nothing after it.")
+    reason += (" The user can switch the note-head check off by creating an empty file at "
+               + os.path.join(STATE, HEAD_OFF) + " .")
+    print(json.dumps({"decision": "block", "reason": reason}))
+    return True
 
 
 def is_summon_label(body, stems):
@@ -1456,7 +1557,7 @@ def note_writer(path):
     hook has nothing in reach to map one to the other. The title is the only handle both
     sides can see."""
     try:
-        with open(path, encoding="utf-8", errors="replace") as f:
+        with open(path, encoding="utf-8-sig", errors="replace") as f:
             for i, line in enumerate(f):
                 if i >= WRITER_HEAD_LINES:
                     break
@@ -1484,7 +1585,7 @@ def note_effort(path):
     so in its head - a missing line, an unknown level and a line further down all read as
     None, so the pickup message stays exactly as it always was."""
     try:
-        with open(path, encoding="utf-8", errors="replace") as f:
+        with open(path, encoding="utf-8-sig", errors="replace") as f:
             for i, line in enumerate(f):
                 if i >= EFFORT_HEAD_LINES:
                     break

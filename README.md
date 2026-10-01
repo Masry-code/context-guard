@@ -206,6 +206,10 @@ The label comes in a copy box, so it is one click to copy. Once the new chat has
 the note up, it tells the old chat it has started; the old chat sets the new chat's effort
 from the note and then archives itself, so your sidebar keeps one live chat per thread.
 
+A note written without the three head lines (label with its number, who wrote it, the next
+chat's effort) is sent back once to add them, so the new chat can number itself and archive
+the old one.
+
 Opened a chat without choosing a folder? Type the label anyway: the chat asks to move
 itself into the thread's folder (one approval), and your next message loads the thread.
 
@@ -254,6 +258,7 @@ Create an empty file in `~/.claude/context-guard/`:
 
 * `no-ceiling` — stop the Stop hook ever blocking
 * `no-memory-nag` — stop it checking that memories were written
+* `no-note-head-check` — stop it sending back a handoff note whose head lacks the numbered label, writer or effort line
 * `no-heredoc-guard` — allow heredocs again (or put `# heredoc-ok` in a single command)
 * `no-memory-sweep` — stop the SessionStart sweep moving memory files and index lines
 * `no-update-check` — stop the once-a-day look for a newer version

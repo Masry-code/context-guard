@@ -456,8 +456,15 @@ def write_chat(home, sid, started, msg="do the thing"):
     return p
 
 
-def write_note(home, sid, body=NOTE_CTX):
+def write_note(home, sid, body=None):
     """The handoff note THIS chat wrote - <KEY>.<sid8>.md, same as handoff_path()."""
+    if body is None:
+        # a well-formed head, so the head check (note_head_block) stays out of every test
+        # that is about something else; NOTE_CTX itself is a freehand note with no number
+        body = ("HANDOFF LABEL: context guard -3 (1 Oct)" + chr(10)
+                + "WRITTEN BY: context guard -2 (30 Sep)" + chr(10)
+                + "NEXT CHAT EFFORT: high - testing" + chr(10)
+                + NOTE_CTX.split(chr(10), 1)[1])
     p = os.path.join(home, ".claude", "handoff", KEY + "." + sid[:8] + ".md")
     with open(p, "w", encoding="utf-8") as f:
         f.write(body)
@@ -600,6 +607,173 @@ def test_the_memory_nag_has_an_off_switch():
         p = run_stop(home, "handedoff")
         expect_clean(p, "nag-off")
         check("nag-off: the switch silences it", blocked(p) == "", repr(blocked(p)[:200]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+GOOD_HEAD = ("HANDOFF LABEL: My App -3 (1 Oct)\nWRITTEN BY: My App -2 (30 Sep)\n"
+             "NEXT CHAT EFFORT: high - building\n\n# Handoff\n\nbody\n")
+
+
+def head_home(sid="headchat", body="HANDOFF LABEL: My App\n\n# Handoff\n\nbody\n",
+              memory_nag_off=True):
+    """A home with one chat that wrote a real note; the memory nag is switched off so only
+    the head check can block."""
+    home = make_home({})
+    write_chat(home, sid, time.time() - 3600)
+    write_note(home, sid, body)
+    if memory_nag_off:
+        off = os.path.join(home, ".claude", "context-guard")
+        os.makedirs(off, exist_ok=True)
+        open(os.path.join(off, "no-memory-nag"), "w").close()
+    return home
+
+
+def test_a_note_without_its_head_lines_is_sent_back_once():
+    """1 Oct 2026: a chat that handed over before the size warning wrote `HANDOFF LABEL:
+    My App` and nothing else, so the new chat could not number itself or find the old one."""
+    home = head_home()
+    try:
+        p = run_stop(home, "headchat")
+        expect_clean(p, "head-bad")
+        why = blocked(p)
+        check("head-bad: blocked", why != "", repr((p.stdout or "")[:200]))
+        check("head-bad: names the note", "headchat"[:8] in why, repr(why[:300]))
+        check("head-bad: names the missing number", "running number" in why, repr(why[:600]))
+        check("head-bad: names the missing writer", "WRITTEN BY" in why, repr(why[:600]))
+        check("head-bad: names the missing effort", "NEXT CHAT EFFORT" in why, repr(why[:600]))
+        today = datetime.datetime.now().strftime("%d %b").lstrip("0")
+        check("head-bad: gives today's date", today in why, repr(why[:800]))
+        check("head-bad: ends with the corrected label as the last line",
+              "last line" in why, repr(why[-300:]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_a_note_with_all_three_head_lines_is_not_blocked():
+    home = head_home(body=GOOD_HEAD)
+    try:
+        p = run_stop(home, "headchat")
+        expect_clean(p, "head-good")
+        check("head-good: no block", blocked(p) == "", repr(blocked(p)[:300]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_the_head_check_blocks_once_per_version_of_the_note():
+    home = head_home()
+    try:
+        first = blocked(run_stop(home, "headchat"))
+        second = run_stop(home, "headchat")
+        expect_clean(second, "head-once")
+        check("head-once: first run blocked", first != "", repr(first[:120]))
+        check("head-once: unchanged note not blocked again", blocked(second) == "",
+              repr(blocked(second)[:200]))
+        p = write_note(home, "headchat", "HANDOFF LABEL: My App -3 (1 Oct)\n\n# Handoff\n")
+        t = time.time() + 30
+        os.utime(p, (t, t))
+        third = run_stop(home, "headchat")
+        expect_clean(third, "head-again")
+        why = blocked(third)
+        check("head-again: a rewritten note still missing lines blocks again", why != "",
+              repr((third.stdout or "")[:200]))
+        check("head-again: the number is no longer reported missing",
+              "running number" not in why.split(". Put")[0], repr(why[:400]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_the_head_check_never_blocks_twice_in_a_row():
+    home = head_home()
+    try:
+        p = run_stop(home, "headchat", active=True)
+        expect_clean(p, "head-active")
+        check("head-active: no block", blocked(p) == "", repr(blocked(p)[:200]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_a_bad_head_and_a_missing_memory_save_come_in_one_block():
+    """The Stop after a head block has stop_hook_active set, so the memory nag would never
+    get its turn; both must ride in the one block."""
+    home = head_home(memory_nag_off=False)
+    try:
+        p = run_stop(home, "headchat")
+        expect_clean(p, "head-both")
+        why = blocked(p)
+        check("head-both: one json object", (p.stdout or "").strip().count(chr(10)) == 0,
+              repr((p.stdout or "")[:200]))
+        check("head-both: carries the head text", "HEAD IS INCOMPLETE" in why, repr(why[:200]))
+        check("head-both: carries the memory nag", "NOTHING WAS SAVED TO MEMORY" in why,
+              repr(why[-400:]))
+        check("head-both: and still puts the label last, after the memory line",
+              "ORDER OF THE REPLY" in why and "still the very last line" in why,
+              repr(why[-400:]))
+        check("head-both: the memory nag was counted",
+              json.load(open(os.path.join(home, ".claude", "context-guard",
+                                          "headchat.json")))["memory_nags"] == 1,
+              "state")
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_decorated_and_bom_heads_are_not_false_positives():
+    rest = ("WRITTEN BY: My App -2 (30 Sep)\nNEXT CHAT EFFORT: high - building\n\nbody\n")
+    heads = {
+        "bom": "﻿HANDOFF LABEL: My App -3 (1 Oct)\n" + rest,
+        "bold-key": "**HANDOFF LABEL:** My App -3 (1 Oct)\n" + rest,
+        "heading": "# HANDOFF LABEL: My App -3 (1 Oct)\n" + rest,
+        "backtick": "HANDOFF LABEL: `My App -3 (1 Oct)`\n" + rest,
+        "bold-value": "HANDOFF LABEL: **My App -3 (1 Oct)**\n" + rest,
+        "bom-writer-first": "﻿WRITTEN BY: My App -2 (30 Sep)\n"
+                            "HANDOFF LABEL: My App -3 (1 Oct)\n"
+                            "NEXT CHAT EFFORT: high - building\n\nbody\n",
+        "bom-effort-first": "﻿NEXT CHAT EFFORT: high - building\n"
+                            "HANDOFF LABEL: My App -3 (1 Oct)\n"
+                            "WRITTEN BY: My App -2 (30 Sep)\n\nbody\n",
+    }
+    for name, body in heads.items():
+        home = head_home(body=body)
+        try:
+            with open(os.path.join(home, ".claude", "handoff", KEY + ".headchat.md"),
+                      "w", encoding="utf-8", newline="") as f:
+                f.write(body)
+            p = run_stop(home, "headchat")
+            expect_clean(p, "head-fp-" + name)
+            check("head-fp-" + name + ": not blocked", blocked(p) == "", repr(blocked(p)[:300]))
+        finally:
+            shutil.rmtree(home, ignore_errors=True)
+
+
+def test_the_head_check_has_an_off_switch():
+    home = head_home()
+    try:
+        open(os.path.join(home, ".claude", "context-guard", "no-note-head-check"), "w").close()
+        p = run_stop(home, "headchat")
+        expect_clean(p, "head-off")
+        check("head-off: the switch silences it", blocked(p) == "", repr(blocked(p)[:200]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_the_head_block_names_its_off_switch():
+    home = head_home()
+    try:
+        why = blocked(run_stop(home, "headchat"))
+        check("head-off-named: reason names the switch", "no-note-head-check" in why,
+              repr(why[-200:]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_the_head_check_does_not_swallow_the_memory_nag():
+    """Control: with a good head and the memory nag ON, the nag still fires."""
+    home = head_home(body=GOOD_HEAD, memory_nag_off=False)
+    try:
+        p = run_stop(home, "headchat")
+        expect_clean(p, "head-control")
+        check("head-control: memory nag still fires", "NOTHING WAS SAVED" in blocked(p),
+              repr(blocked(p)[:200]))
     finally:
         shutil.rmtree(home, ignore_errors=True)
 
@@ -7417,6 +7591,15 @@ if __name__ == "__main__":
               test_the_memory_nag_has_an_off_switch,
               test_the_nag_refuses_to_run_without_a_session_id,
               test_the_memory_nag_gives_up_after_two_tries,
+              test_a_note_without_its_head_lines_is_sent_back_once,
+              test_a_note_with_all_three_head_lines_is_not_blocked,
+              test_the_head_check_blocks_once_per_version_of_the_note,
+              test_the_head_check_never_blocks_twice_in_a_row,
+              test_a_bad_head_and_a_missing_memory_save_come_in_one_block,
+              test_decorated_and_bom_heads_are_not_false_positives,
+              test_the_head_check_has_an_off_switch,
+              test_the_head_block_names_its_off_switch,
+              test_the_head_check_does_not_swallow_the_memory_nag,
               test_the_ledger_is_still_written_when_the_nag_fires,
               test_a_checkpoint_records_the_context_it_was_reached_at,
               test_the_warning_reports_the_last_checkpoint,
