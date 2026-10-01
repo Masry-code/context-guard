@@ -1082,6 +1082,85 @@ git commit -m "README: memory keywords"
 
 ---
 
+### Task 7: The label goes only in the handover reply (his report, 2 Oct)
+
+His words: *"I think there is a glitch as it keeps putting the label at the bottom in the end of each chat at <one app>"*.
+
+Measured: a handing-over chat wrote, in its note's standing rules, *"End every build with the report ... label in a code box as the LAST line"*. The chat that picked the note up then ended EVERY reply with its own label. Another app's chat did the same on 30 Sep, in 5 of its 7 replies.
+
+**Files:**
+- Modify: `guard.py` (two string literals)
+- Test: `test_guard.py`
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+def test_the_label_belongs_only_to_the_handover_reply():
+    """2 Oct 2026: a note said 'label in a code box as the LAST line' and the next chat ended
+    every reply with its own label. Both ends are told: the writer how to phrase the rule,
+    the reader never to end a reply with its own label."""
+    home = make_home({KEY + ".lab12345.md": "HANDOFF LABEL: Harbor -4 (2 Oct)\n"
+                      "WRITTEN BY: Harbor -3 (1 Oct)\nNEXT CHAT EFFORT: high - x\n\nbody\n"})
+    try:
+        steps = guard_call(home, "print(guard.handoff_steps('2 Oct'))").stdout
+        check("label-only: the writer is told it is the handover reply only",
+              "HANDOVER reply only" in steps, steps[:300])
+        c = context_of(run(home, "labchat1", "Harbor -4 (2 Oct)"))
+        check("label-only: the pickup says never end a reply with its own label",
+              "Never end a reply with this chat's own label" in c, c[:600])
+    finally:
+        rm_tree(home)
+```
+
+Add it to the runner tuple.
+
+- [ ] **Step 2: Run it and watch it fail.** Both checks FAIL.
+
+- [ ] **Step 3: Implement.** Two string-literal edits in `guard.py`, done with the CRLF-safe patch script. Each anchor must occur exactly once.
+
+In `handoff_steps`, the anchor is
+
+```
+"very last line of the reply - nothing after it, not a table, not a sign-off. His words, "
+```
+
+Replace it with
+
+```
+"very last line of the reply - nothing after it, not a table, not a sign-off. That is THIS "
+        "handover reply only: an ordinary reply never ends with a label. In the note you write, "
+        "phrase the rule as 'label as the last line of a HANDOVER reply only' - a note that said "
+        "'label as the LAST line' made the next chat end every reply with its own label "
+        "(measured 2 Oct 2026). His words, "
+```
+
+In `pending_handoff`, the anchor is
+
+```
+"picked up where things left off. FIRST ACTION, before anything else: rename "
+```
+
+Replace it with
+
+```
+"picked up where things left off. Never end a reply with this chat's own label: a "
+            "label is given only in the one reply that hands over to the NEXT chat, whatever "
+            "the note's standing rules seem to say. FIRST ACTION, before anything else: rename "
+```
+
+The continuation lines must keep the indentation of the string they sit in, and must end in `\r\n`.
+
+- [ ] **Step 4: Run it and watch it pass.** Run the full file: `rc=0`.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add guard.py test_guard.py
+git commit -m "A label belongs only to the handover reply, never to every reply"
+```
+
+---
+
 ## After the build (controller, not an implementer)
 
 1. Review every commit with `cg-reviewer`, then run the full suite. Then push.
