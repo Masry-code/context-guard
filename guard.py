@@ -3929,6 +3929,125 @@ def memory_keywords(path):
     return {"slug": slug, "description": desc, "keywords": kws, "derived": derived}
 
 
+CATALOGUE = os.path.join(STATE, "memory-catalogue.json")
+TITLE_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\.md\)")
+
+
+def _memory_folders():
+    """Every <project>/memory folder, the shared one first, so its copy of a slug wins over
+    a spare that the one-home sweep has not tidied yet."""
+    try:
+        keys = sorted(os.listdir(PROJECTS))
+    except Exception:
+        return []
+    shared = os.path.normcase(SHARED_MEMORY)
+    out = [os.path.join(PROJECTS, k, "memory") for k in keys
+           if os.path.isdir(os.path.join(PROJECTS, k, "memory"))]
+    return sorted(out, key=lambda d: (os.path.normcase(d) != shared, d))
+
+
+def _list_claims(folders):
+    """slug -> its title in the first list that links it, and slug -> the keys of every
+    folder whose MEMORY.md links it."""
+    titles, claims = {}, {}
+    for d in folders:
+        key = os.path.basename(os.path.dirname(d))
+        try:
+            with open(os.path.join(d, "MEMORY.md"), encoding="utf-8-sig",
+                      errors="replace") as f:
+                text = f.read()
+        except Exception:
+            continue
+        for title, s in TITLE_RE.findall(text):
+            s = os.path.basename(s)
+            titles.setdefault(s, title.strip())
+            claims.setdefault(s, set()).add(key)
+    return titles, claims
+
+
+def _key_name(key, projects):
+    for name, p in sorted(projects.items()):
+        dirs = [p.get("dir") or ""] + list(p.get("also") or [])
+        if any(dir_key(x) == key for x in dirs if x):
+            return name
+    return key
+
+
+def _project_of(slug, folder, claims, projects):
+    for name, p in sorted(projects.items()):
+        if slug in (p.get("files") or []):
+            return name
+    keys = sorted(k for k in claims.get(slug, ()) if k != SOURCE_KEY)
+    if len(keys) == 1:
+        return _key_name(keys[0], projects)
+    own = os.path.basename(os.path.dirname(folder))
+    if own != SOURCE_KEY:
+        return _key_name(own, projects)
+    return "general"
+
+
+def memory_catalogue():
+    """Every memory on the machine, one entry per slug: slug, title, description, keywords,
+    derived, project, path, mtime. Cached per file by path, mtime and size in CATALOGUE, so a
+    prompt re-reads only what changed; a cache that does not parse is rebuilt, never trusted."""
+    folders = _memory_folders()
+    try:
+        with open(CATALOGUE, encoding="utf-8") as f:
+            cache = json.load(f)
+        if not isinstance(cache, dict):
+            cache = {}
+    except Exception:
+        cache = {}
+    fresh, entries = {}, {}
+    for d in folders:
+        try:
+            names = sorted(os.listdir(d))
+        except Exception:
+            continue
+        for n in names:
+            if not n.lower().endswith(".md") or n.lower() == "memory.md":
+                continue
+            slug = n[:-3]
+            if slug in entries:
+                continue
+            p = os.path.join(d, n)
+            try:
+                s = os.stat(p)
+            except Exception:
+                continue
+            sig = [s.st_mtime, s.st_size]
+            c = cache.get(p)
+            if isinstance(c, dict) and c.get("sig") == sig and "kw" in c:
+                kw = c["kw"]
+            else:
+                kw = memory_keywords(p)
+            fresh[p] = {"sig": sig, "kw": kw}
+            if not isinstance(kw, dict):
+                continue
+            e = dict(kw)
+            e.update({"path": p, "mtime": s.st_mtime, "folder": d})
+            entries[slug] = e
+    if fresh != cache:
+        try:
+            os.makedirs(STATE, exist_ok=True)
+            tmp = CATALOGUE + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(fresh, f)
+            os.replace(tmp, CATALOGUE)
+        except Exception as e:
+            log("keywords: could not save the catalogue (%r)" % (e,))
+    titles, claims = _list_claims(folders)
+    try:
+        with open(MANIFEST, encoding="utf-8") as f:
+            projects = (json.load(f) or {}).get("projects") or {}
+    except Exception:
+        projects = {}
+    for slug, e in entries.items():
+        e["title"] = titles.get(slug) or slug.replace("-", " ")
+        e["project"] = _project_of(slug, e.pop("folder"), claims, projects)
+    return list(entries.values())
+
+
 def cmd_bootstrap():
     """SessionStart. Prints at most ONE json object - a hook that prints two reads as
     silence - so every part of it returns its text here instead of printing it."""

@@ -7626,6 +7626,64 @@ def test_the_keywords_reader_reads_the_line_and_falls_back_to_the_summary():
         rm_tree(home)
 
 
+KW_MANIFEST = {"projects": {
+    "droid": {"dir": "D:\\Demo\\Droid", "threads": ["droid"], "also": [], "files": []},
+    "tides": {"dir": "D:\\Demo\\Tides", "threads": ["tides"], "also": [],
+              "files": ["tide-tables"]}}}
+DROID_KEY = "D--Demo-Droid"
+
+
+def test_the_catalogue_prefers_the_shared_copy_and_names_each_project():
+    """Spec section 2: one entry per slug, the shared copy wins over a spare, and the
+    project comes from the manifest, then the one list that claims it, then 'general'."""
+    home = kw_home(
+        {(KEY, "android-adb"): mem_text("android-adb", "shared copy", ["adb"]),
+         (DROID_KEY, "android-adb"): mem_text("android-adb", "SPARE copy", ["adb"]),
+         (KEY, "tide-tables"): mem_text("tide-tables", "t", ["tide"]),
+         (KEY, "loose-lesson"): mem_text("loose-lesson", "l", ["regex"])},
+        lists={DROID_KEY: "# Memory Index\n- [Android adb](android-adb.md) - x\n"},
+        manifest=KW_MANIFEST)
+    try:
+        r = kw_json(home, "import json\nprint(json.dumps({e['slug']: e for e in "
+                          "guard.memory_catalogue()}))")
+        a = r.get("android-adb") or {}
+        check("kw-cat: one entry per slug", sorted(r) == ["android-adb", "loose-lesson",
+                                                          "tide-tables"], repr(sorted(r)))
+        check("kw-cat: the shared copy wins", a.get("description") == "shared copy", repr(a))
+        check("kw-cat: title from the list line", a.get("title") == "Android adb", repr(a))
+        check("kw-cat: project from the one list that claims it",
+              a.get("project") == "droid", repr(a))
+        check("kw-cat: project from the manifest's files",
+              (r.get("tide-tables") or {}).get("project") == "tides", repr(r.get("tide-tables")))
+        l = r.get("loose-lesson") or {}
+        check("kw-cat: unclaimed -> general, title from the slug",
+              l.get("project") == "general" and l.get("title") == "loose lesson", repr(l))
+    finally:
+        rm_tree(home)
+
+
+def test_the_catalogue_cache_rereads_only_a_changed_file_and_survives_corruption():
+    """Spec section 2: the prompt hook must not pay for every file on every prompt."""
+    home = kw_home({(KEY, "one"): mem_text("one", "a", ["alpha"]),
+                    (KEY, "two"): mem_text("two", "b", ["beta"])})
+    count = ("import json\nn = []\nreal = guard.memory_keywords\n"
+             "guard.memory_keywords = lambda p: (n.append(p), real(p))[1]\n"
+             "guard.memory_catalogue()\nprint(json.dumps(len(n)))")
+    try:
+        check("kw-cache: a cold build reads every file", kw_json(home, count) == 2)
+        check("kw-cache: a warm build reads none", kw_json(home, count) == 0)
+        p = os.path.join(home, ".claude", "projects", KEY, "memory", "two.md")
+        with open(p, "a", encoding="utf-8") as f:
+            f.write("more\n")
+        check("kw-cache: a changed file is re-read alone", kw_json(home, count) == 1)
+        with open(os.path.join(home, ".claude", "context-guard", "memory-catalogue.json"),
+                  "w", encoding="utf-8") as f:
+            f.write("{not json")
+        check("kw-cache: a corrupt cache is rebuilt", kw_json(home, count) == 2)
+    finally:
+        rm_tree(home)
+
+
 if __name__ == "__main__":
     for t in (test_a_folderless_chat_naming_a_saved_thread_is_told_to_move,
               test_a_big_folderless_chat_is_not_told_to_move,
@@ -7879,7 +7937,9 @@ if __name__ == "__main__":
               test_non_finite_numbers_and_a_huge_file_are_survived,
               test_an_untitled_writer_is_ignored,
               test_an_entry_has_a_short_stable_id_and_the_flag_takes_it,
-              test_the_keywords_reader_reads_the_line_and_falls_back_to_the_summary):
+              test_the_keywords_reader_reads_the_line_and_falls_back_to_the_summary,
+              test_the_catalogue_prefers_the_shared_copy_and_names_each_project,
+              test_the_catalogue_cache_rereads_only_a_changed_file_and_survives_corruption):
         print(t.__name__)
         t()
     print()
