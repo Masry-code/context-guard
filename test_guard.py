@@ -3303,6 +3303,207 @@ def test_audit_states_the_same_first_warning_as_guard():
         src = f.read()
     check("audit-rule: audit.py says the same first-warning number as LEVELS",
           ("warn past ~%dk context" % (first // 1000)) in src, str(first))
+    m = re.search(r"^WARN_AT\s*=\s*([0-9_]+)", src, re.M)
+    check("audit-rule: audit.py's WARN_AT equals the first LEVELS number",
+          bool(m) and int(m.group(1).replace("_", "")) == first, str(m and m.group(1)))
+
+
+# ---------------------------------------------------------------- weekly context per call
+def audit_call(home, code):
+    """Run `code` after loading audit.py in a CHILD process pointed at the throwaway home."""
+    env = child_env(home)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
+    pre = "import sys, json; sys.path.insert(0, %r); import audit\n" % HERE_DIR
+    return subprocess.run([sys.executable, "-c", pre + code], capture_output=True,
+                          text=True, encoding="utf-8", env=env)
+
+
+def utc_stamp(days_ago, hour=12):
+    """An ISO UTC timestamp `days_ago` days back, at midday so a timezone cannot move it a day."""
+    t = datetime.datetime.utcnow().replace(hour=hour, minute=0, second=0, microsecond=0)
+    return (t - datetime.timedelta(days=days_ago)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
+def call_line(mid, days_ago, ctx, **extra):
+    """One assistant jsonl line: input + cache read + cache write add up to `ctx`."""
+    rec = {"type": "assistant", "timestamp": utc_stamp(days_ago), "requestId": "req-" + mid,
+           "message": {"id": mid, "usage": {"input_tokens": 10, "output_tokens": 5,
+                                            "cache_read_input_tokens": ctx - 110,
+                                            "cache_creation_input_tokens": 100}}}
+    rec.update(extra)
+    return json.dumps(rec) + "\n"
+
+
+def plant_calls(home, name, lines, mtime=None):
+    p = os.path.join(home, ".claude", "projects", KEY, name + ".jsonl")
+    with open(p, "w", encoding="utf-8", newline="") as f:
+        f.write("".join(lines))
+    if mtime:
+        os.utime(p, (mtime, mtime))
+    return p
+
+
+def weekly_totals(home, budget="None"):
+    """Refresh (saving) in a child and return the totals as a dict."""
+    p = audit_call(home, "s=audit.weekly_refresh(audit.STATE_DIR, budget_s=%s)\n"
+                         "t=audit.weekly_totals(s)\nt['complete']=s['complete']\nprint(json.dumps(t))"
+                   % budget)
+    try:
+        return json.loads(p.stdout.strip().splitlines()[-1])
+    except Exception:
+        raise AssertionError("weekly refresh gave no totals: " + p.stdout + p.stderr)
+
+
+def test_weekly_one_call_written_as_several_lines_counts_once():
+    home = make_home({})
+    try:
+        plant_calls(home, "a", [call_line("m1", 2, 100_000)] * 3)
+        t = weekly_totals(home)
+        check("weekly/dedupe: three lines, one message id, one call",
+              t["this_calls"] == 1 and t["this_sum"] == 100_000, str(t))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_weekly_puts_a_call_in_this_week_last_week_or_neither():
+    home = make_home({})
+    try:
+        plant_calls(home, "a", [call_line("m1", 2, 100_000), call_line("m2", 10, 200_000),
+                                call_line("m3", 20, 300_000)])
+        t = weekly_totals(home)
+        check("weekly/weeks: 2 days old is this week", t["this_calls"] == 1 and t["this_sum"] == 100_000, str(t))
+        check("weekly/weeks: 10 days old is last week", t["last_calls"] == 1 and t["last_sum"] == 200_000, str(t))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_weekly_skips_sidechains_and_other_record_types():
+    home = make_home({})
+    try:
+        plant_calls(home, "a", [call_line("m1", 1, 100_000, isSidechain=True),
+                                call_line("m2", 1, 100_000, type="user"),
+                                call_line("m3", 1, 120_000)])
+        t = weekly_totals(home)
+        check("weekly/skip: only the real assistant call counts",
+              t["this_calls"] == 1 and t["this_sum"] == 120_000, str(t))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_weekly_a_forked_chat_copy_counts_once():
+    home = make_home({})
+    try:
+        plant_calls(home, "a", [call_line("m1", 2, 100_000), call_line("m2", 2, 110_000)])
+        plant_calls(home, "b", [call_line("m1", 2, 100_000), call_line("m2", 2, 110_000),
+                                call_line("m3", 1, 120_000)])
+        t = weekly_totals(home)
+        check("weekly/fork: the same ids in two files count once",
+              t["this_calls"] == 3 and t["this_sum"] == 330_000, str(t))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_weekly_refresh_is_incremental_and_survives_a_rewrite():
+    home = make_home({})
+    try:
+        p = plant_calls(home, "a", [call_line("m1", 2, 100_000)])
+        t1 = weekly_totals(home)
+        with open(p, "a", encoding="utf-8", newline="") as f:
+            f.write(call_line("m2", 1, 110_000) + call_line("m3", 1, 120_000))
+        t2 = weekly_totals(home)
+        check("weekly/incremental: two appended calls grow the total by exactly two",
+              t1["this_calls"] == 1 and t2["this_calls"] == 3, str((t1, t2)))
+        t3 = weekly_totals(home)
+        check("weekly/incremental: no change, identical totals", t3 == t2, str((t2, t3)))
+        # a half-written last line is not read until its newline arrives
+        with open(p, "a", encoding="utf-8", newline="") as f:
+            f.write(call_line("m4", 1, 130_000).rstrip("\n"))
+        t4 = weekly_totals(home)
+        check("weekly/incremental: a line with no newline yet is left for next time",
+              t4["this_calls"] == 3, str(t4))
+        with open(p, "a", encoding="utf-8", newline="") as f:
+            f.write("\n")
+        t5 = weekly_totals(home)
+        check("weekly/incremental: ...and counted once its newline lands",
+              t5["this_calls"] == 4, str(t5))
+        # rewritten SMALLER: rescanned from 0, old ids not counted twice, a new one is
+        plant_calls(home, "a", [call_line("m1", 2, 100_000), call_line("m9", 1, 90_000)])
+        t6 = weekly_totals(home)
+        check("weekly/rewrite: a shrunk file is rescanned without double counting",
+              t6["this_calls"] == 5, str(t6))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_weekly_budget_stops_after_one_file_and_a_later_run_completes():
+    home = make_home({})
+    try:
+        now = time.time()
+        plant_calls(home, "new", [call_line("n1", 1, 100_000)], mtime=now)
+        plant_calls(home, "old", [call_line("o1", 3, 110_000)], mtime=now - 3600)
+        t1 = weekly_totals(home, budget="0")
+        check("weekly/budget: budget 0 reads the first file only and says incomplete",
+              t1["this_calls"] == 1 and t1["complete"] is False, str(t1))
+        t2 = weekly_totals(home)
+        check("weekly/budget: an unbudgeted run finishes it, counting the first file once",
+              t2["this_calls"] == 2 and t2["complete"] is True, str(t2))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_weekly_cli_prints_the_sentence_or_says_nothing_measured():
+    home = make_home({})
+    env = child_env(home)
+    try:
+        e = subprocess.run([sys.executable, AUDIT, "--weekly"], capture_output=True, text=True, env=env)
+        check("weekly/cli: an empty home says so, exit 0",
+              e.returncode == 0 and "no calls measured yet" in e.stdout, e.stdout + e.stderr)
+        lines = ([call_line("t%d" % i, 1, 300_000) for i in range(1)]
+                 + [call_line("t9", 2, 100_000)]
+                 + [call_line("l%d" % i, 9, 200_000) for i in range(2)]
+                 + [call_line("l5", 9, 250_000)])
+        plant_calls(home, "a", lines)
+        r = subprocess.run([sys.executable, AUDIT, "--weekly"], capture_output=True, text=True, env=env)
+        out = r.stdout.strip()
+        # this week: 300k + 100k -> avg 200k, 1 of 2 past 225k; last week: 200k,200k,250k -> avg 217k, 1 of 3
+        want = ("Average context per call: 200k this week (2 calls), 217k last week (3 calls) - "
+                "8% smaller. 50% of this week's calls ran past the 225k warning (last week 33%).")
+        check("weekly/cli: the sentence for a home with data, exit 0",
+              r.returncode == 0 and out == want, out + " | " + r.stderr)
+        check("weekly/cli: it saved the summary and the scan state",
+              os.path.exists(os.path.join(home, ".claude", "context-guard", "weekly-context.json"))
+              and os.path.exists(os.path.join(home, ".claude", "context-guard", "weekly-context-scan.json")))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_weekly_line_wording_follows_the_sign_and_drops_a_missing_comparison():
+    home = make_home({})
+    try:
+        p = audit_call(home,
+            "def S(a, b):\n"
+            "    import datetime as d\n"
+            "    t = d.date.today()\n"
+            "    def day(n, ctxs):\n"
+            "        k = (t - d.timedelta(days=n)).isoformat()\n"
+            "        h = {}\n"
+            "        for c in ctxs: h[str(c // 25000)] = h.get(str(c // 25000), 0) + 1\n"
+            "        return k, {'calls': len(ctxs), 'sum_ctx': sum(ctxs), 'hist': h}\n"
+            "    days = dict([day(1, a)] + ([day(9, b)] if b else []))\n"
+            "    return {'days': days, 'complete': True}\n"
+            "print(audit.weekly_line(S([300000], [200000])))\n"
+            "print(audit.weekly_line(S([200000], [])))\n"
+            "print(repr(audit.weekly_line({'days': {}})))\n")
+        got = p.stdout.splitlines()
+        check("weekly/line: bigger this week says bigger",
+              len(got) == 3 and "50% bigger" in got[0], p.stdout + p.stderr)
+        check("weekly/line: no last-week calls leaves the comparison out",
+              len(got) == 3 and "last week" not in got[1] and "smaller" not in got[1]
+              and got[1].startswith("Average context per call: 200k this week (1 call)."), p.stdout)
+        check("weekly/line: no calls at all is an empty string", len(got) == 3 and got[2] == "''", p.stdout)
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
 
 
 PICKUP_PLAIN = "Picked up the handoff note from your last chat."
@@ -9107,6 +9308,14 @@ if __name__ == "__main__":
               test_a_list_that_changes_during_the_write_is_left_alone,
               test_the_first_warning_waits_for_225k,
               test_audit_states_the_same_first_warning_as_guard,
+              test_weekly_one_call_written_as_several_lines_counts_once,
+              test_weekly_puts_a_call_in_this_week_last_week_or_neither,
+              test_weekly_skips_sidechains_and_other_record_types,
+              test_weekly_a_forked_chat_copy_counts_once,
+              test_weekly_refresh_is_incremental_and_survives_a_rewrite,
+              test_weekly_budget_stops_after_one_file_and_a_later_run_completes,
+              test_weekly_cli_prints_the_sentence_or_says_nothing_measured,
+              test_weekly_line_wording_follows_the_sign_and_drops_a_missing_comparison,
               test_the_pickup_names_the_effort_the_note_asks_for,
               test_the_sweep_moves_a_memory_with_no_shared_copy_home,
               test_the_sweep_leaves_a_file_changed_in_the_last_ten_minutes,

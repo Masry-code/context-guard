@@ -9,10 +9,11 @@ Usage:
     python audit.py --deep        # + what is filling the worst session
     python audit.py --deep <8-char-session-id>
 """
-import json, os, glob, sys, collections, datetime, io
+import json, os, glob, sys, collections, datetime, io, hashlib, time
 
 HOME_DIR = os.path.expanduser("~")
 ROOT = os.path.join(os.path.expanduser("~"), ".claude", "projects")
+STATE_DIR = os.path.join(os.path.expanduser("~"), ".claude", "context-guard")
 
 # thresholds worth shouting about (measured 2026-09-11, see the memory)
 AGE_DAYS_WARN   = 3          # a session still alive after this long is hoarding context
@@ -101,6 +102,9 @@ def main():
     if "--alert" in args:
         alert()
         return
+    if "--weekly" in args:
+        print(weekly_line(weekly_refresh(STATE_DIR)) or "no calls measured yet")
+        return
     want_deep = "--deep" in args
     if want_deep:
         args.remove("--deep")
@@ -174,6 +178,188 @@ def main():
         for fp, b in reads.most_common(8):
             print(f"  {b/1e6:8.2f} MB  x{rcount[fp]:<3} {fp[-70:]}")
 
+
+# ---------------------------------------------------------------------------
+# --weekly : average context per API call, this week against last week.
+# Incremental (the transcripts total hundreds of MB and the SessionEnd hook has a 10 s
+# timeout): each file is read from its saved byte offset, whole lines only. One API call is
+# written as SEVERAL jsonl lines sharing message.id, and a forked chat copies earlier calls
+# into a new file with the same ids - so calls are deduped on message.id (else requestId)
+# across ALL files, never on uuid.
+# ---------------------------------------------------------------------------
+
+WARN_AT = 225_000       # mirrors guard.py LEVELS[0][0]; a test pins the two together
+KEEP_DAYS = 15
+BUCKET = 25_000
+SCAN_FILE = "weekly-context-scan.json"
+SUMMARY_FILE = "weekly-context.json"
+
+
+def _load_json(path):
+    try:
+        with io.open(path, encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_json(path, obj):
+    """Write-to-temp then os.replace, so a reader never sees half a file."""
+    tmp = path + ".tmp%d" % os.getpid()
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with io.open(tmp, "w", encoding="utf-8") as f:
+            json.dump(obj, f)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.remove(tmp)
+        except Exception:
+            pass
+
+
+def _local_day(ts):
+    """'2026-10-02T12:00:00.000Z' (UTC) -> local date string, or None."""
+    try:
+        t = datetime.datetime.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S")
+        return t.replace(tzinfo=datetime.timezone.utc).astimezone().date().isoformat()
+    except Exception:
+        return None
+
+
+def _read_new(path, st, seen, days, cutoff):
+    """Count the complete new lines of one file. Mutates st, seen, days. Never raises."""
+    try:
+        size = os.path.getsize(path)
+        off = st.get("off", 0)
+        if size < off:
+            off = 0                      # rewritten smaller: rescan; seen ids stop double counts
+        if size == off:
+            st.update(off=off, size=size)
+            return
+        with open(path, "rb") as f:
+            f.seek(off)
+            data = f.read()
+        cut = data.rfind(b"\n")
+        if cut < 0:
+            st.update(off=off, size=size)
+            return
+        for raw in data[:cut + 1].split(b"\n"):
+            try:
+                d = json.loads(raw)
+                if d.get("type") != "assistant" or d.get("isSidechain"):
+                    continue
+                m = d.get("message") or {}
+                u = m.get("usage") or {}
+                mid = m.get("id") or d.get("requestId")
+                if not u or not mid:
+                    continue
+                day = _local_day(d.get("timestamp") or "")
+                if not day or day < cutoff:
+                    continue
+                h = hashlib.sha1(str(mid).encode("utf-8")).hexdigest()[:12]
+                if h in seen:
+                    continue
+                seen[h] = day
+                ctx = ((u.get("input_tokens") or 0) + (u.get("cache_read_input_tokens") or 0)
+                       + (u.get("cache_creation_input_tokens") or 0))
+                row = days.setdefault(day, {"calls": 0, "sum_ctx": 0, "hist": {}})
+                row["calls"] += 1
+                row["sum_ctx"] += ctx
+                b = str(int(ctx // BUCKET))
+                row["hist"][b] = row["hist"].get(b, 0) + 1
+                st["last"] = h
+            except Exception:
+                continue
+        st.update(off=off + cut + 1, size=size)
+    except Exception:
+        pass
+
+
+def weekly_refresh(home_state, budget_s=None, save=True):
+    """Fold the new transcript lines into the per-day summary and return it. With a budget,
+    stops starting new files once it is spent (the first file is always read) and marks the
+    summary incomplete. save=False writes nothing."""
+    started = time.monotonic()
+    scan_path = os.path.join(home_state, SCAN_FILE)
+    sum_path = os.path.join(home_state, SUMMARY_FILE)
+    scan = _load_json(scan_path)
+    files = scan.get("files") if isinstance(scan.get("files"), dict) else {}
+    seen = scan.get("seen") if isinstance(scan.get("seen"), dict) else {}
+    prev = _load_json(sum_path)
+    days = prev.get("days") if isinstance(prev.get("days"), dict) else {}
+    today = datetime.date.today()
+    cutoff = (today - datetime.timedelta(days=KEEP_DAYS)).isoformat()
+    days = {k: v for k, v in days.items() if k >= cutoff}
+    seen = {k: v for k, v in seen.items() if v >= cutoff}
+    horizon = time.time() - KEEP_DAYS * 86400
+    paths = []
+    for p in glob.glob(os.path.join(ROOT, "*", "*.jsonl")):
+        try:
+            mt = os.path.getmtime(p)
+            if mt >= horizon:
+                paths.append((mt, p))
+        except Exception:
+            continue
+    paths.sort(reverse=True)
+    complete = True
+    for i, (_mt, p) in enumerate(paths):
+        if i and budget_s is not None and time.monotonic() - started >= budget_s:
+            complete = False
+            break
+        st = files.get(p) if isinstance(files.get(p), dict) else {}
+        _read_new(p, st, seen, days, cutoff)
+        files[p] = st
+    live = {p for _mt, p in paths}
+    files = {p: s for p, s in files.items() if p in live}
+    summary = {"days": days, "complete": complete,
+               "refreshed": datetime.datetime.now().isoformat(timespec="seconds")}
+    if save:
+        _save_json(scan_path, {"files": files, "seen": seen})
+        _save_json(sum_path, summary)
+    return summary
+
+
+def weekly_totals(summary, today=None, warn_at=WARN_AT):
+    """Totals for this week (the last 7 local days, today included) and the 7 before it."""
+    today = today or datetime.date.today()
+    t = dict(this_calls=0, this_sum=0, this_over=0, last_calls=0, last_sum=0, last_over=0)
+    for key, row in ((summary or {}).get("days") or {}).items():
+        try:
+            n = (today - datetime.date.fromisoformat(key)).days
+            part = "this" if 0 <= n <= 6 else "last" if 7 <= n <= 13 else None
+            if part is None:
+                continue
+            t[part + "_calls"] += row["calls"]
+            t[part + "_sum"] += row["sum_ctx"]
+            t[part + "_over"] += sum(c for b, c in row["hist"].items() if int(b) * BUCKET >= warn_at)
+        except Exception:
+            continue
+    return t
+
+
+def weekly_line(summary, warn_at=WARN_AT):
+    """The one-sentence verdict, or "" when there is nothing measured."""
+    t = weekly_totals(summary, warn_at=warn_at)
+    tc, lc = t["this_calls"], t["last_calls"]
+    if not tc and not lc:
+        return ""
+    calls = lambda n: "%s call%s" % (format(n, ","), "" if n == 1 else "s")
+    k = lambda total, n: "%dk" % round(total / n / 1000)
+    if not tc:
+        return "Average context per call: no calls this week, %s last week (%s)." % (
+            k(t["last_sum"], lc), calls(lc))
+    s = "Average context per call: %s this week (%s)" % (k(t["this_sum"], tc), calls(tc))
+    over = "%d%%" % round(100 * t["this_over"] / tc)
+    tail = "%s of this week's calls ran past the %dk warning" % (over, warn_at // 1000)
+    if lc:
+        s += ", %s last week (%s)" % (k(t["last_sum"], lc), calls(lc))
+        a, b = t["this_sum"] / tc, t["last_sum"] / lc
+        pct = round(100 * abs(b - a) / b) if b else 0
+        s += " - " + ("no change" if pct == 0 else "%d%% %s" % (pct, "smaller" if a < b else "bigger"))
+        tail += " (last week %d%%)" % round(100 * t["last_over"] / lc)
+    return s + ". " + tail + "."
 
 
 # ---------------------------------------------------------------------------
