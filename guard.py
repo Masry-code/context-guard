@@ -212,7 +212,10 @@ def log(msg):
         pass
 
 
-def swallowed(where, e):
+MISSING = (FileNotFoundError, NotADirectoryError)   # a probe's normal answer
+
+
+def swallowed(where, e, quiet=()):
     """Leave one log line for an error a block is about to swallow:
         error: <where>: <ExceptionType>: <message> (line N)
     N is the last line IN THIS FILE the exception passed through (where it was raised, or
@@ -220,6 +223,8 @@ def swallowed(where, e):
     line. --report counts these, so a failure that used to vanish shows up there. Never
     raises: it runs inside except blocks, and a logger that throws there is worse than none."""
     try:
+        if isinstance(e, quiet):
+            return
         line = 0
         tb = getattr(e, "__traceback__", None)
         while tb is not None:
@@ -243,7 +248,8 @@ def load_state(sid):
     try:
         with open(state_path(sid)) as f:
             return json.load(f)
-    except Exception:
+    except Exception as _e:
+        swallowed('load_state', _e, quiet=MISSING)
         return {}
 
 
@@ -277,7 +283,8 @@ def last_checkpoint(sid):
     try:
         with open(checkpoint_path(sid), encoding="utf-8", errors="replace") as f:
             rows = [l.rstrip(chr(10)) for l in f if l.strip()]
-    except Exception:
+    except Exception as _e:
+        swallowed('last_checkpoint', _e, quiet=MISSING)
         return None
     for row in reversed(rows):
         parts = row.split("\t")
@@ -435,11 +442,13 @@ def session_start_ts(path):
         ts = (json.loads(head.decode("utf-8", "replace")) or {}).get("timestamp")
         if ts:
             return calendar.timegm(time.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S"))
-    except Exception:
+    except Exception as _e:
+        swallowed('session_start_ts', _e, quiet=MISSING)
         pass
     try:
         return os.path.getctime(path)
-    except Exception:
+    except Exception as _e:
+        swallowed('session_start_ts', _e, quiet=MISSING)
         return None
 
 
@@ -453,14 +462,16 @@ def memory_touched_since(transcript_path, since):
     try:
         if os.path.getmtime(d) > since:
             return True
-    except Exception:
+    except Exception as _e:
+        swallowed('memory_touched_since', _e, quiet=MISSING)
         return False
     for root, _dirs, files in os.walk(d):
         for n in files:
             try:
                 if os.path.getmtime(os.path.join(root, n)) > since:
                     return True
-            except Exception:
+            except Exception as _e:
+                swallowed('memory_touched_since', _e, quiet=MISSING)
                 continue
     return False
 
@@ -480,7 +491,8 @@ def chat_wrote_memory(transcript_path):
     try:
         with open(transcript_path, "r", encoding="utf-8", errors="replace") as f:
             lines = f.read().splitlines()
-    except Exception:
+    except Exception as _e:
+        swallowed('chat_wrote_memory', _e, quiet=MISSING)
         return None
     mdir = os.path.normcase(memory_dir(transcript_path))
     for line in lines:
@@ -644,7 +656,8 @@ def live_context(path):
     0 when the transcript does not exist yet - a brand-new chat, the freshest there is."""
     try:
         size = os.path.getsize(path)
-    except Exception:
+    except Exception as _e:
+        swallowed('live_context', _e, quiet=MISSING)
         return 0
     with open(path, "rb") as f:
         f.seek(max(0, size - 400_000))
@@ -680,7 +693,8 @@ def dropped_clear(path):
     247k -> 268k, with everyone believing the handoff had happened."""
     try:
         size = os.path.getsize(path)
-    except Exception:
+    except Exception as _e:
+        swallowed('dropped_clear', _e, quiet=MISSING)
         return None
     start = max(0, size - 3_000_000)
     found = None
@@ -803,13 +817,15 @@ def user_messages(path, start=0):
     out = []
     try:
         size = os.path.getsize(path)
-    except Exception:
+    except Exception as _e:
+        swallowed('user_messages', _e, quiet=MISSING)
         return out, start
     if start > size:
         start = 0                       # file replaced or truncated - rescan
     try:
         fh = open(path, "rb")
-    except Exception:
+    except Exception as _e:
+        swallowed('user_messages', _e, quiet=MISSING)
         return out, start
     with fh:
         fh.seek(start)
@@ -974,7 +990,8 @@ def append_ledger(path):
             # what - so they are kept aside and consulted ONCE per transcript, just long
             # enough to stop the 64KB rewind below re-appending what is already recorded.
             legacy = set(saved.get("seen") or ())
-    except Exception:
+    except Exception as _e:
+        swallowed('append_ledger', _e, quiet=MISSING)
         pass
     # Offsets MUST be per transcript. The ledger is per PROJECT and a project holds many
     # sessions, so a single shared offset made a scan of session B start wherever session
@@ -1059,7 +1076,8 @@ def away_since():
     try:
         with open(os.path.join(STATE, AWAY_FLAG), encoding="utf-8") as f:
             return f.read().strip()
-    except Exception:
+    except Exception as _e:
+        swallowed('away_since', _e, quiet=MISSING)
         return ""
 
 
@@ -1423,7 +1441,8 @@ def note_head_block(d, path):
                 if m:
                     label = m.group(1).strip().strip("*_`# ")
                     break
-    except Exception:
+    except Exception as _e:
+        swallowed('note_head_block', _e, quiet=MISSING)
         return False        # unreadable: never accuse
     missing = []
     if not label or not split_label_number(label)[1]:
@@ -1436,7 +1455,8 @@ def note_head_block(d, path):
         return False
     try:
         mtime = os.path.getmtime(note)
-    except Exception:
+    except Exception as _e:
+        swallowed('note_head_block', _e, quiet=MISSING)
         return False
     st = load_state(sid)
     if st.get("head_nag_mtime") == mtime:
@@ -1525,7 +1545,8 @@ def ledger_tail(transcript_path, labels=None):
     try:
         with open(lp, "r", encoding="utf-8", errors="replace") as f:
             blocks = f.read().split(chr(10) + "### ")
-    except Exception:
+    except Exception as _e:
+        swallowed('ledger_tail', _e, quiet=MISSING)
         return ""
     if len(blocks) < 2:
         return ""
@@ -1552,7 +1573,8 @@ def ledger_tail(transcript_path, labels=None):
         try:
             with open(attrib_path(transcript_path), encoding="utf-8") as f:
                 attrib = json.load(f) or {}
-        except Exception:
+        except Exception as _e:
+            swallowed('ledger_tail', _e, quiet=MISSING)
             attrib = {}
     ours, theirs, mine_ids = [], [], []
     for b in entries:
@@ -1663,7 +1685,8 @@ def note_writer(path):
                 s = line.strip()
                 if s.upper().startswith(WRITER_PREFIX):
                     return s[len(WRITER_PREFIX):].strip()
-    except Exception:
+    except Exception as _e:
+        swallowed('note_writer', _e, quiet=MISSING)
         return ""            # unreadable: say nothing, never guess at a chat to close
     return ""
 
@@ -1691,7 +1714,8 @@ def note_effort(path):
                 m = EFFORT_RE.match(line.strip())
                 if m:
                     return m.group(1).capitalize(), m.group(2).strip().rstrip(". ")[:160]
-    except Exception:
+    except Exception as _e:
+        swallowed('note_effort', _e, quiet=MISSING)
         return None
     return None
 
@@ -2146,7 +2170,8 @@ def note_label(path):
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             head = f.read(2000)
-    except Exception:
+    except Exception as _e:
+        swallowed('note_label', _e, quiet=MISSING)
         return ""
     m = LABEL_RE.search(head)
     if m:
@@ -2248,7 +2273,8 @@ def ledger_label_numbers(transcript_path):
     try:
         with open(ledger_path(transcript_path), encoding="utf-8", errors="replace") as f:
             tail = f.readlines()[-LEDGER_LABEL_SCAN:]
-    except Exception:
+    except Exception as _e:
+        swallowed('ledger_label_numbers', _e, quiet=MISSING)
         return out
     for line in tail:
         s = line.strip()
@@ -2499,7 +2525,8 @@ def skill_candidates(transcript_path):
     try:
         files = sorted(glob.glob(os.path.join(PROJECTS, key, "*.jsonl")),
                        key=lambda f: -os.path.getmtime(f))
-    except Exception:
+    except Exception as _e:
+        swallowed('skill_candidates', _e, quiet=MISSING)
         return [], 0
     runs, chats, scanned = {}, {}, 0
     budget = SKILL_SCAN_BUDGET
@@ -2510,7 +2537,8 @@ def skill_candidates(transcript_path):
         sid = os.path.basename(fp)[:-6]
         try:
             size = os.path.getsize(fp)
-        except Exception:
+        except Exception as _e:
+            swallowed('skill_candidates', _e, quiet=MISSING)
             continue
         take = min(size, SKILL_TAIL_BYTES, budget)
         budget -= take
@@ -2544,7 +2572,8 @@ def skill_candidates(transcript_path):
                             continue
                         runs[shape] = runs.get(shape, 0) + 1
                         chats.setdefault(shape, set()).add(sid)
-        except Exception:
+        except Exception as _e:
+            swallowed('skill_candidates', _e, quiet=MISSING)
             continue
     out = []
     for shape, n in runs.items():
@@ -2827,7 +2856,8 @@ def _size_check(d, sid):
     else:
         try:
             own_bytes = os.path.getsize(path)
-        except Exception:
+        except Exception as _e:
+            swallowed('_size_check', _e, quiet=MISSING)
             own_bytes = FRESH_BYTES + 1   # cannot prove it is fresh -> assume it is not
     fresh = ctx < FRESH_CTX and own_bytes < FRESH_BYTES
     # took_handoff stops a chat SILENTLY hoovering up notes. It must not stop him asking
@@ -3069,7 +3099,8 @@ def cmd_reread():
     try:
         with open(fp, "rb") as f:
             h = hashlib.sha256(f.read()).hexdigest()[:16]
-    except Exception:
+    except Exception as _e:
+        swallowed('cmd_reread', _e, quiet=MISSING)
         return
     st = load_state(sid)
     seen = st.setdefault("reads", {})
@@ -3212,7 +3243,8 @@ def transcript_read_its_memories(path, key):
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             text = f.read()
-    except Exception:
+    except Exception as _e:
+        swallowed('transcript_read_its_memories', _e, quiet=MISSING)
         return None
     if not USER_TURN_RE.search(text):
         return None                 # no user turn yet - the loader has had no chance
@@ -3229,7 +3261,8 @@ def resolve_ordering_probe():
     try:
         with open(ORDER_PROBE, encoding="utf-8") as f:
             rec = json.load(f) or {}
-    except Exception:
+    except Exception as _e:
+        swallowed('resolve_ordering_probe', _e, quiet=MISSING)
         return
     sid, key = rec.get("sid"), rec.get("key")
     path = find_transcript(sid, rec.get("transcript")) if sid else None
@@ -3513,7 +3546,8 @@ def index_lines(path):
                 m = LINK_RE.search(line)
                 if m:
                     out[m.group(1)] = line.rstrip("\r\n")
-    except Exception:
+    except Exception as _e:
+        swallowed('index_lines', _e, quiet=MISSING)
         pass
     return out
 
@@ -3764,7 +3798,8 @@ def _report_pairs(pairs):
     try:
         with open(SWEEP_SEEN, encoding="utf-8") as f:
             seen = json.load(f)
-    except Exception:
+    except Exception as _e:
+        swallowed('_report_pairs', _e, quiet=MISSING)
         seen = {}
     if not isinstance(seen, dict):
         seen = {}
@@ -4094,7 +4129,8 @@ def _memory_folders():
     a spare that the one-home sweep has not tidied yet."""
     try:
         keys = sorted(os.listdir(PROJECTS))
-    except Exception:
+    except Exception as _e:
+        swallowed('_memory_folders', _e, quiet=MISSING)
         return []
     shared = os.path.normcase(SHARED_MEMORY)
     out = [os.path.join(PROJECTS, k, "memory") for k in keys
@@ -4112,7 +4148,8 @@ def _list_claims(folders):
             with open(os.path.join(d, "MEMORY.md"), encoding="utf-8-sig",
                       errors="replace") as f:
                 text = f.read()
-        except Exception:
+        except Exception as _e:
+            swallowed('_list_claims', _e, quiet=MISSING)
             continue
         for title, s in TITLE_RE.findall(text):
             s = os.path.basename(s)
@@ -4160,13 +4197,15 @@ def memory_catalogue():
             cache = json.load(f)
         if not isinstance(cache, dict):
             cache = {}
-    except Exception:
+    except Exception as _e:
+        swallowed('memory_catalogue', _e, quiet=MISSING)
         cache = {}
     fresh, entries = {}, {}
     for d in folders:
         try:
             names = sorted(os.listdir(d))
-        except Exception:
+        except Exception as _e:
+            swallowed('memory_catalogue', _e, quiet=MISSING)
             continue
         for n in names:
             if not n.lower().endswith(".md") or n.lower() == "memory.md":
@@ -4177,7 +4216,8 @@ def memory_catalogue():
             p = os.path.join(d, n)
             try:
                 s = os.stat(p)
-            except Exception:
+            except Exception as _e:
+                swallowed('memory_catalogue', _e, quiet=MISSING)
                 continue
             sig = [s.st_mtime, s.st_size]
             c = cache.get(p)
@@ -4205,7 +4245,8 @@ def memory_catalogue():
     try:
         with open(MANIFEST, encoding="utf-8") as f:
             projects = (json.load(f) or {}).get("projects") or {}
-    except Exception:
+    except Exception as _e:
+        swallowed('memory_catalogue', _e, quiet=MISSING)
         projects = {}
     for slug, e in entries.items():
         e["title"] = titles.get(slug) or slug.replace("-", " ")
@@ -4302,7 +4343,8 @@ def _linked_slugs(path):
     try:
         with open(path, encoding="utf-8-sig", errors="replace") as f:
             text = f.read()
-    except Exception:
+    except Exception as _e:
+        swallowed('_linked_slugs', _e, quiet=MISSING)
         return set()
     return {os.path.basename(s) for _t, s in TITLE_RE.findall(text)}
 
@@ -4339,7 +4381,8 @@ def _memory_hints(out, d, sid):
     try:
         with open(CLAUDE_MD, encoding="utf-8-sig", errors="replace") as f:
             exclude |= set(WIKI_RE.findall(f.read()))
-    except Exception:
+    except Exception as _e:
+        swallowed('_memory_hints', _e, quiet=MISSING)
         pass
     res = score_memories(prompt, memory_catalogue(), exclude, strict=True)[:HINT_MAX]
     if not res:
@@ -4401,7 +4444,8 @@ def memory_files_written(transcript_path, sid=None):
         with open(transcript_path, "rb") as f:
             f.seek(off)
             data = f.read()
-    except Exception:
+    except Exception as _e:
+        swallowed('memory_files_written', _e, quiet=MISSING)
         return found
     cut = data.rfind(b"\n")
     if cut < 0:

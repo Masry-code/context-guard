@@ -8404,6 +8404,37 @@ def test_swallowed_never_raises_and_falls_back_to_the_callers_line():
         shutil.rmtree(home, ignore_errors=True)
 
 
+def test_a_missing_state_file_is_silent_but_a_corrupt_one_is_logged():
+    """A probe whose normal answer is 'not there yet' stays quiet; any other failure
+    (corrupt JSON, undecodable bytes, no permission) leaves exactly one error line, and
+    the return value is the same {} either way."""
+    home = make_home({})
+    try:
+        code = "print(guard.load_state('probe-sid'))\n"
+        r = guard_call(home, code)
+        lp = os.path.join(home, ".claude", "context-audit.log")
+
+        def errs():
+            if not os.path.exists(lp):
+                return []
+            with open(lp, encoding="utf-8") as f:
+                return [l for l in f if " error: " in l]
+        check("quiet-probe: missing state -> {} and no error line",
+              r.stdout.strip() == "{}" and errs() == [], repr((r.stdout, errs())))
+        st = os.path.join(home, ".claude", "context-guard")
+        os.makedirs(st, exist_ok=True)
+        with open(os.path.join(st, "probe-sid.json"), "wb") as f:
+            f.write(b"{ this is not json \xff\xfe")
+        r = guard_call(home, code)
+        e = errs()
+        check("quiet-probe: corrupt state -> still {}", r.stdout.strip() == "{}"
+              and "Traceback" not in r.stderr, repr((r.stdout, r.stderr[-200:])))
+        check("quiet-probe: corrupt state -> exactly one error line from load_state",
+              len(e) == 1 and " error: load_state: " in e[0], repr(e))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
 def test_report_has_an_errors_row_with_the_last_five_lines():
     home = make_home({})
     try:
@@ -8784,6 +8815,7 @@ if __name__ == "__main__":
               test_a_stop_over_a_string_message_record_does_not_crash,
               test_a_swallowed_error_leaves_one_line_in_the_log,
               test_swallowed_never_raises_and_falls_back_to_the_callers_line,
+              test_a_missing_state_file_is_silent_but_a_corrupt_one_is_logged,
               test_report_has_an_errors_row_with_the_last_five_lines,
               test_report_lists_only_real_sessions_not_the_other_state_files,
               test_recall_finds_a_memory_from_one_word_of_a_phrase_keyword,
