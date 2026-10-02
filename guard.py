@@ -25,7 +25,7 @@ LEVELS = [
     # near 100k, and the warning fired at ~153k, ~146k and ~135k in chats -38, -39 and
     # -40, so each chat built one task of a sixteen-task plan. His auto-compact sits at
     # 93% of a 450k window (420k from 2 Oct 2026). REWARN_STEP and CEILING_CAP are unchanged. The price, taken
-    # knowingly: a chat that ends between 100k and 200k is no longer asked for a note,
+    # knowingly: a chat that ends between 100k and the first tier is no longer asked for a note,
     # and the SessionEnd hook's write_stub() (or the next SessionStart's sweep) is its floor.
     # 100k was measured 19 Sep 2026. Chat "Context Guard -10" ran 19 hours, peaked at
     # 132k and so sat UNDER the then-150k tier for its whole life - it was never once
@@ -1459,7 +1459,7 @@ def note_head_block(d, path):
     """A handoff note whose head lacks the label number, the writer or the effort line.
 
     Measured 1 Oct 2026: those rules are only taught by the size warning, which fires from
-    ~200k, so a chat that hands over earlier writes its note freehand. A real one began
+    ~225k (LEVELS[0][0]), so a chat that hands over earlier writes its note freehand. A real one began
     `HANDOFF LABEL: My App` with no number, no WRITTEN BY and no effort line: the new chat
     was titled without a number, nothing found the old chat, so it was never moved into the
     group, never sent HANDOVER STARTED and never archived. Same brakes as memory_nag. Returns

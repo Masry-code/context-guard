@@ -3535,6 +3535,24 @@ def test_weekly_budget_also_applies_inside_one_huge_file():
         shutil.rmtree(home, ignore_errors=True)
 
 
+def test_weekly_budget_also_counts_bytes_not_only_lines():
+    """Review of batch B: a cold transcript with a few hundred HUGE lines (pasted images)
+    never reaches the 2000-line clock check, so the budget must also look every ~8 MB."""
+    home = make_home({})
+    try:
+        n = 12
+        pad = "x" * 1_000_000
+        plant_calls(home, "fat", [call_line("f%d" % i, 1, 100_000, pad=pad) for i in range(n)])
+        t1 = weekly_totals(home, budget="0")
+        check("weekly/budget-bytes: budget 0 stops inside 12 one-MB lines",
+              0 < t1["this_calls"] < n and t1["complete"] is False, str(t1))
+        t2 = weekly_totals(home)
+        check("weekly/budget-bytes: an unbudgeted run then finishes it exactly",
+              t2["this_calls"] == n and t2["complete"] is True, str(t2))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
 def weekly_state_dir(home):
     return os.path.join(home, ".claude", "context-guard")
 
@@ -4110,7 +4128,7 @@ def test_a_real_30k_pickup_fits_the_hook_channel():
         shutil.rmtree(home, ignore_errors=True)
 
 
-def test_the_plain_200k_handoff_warning_is_emitted_whole():
+def test_the_plain_first_handoff_warning_is_emitted_whole():
     """The reviewer measured this exact warning (a fresh chat at 200k, no checkpoint ever
     recorded) at about 9557 characters. It is not a pickup, it has nothing to move to a
     file, and a cut here would send the model off to Read a file for a few hundred
@@ -4974,7 +4992,7 @@ def test_the_offer_merges_into_a_message_without_context_and_reaches_a_paused_ch
         shutil.rmtree(home, ignore_errors=True)
     home = make_home({})
     try:
-        write_big_chat(home, "pa6-paused", time.time() - 3600, 200_000)
+        write_big_chat(home, "pa6-paused", time.time() - 3600, 240_000)   # past the 225k floor
         run_pause(home, "pa6-paused", "reading")
         pa_write(home, [pa_entry(PA_TITLE, age=500)])
         p = run(home, "pa6-paused", "next please")
@@ -9451,6 +9469,7 @@ if __name__ == "__main__":
               test_weekly_cli_prints_the_sentence_or_says_nothing_measured,
               test_weekly_line_wording_follows_the_sign_and_drops_a_missing_comparison,
               test_weekly_budget_also_applies_inside_one_huge_file,
+              test_weekly_budget_also_counts_bytes_not_only_lines,
               test_session_end_also_refreshes_the_weekly_number_and_still_prints_nothing,
               test_report_shows_the_weekly_line_and_writes_nothing,
               test_report_session_list_hides_the_weekly_files,
@@ -9557,7 +9576,7 @@ if __name__ == "__main__":
               test_hook_text_with_no_newline_in_range_is_cut_hard,
               test_a_failed_overflow_write_emits_the_original_and_logs_it,
               test_a_real_30k_pickup_fits_the_hook_channel,
-              test_the_plain_200k_handoff_warning_is_emitted_whole,
+              test_the_plain_first_handoff_warning_is_emitted_whole,
               test_the_overflow_pointer_is_neutral_about_what_was_cut,
               test_two_cuts_in_a_row_for_one_session_write_two_overflow_files,
               test_a_stale_stub_is_retired_even_behind_fifty_old_real_notes,

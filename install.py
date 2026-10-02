@@ -196,7 +196,7 @@ def main():
         print("")
         print("One optional extra: set \"autoCompactWindow\" in that file to your context")
         print("window (e.g. 350000). Context Guard derives its ceiling from it, and without")
-        print("it the ceiling falls back to a flat 300k.")
+        print("it the ceiling falls back to a flat 320k.")
         print("Restart Claude Code, or open a new chat, for the hooks to load.")
         if fresh and flag_tour(a.home):
             print("")

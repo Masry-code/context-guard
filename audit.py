@@ -8,6 +8,7 @@ Usage:
     python audit.py               # summary of every session
     python audit.py --deep        # + what is filling the worst session
     python audit.py --deep <8-char-session-id>
+    python audit.py --weekly      # average context per call, this week vs last week
 """
 import json, os, glob, sys, collections, datetime, io, hashlib, time
 
@@ -229,6 +230,7 @@ def _local_day(ts):
 
 
 CHECK_EVERY = 2000      # lines between looks at the clock inside one file
+CHECK_BYTES = 8_000_000 # ...or bytes, whichever comes first
 
 
 def _count_line(raw, st, seen, days, cutoff):
@@ -273,7 +275,7 @@ def _read_new(path, st, seen, days, cutoff, deadline=None):
         if size == off:
             st.update(off=off, size=size)
             return False
-        pos, n, early = off, 0, False
+        pos, n, early, since = off, 0, False, 0
         with open(path, "rb") as f:
             f.seek(off)
             while True:
@@ -283,7 +285,13 @@ def _read_new(path, st, seen, days, cutoff, deadline=None):
                 _count_line(raw, st, seen, days, cutoff)
                 pos += len(raw)
                 n += 1
-                if deadline is not None and n % CHECK_EVERY == 0 and time.monotonic() >= deadline:
+                since += len(raw)
+                # every CHECK_EVERY lines OR CHECK_BYTES read: a few hundred huge lines
+                # (pasted images) must not run past the SessionEnd hook's 10 s kill
+                if deadline is not None and (n % CHECK_EVERY == 0 or since >= CHECK_BYTES):
+                    since = 0
+                    if time.monotonic() < deadline:
+                        continue
                     early = pos < size
                     break
         st.update(off=pos, size=size)
