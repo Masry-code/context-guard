@@ -240,6 +240,15 @@ So the newest 80 notes of each project key are kept whatever their age; past the
 decides. Today the 80 newest of the big project are all younger than 30 days, so the guard costs
 nothing here.
 
+**Thread-number guard (added by the controller, 2 Oct, after the owner asked whether pruning
+hurts anything).** `label_numbers()` reads the highest number a thread reached from these
+archives. A quiet thread - one nobody touched for 30+ days in a busy project - could have ALL its
+notes pruned, and its next chat would restart at -1. So, also protected whatever its age: the
+newest note of every thread label (`split_label_number(note_label(f))[0].lower()`, the same key
+`label_numbers` uses). Test: a 40-day-old `.used-*` note that is the only note of thread "Quiet"
+survives a pass that deletes an older-numbered 40-day-old note of a thread that has a newer one;
+and `label_numbers()` reports the same {thread: number} before and after the pass.
+
 - [ ] Code, guard.py, after `sweep_stubs` (~1015):
   - `USED_KEEP_DAYS = 30`, `USED_PRUNE_MAX = 200` (files per pass), `USED_PRUNE_STAMP =
     os.path.join(STATE, "used-prune-day")` - plain text holding `YYYY-MM-DD`, not `.json`, so
