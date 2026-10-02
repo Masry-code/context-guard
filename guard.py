@@ -212,6 +212,28 @@ def log(msg):
         pass
 
 
+def swallowed(where, e):
+    """Leave one log line for an error a block is about to swallow:
+        error: <where>: <ExceptionType>: <message> (line N)
+    N is the last line IN THIS FILE the exception passed through (where it was raised, or
+    where it called into the library that raised it); with no traceback it is the caller's
+    line. --report counts these, so a failure that used to vanish shows up there. Never
+    raises: it runs inside except blocks, and a logger that throws there is worse than none."""
+    try:
+        line = 0
+        tb = getattr(e, "__traceback__", None)
+        while tb is not None:
+            if tb.tb_frame.f_globals.get("__name__") == __name__:
+                line = tb.tb_lineno
+            tb = tb.tb_next
+        if not line:
+            line = sys._getframe(1).f_lineno
+        log("error: %s: %s: %s (line %d)"
+            % (where, type(e).__name__, " ".join(str(e).split())[:200], line))
+    except Exception:
+        pass
+
+
 def state_path(sid):
     os.makedirs(STATE, exist_ok=True)
     return os.path.join(STATE, (sid or "unknown")[:40] + ".json")
@@ -229,8 +251,8 @@ def save_state(sid, st):
     try:
         with open(state_path(sid), "w") as f:
             json.dump(st, f)
-    except Exception:
-        pass
+    except Exception as e:
+        swallowed("save_state", e)
 
 
 def checkpoint_path(sid):
@@ -347,7 +369,8 @@ def cmd_pause():
 def read_stdin():
     try:
         return json.loads(sys.stdin.read() or "{}")
-    except Exception:
+    except Exception as e:
+        swallowed("read_stdin", e)
         return {}
 
 
@@ -989,8 +1012,8 @@ def append_ledger(path):
             with open(sidecar, "w") as f:
                 json.dump({"seen": sorted(seen), "offsets": offsets,
                            "legacy": sorted(legacy), "migrated": sorted(migrated)}, f)
-        except Exception:
-            pass
+        except Exception as e:
+            swallowed("append_ledger sidecar save", e)
 
     if not fresh:
         _save()
@@ -1728,7 +1751,8 @@ def archive_lock():
     deadline = time.time() + ARCHIVE_LOCK_WAIT
     try:
         os.makedirs(STATE, exist_ok=True)
-    except Exception:
+    except Exception as e:
+        swallowed("archive_lock", e)
         return False
     while True:
         try:
@@ -3175,8 +3199,8 @@ def arm_ordering_probe(sid, key, given):
             json.dump({"sid": sid, "key": key, "transcript": given or "",
                        "armed": datetime.datetime.now().isoformat(timespec="seconds")}, f)
         log("ordering: probe armed - session %s furnished %s" % (sid, key))
-    except Exception:
-        pass
+    except Exception as e:
+        swallowed("arm_ordering_probe", e)
 
 
 def transcript_read_its_memories(path, key):
@@ -3229,8 +3253,8 @@ def resolve_ordering_probe():
             f.write("\n".join(out) + "\n")
         os.remove(ORDER_PROBE)
         log("ordering: answered %s for %s" % (out[1], key))
-    except Exception:
-        pass
+    except Exception as e:
+        swallowed("resolve_ordering_probe", e)
 
 
 def dir_key(cwd):
@@ -4602,6 +4626,26 @@ def cmd_report():
         if show:
             for l in hits[-5:]:
                 print("        %-9s %s" % (log_day(l), l[20:].strip()))
+
+    # errors the guards swallowed (swallowed() writes "error: <where>: ..."), last 7 days
+    cutoff = datetime.datetime.now() - datetime.timedelta(days=7)
+    errs = []
+    for l in lines:
+        if l[20:27] != "error: ":
+            continue
+        try:
+            when = datetime.datetime.strptime(l[:19], "%Y-%m-%dT%H:%M:%S")
+        except ValueError:
+            continue
+        if when >= cutoff:
+            errs.append(l)
+    if not errs:
+        print("  %-24s %5d   never fired" % ("errors (last 7 days)", 0))
+    else:
+        days = [d for d in (log_day(l) for l in errs) if d] or ["?"]
+        print("  %-24s %5d   %s -> %s" % ("errors (last 7 days)", len(errs), days[0], days[-1]))
+        for l in errs[-5:]:
+            print("        %-9s %s" % (log_day(l), l[20:].strip()))
 
     print(chr(10) + "-- sessions being tracked --")
     for p in sorted(glob.glob(os.path.join(STATE, "*.json"))):

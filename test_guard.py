@@ -8354,6 +8354,79 @@ def test_report_lists_only_real_sessions_not_the_other_state_files():
         rm_tree(home)
 
 
+def test_a_swallowed_error_leaves_one_line_in_the_log():
+    """Review row 8: 108 `except Exception` blocks, and the log had no error line at all."""
+    home = make_home({})
+    try:
+        env = child_env(home)
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        code = ("import sys; sys.path.insert(0, %r); import guard; print(guard.read_stdin())"
+                % os.path.dirname(GUARD))
+        pr = subprocess.run([sys.executable, "-c", code], input="not json at all",
+                            capture_output=True, text=True, env=env)
+        check("swallowed: read_stdin still answers {}", pr.stdout.strip() == "{}"
+              and "Traceback" not in pr.stderr, repr((pr.stdout, pr.stderr[-200:])))
+        with open(GUARD, encoding="utf-8", newline="") as f:
+            src = f.read().replace("\r\n", "\n").split("\n")
+        want = [i + 1 for i, l in enumerate(src) if "return json.loads(sys.stdin.read()" in l]
+        lp = os.path.join(home, ".claude", "context-audit.log")
+        with open(lp, encoding="utf-8") as f:
+            errs = [l.strip() for l in f if " error: " in l]
+        check("swallowed: exactly one error line", len(errs) == 1, repr(errs))
+        line = errs[0] if errs else ""
+        check("swallowed: names the function and the exception type",
+              " error: read_stdin: JSONDecodeError: " in line, line)
+        check("swallowed: the line number is where it was raised in guard.py",
+              len(want) == 1 and line.endswith("(line %d)" % want[0]), repr((line, want)))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_swallowed_never_raises_and_falls_back_to_the_callers_line():
+    home = make_home({})
+    try:
+        r = guard_call(home, "guard.swallowed('plain', ValueError('a\\nb'))\n"
+                             "guard.swallowed(None, None)\n"
+                             "guard.LOG = '/no/such/dir/x.log'\n"
+                             "guard.swallowed('nolog', KeyError('k'))\n"
+                             "print('survived')")
+        check("swallowed-safe: nothing raised", r.stdout.strip() == "survived"
+              and "Traceback" not in r.stderr, repr((r.stdout, r.stderr[-300:])))
+        lp = os.path.join(home, ".claude", "context-audit.log")
+        with open(lp, encoding="utf-8") as f:
+            errs = [l.strip() for l in f if " error: " in l]
+        first = errs[0] if errs else ""
+        check("swallowed-safe: a never-raised exception takes the caller's line",
+              " error: plain: ValueError: a b (line 2)" in first, repr(errs))
+        check("swallowed-safe: the message stays on one line", len(errs) >= 1
+              and "\n" not in first, repr(errs))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_report_has_an_errors_row_with_the_last_five_lines():
+    home = make_home({})
+    try:
+        now = datetime.datetime.now()
+        def stamp(days):
+            return (now - datetime.timedelta(days=days)).isoformat(timespec="seconds")
+        old = stamp(9) + " error: oldfn: OSError: too old to count (line 1)\n"
+        new = "".join(stamp(1 + i / 100.0) + " error: fn%d: OSError: boom%d (line %d)\n"
+                      % (i, i, 10 + i) for i in range(7))
+        out = run_report(home, log=old + new).stdout
+        row = line_with(out, "errors (last 7 days)")
+        check("report-errors: the row exists and counts 7, not the old one",
+              row.split()[-1] != "fired" and " 7 " in row, repr(row))
+        check("report-errors: the last five lines are shown",
+              "fn6" in out and "fn2" in out and "fn1:" not in out, out[-600:])
+        check("report-errors: the old line is not shown", "oldfn" not in out, out[-600:])
+        out2 = run_report(home, log=stamp(1) + " ceiling: blocked something\n").stdout
+        row2 = line_with(out2, "errors (last 7 days)")
+        check("report-errors: none -> never fired", "never fired" in row2, repr(row2))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
 def test_a_stop_over_a_string_message_record_does_not_crash():
     """Second review fix 13: a transcript record whose message is a plain string."""
     home = kw_home({})
@@ -8709,6 +8782,9 @@ if __name__ == "__main__":
               test_odd_state_and_short_arabic_words_are_safe,
               test_a_real_label_pickup_keeps_its_list_out_of_the_hints,
               test_a_stop_over_a_string_message_record_does_not_crash,
+              test_a_swallowed_error_leaves_one_line_in_the_log,
+              test_swallowed_never_raises_and_falls_back_to_the_callers_line,
+              test_report_has_an_errors_row_with_the_last_five_lines,
               test_report_lists_only_real_sessions_not_the_other_state_files,
               test_recall_finds_a_memory_from_one_word_of_a_phrase_keyword,
               test_a_stop_writes_no_stub_any_more,
