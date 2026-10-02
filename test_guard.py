@@ -1204,7 +1204,7 @@ def test_the_warning_reports_the_last_checkpoint():
         run_checkpoint(home, "cpwarn", "engine wired")
         write_big_chat(home, "cpwarn", started, 290_000)      # the chat grew since
         p = run(home, "cpwarn", "carry on")
-        ctx = whole_context(home, p)
+        ctx = context_of(p)
         expect_clean(p, "checkpoint-warning")
         check("checkpoint-warning: names the last checkpoint reached",
               "engine wired" in ctx, repr(ctx[-900:]))
@@ -1222,7 +1222,7 @@ def test_the_warning_says_when_no_checkpoint_was_ever_recorded():
     try:
         write_transcript(home, "nocp", 200_000)
         p = run(home, "nocp", "carry on")
-        ctx = whole_context(home, p)
+        ctx = context_of(p)
         expect_clean(p, "no-checkpoint")
         check("no-checkpoint: says outright that none were recorded",
               "NO checkpoint" in ctx, repr(ctx[-900:]))
@@ -3138,8 +3138,8 @@ def test_a_chat_that_never_reaches_the_ceiling_still_leaves_a_stub():
     thread unresumable. The stub is now written when the chat ENDS (SessionEnd)."""
     home = make_home({})
     try:
-        write_big_chat(home, "stubaaa1", time.time() - 3600, 130_000)
-        note = os.path.join(home, ".claude", "handoff", KEY + ".stubaaa1.md")
+        stale_chat(home, "stubaaa1", 3600)
+        note =os.path.join(home, ".claude", "handoff", KEY + ".stubaaa1.md")
         check("stub: CONTROL - no note exists before the SessionEnd hook runs",
               not os.path.exists(note), note)
         p = run_session_end(home, "stubaaa1")
@@ -3507,7 +3507,7 @@ def test_session_end_never_touches_a_real_note_and_stubs_when_none():
         expect_clean(run_session_end(home, "endreal1"), "end-real")
         with open(note, encoding="utf-8") as f:
             check("end-real: a real note is untouched", f.read() == real)
-        write_big_chat(home, "endnone1", time.time() - 3600, 130_000)
+        stale_chat(home, "endnone1", 3600)
         expect_clean(run_session_end(home, "endnone1"), "end-none")
         check("end-none: a stub was written", os.path.exists(
             os.path.join(home, ".claude", "handoff", KEY + ".endnone1.md")))
@@ -3556,8 +3556,8 @@ def test_bootstrap_stubs_other_stale_chats_of_the_same_project_only():
 def test_bootstrap_retires_old_stubs_by_renaming_and_leaves_real_notes():
     home = make_home({})
     try:
-        write_big_chat(home, "retire01", time.time() - 20 * 86400, 130_000)
-        write_big_chat(home, "young001", time.time() - 20 * 86400, 130_000)
+        stale_chat(home, "retire01", 20 * 86400)
+        stale_chat(home, "young001", 20 * 86400)
         expect_clean(run_session_end(home, "retire01"), "retire-mk")
         expect_clean(run_session_end(home, "young001"), "retire-mk2")
         d = os.path.join(home, ".claude", "handoff")
@@ -3624,7 +3624,7 @@ def test_hook_text_over_the_cap_is_cut_and_the_rest_goes_to_a_file():
         p = guard_call(home, "import json\n" + code)
         res = json.loads(p.stdout)
         ctx = res["hookSpecificOutput"]["additionalContext"]
-        check("fit: emitted at most 9000 characters", len(ctx) <= 9000, str(len(ctx)))
+        check("fit: emitted at most 9800 characters", len(ctx) <= 9800, str(len(ctx)))
         check("fit: it starts with the original text", FIT_BODY.startswith(ctx[:200]))
         check("fit: other keys are untouched", res.get("systemMessage") == "keep me")
         check("fit: it ends with the pointer line", ctx.rstrip().splitlines()[-1].startswith(FIT_MARK),
@@ -3637,7 +3637,7 @@ def test_hook_text_over_the_cap_is_cut_and_the_rest_goes_to_a_file():
         check("fit: exactly one overflow file", len(files) == 1, str(files))
         if files:
             check("fit: it is named with the sid8 and a timestamp",
-                  re.match(r"^abcd1234-\d{8}-\d{6}", files[0]) is not None, files[0])
+                  re.match(r"^abcd1234-\d{8}-\d{6}-\d{6}\.md$", files[0]) is not None, files[0])
             fp = os.path.join(home, ".claude", "handoff", "overflow", files[0])
             with open(fp, "rb") as fh:
                 raw = fh.read()
@@ -3656,7 +3656,7 @@ def test_hook_text_at_or_under_the_cap_is_emitted_unchanged():
     home = make_home({})
     try:
         code = ("import json\n"
-                "t = 'x' * 8999 + chr(10)\n"
+                "t = 'x' * 9799 + chr(10)\n"
                 "out = {'hookSpecificOutput': {'additionalContext': t}}\n"
                 "r = guard.fit_hook_text(json.loads(json.dumps(out)), 'abcd1234')\n"
                 "print(json.dumps(r == out and r['hookSpecificOutput']['additionalContext'] == t))\n"
@@ -3682,7 +3682,7 @@ def test_hook_text_with_no_newline_in_range_is_cut_hard():
         ctx = json.loads(p.stdout)
         i = ctx.rindex(FIT_MARK)
         files = overflow_files(home)
-        check("fit/hard: at most 9000 and a pointer", len(ctx) <= 9000 and i > 0, str(len(ctx)))
+        check("fit/hard: at most 9800 and a pointer", len(ctx) <= 9800 and i > 0, str(len(ctx)))
         rest = ""
         if files:
             with open(os.path.join(home, ".claude", "handoff", "overflow", files[0]),
@@ -3724,7 +3724,7 @@ def test_a_real_30k_pickup_fits_the_hook_channel():
         p = run(home, "fit00001-new", "context guard")
         ctx = context_of(p)
         expect_clean(p, "fit/real")
-        check("fit/real: at most 9000 characters", 0 < len(ctx) <= 9000, str(len(ctx)))
+        check("fit/real: at most 9800 characters", 0 < len(ctx) <= 9800, str(len(ctx)))
         check("fit/real: starts with HANDOFF NOTE", ctx.startswith("HANDOFF NOTE"), ctx[:60])
         check("fit/real: the note's first heading is in the head", "# Handoff - the guard" in ctx)
         check("fit/real: the pointer line is last", FIT_MARK in ctx.rstrip().splitlines()[-1],
@@ -3743,6 +3743,196 @@ def test_a_real_30k_pickup_fits_the_hook_channel():
                   and ctx[:ctx.rindex(FIT_MARK)].endswith("\n"))
     finally:
         shutil.rmtree(home, ignore_errors=True)
+
+
+def test_the_plain_200k_handoff_warning_is_emitted_whole():
+    """The reviewer measured this exact warning (a fresh chat at 200k, no checkpoint ever
+    recorded) at about 9557 characters. It is not a pickup, it has nothing to move to a
+    file, and a cut here would send the model off to Read a file for a few hundred
+    characters of its own warning."""
+    home = make_home({})
+    try:
+        write_transcript(home, "whole001", 200_000)
+        p = run(home, "whole001", "carry on")
+        expect_clean(p, "whole-warning")
+        ctx = context_of(p)
+        check("whole-warning: it is a handoff warning of real length",
+              9000 < len(ctx) <= 9800, str(len(ctx)))
+        check("whole-warning: no pointer line", FIT_MARK not in ctx, ctx[-300:])
+        check("whole-warning: no overflow file", overflow_files(home) == [],
+              str(overflow_files(home)))
+        check("whole-warning: it still ends with its own last section",
+              "record a checkpoint" in ctx.lower(), repr(ctx[-300:]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_the_overflow_pointer_is_neutral_about_what_was_cut():
+    home = make_home({})
+    try:
+        p = guard_call(home, "print(guard._overflow_pointer(1234, 'X:/some/path.md'))")
+        out = p.stdout.strip()
+        check("pointer: keeps the marker the tests and the model key on",
+              out.startswith(FIT_MARK), out)
+        check("pointer: says the rest of THIS MESSAGE, with the count and the path",
+              "the rest of this message (1234 characters) is in X:/some/path.md" in out, out)
+        check("pointer: says to Read it NOW, before answering",
+              "Read it with the Read tool NOW, before answering" in out, out)
+        check("pointer: names what a pickup's file holds",
+              "On a handoff pickup it holds the rest of the note, the user's own words "
+              "and the memory index." in out, out)
+        check("pointer: does not claim every cut message is a handoff note",
+              "too long for one hook message" not in out and len(out) < 400, str(len(out)))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_two_cuts_in_a_row_for_one_session_write_two_overflow_files():
+    home = make_home({})
+    try:
+        code = (FIT_CODE +
+                "for _ in range(2):\n"
+                "    guard.fit_hook_text({'hookSpecificOutput': {'additionalContext': text}},"
+                " 'abcd1234-5678')\n")
+        p = guard_call(home, code)
+        files = overflow_files(home)
+        check("overflow-name: two cuts, two files", len(files) == 2, str(files) + p.stderr[-300:])
+        check("overflow-name: the name carries microseconds",
+              all(re.match(r"^abcd1234-\d{8}-\d{6}-\d{6}\.md$", f) for f in files), str(files))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_a_stale_stub_is_retired_even_behind_fifty_old_real_notes():
+    """The retire loop looked at the oldest 50 waiting notes BEFORE asking which were stubs,
+    so 50 old real notes starved a stale stub behind them forever."""
+    home = make_home({})
+    try:
+        d = os.path.join(home, ".claude", "handoff")
+        for i in range(51):
+            p = os.path.join(d, KEY + ".real%04d.md" % i)
+            with open(p, "w", encoding="utf-8") as f:
+                f.write("HANDOFF LABEL: Real %d (1 Aug)\n\nprose.\n" % i)
+            t = time.time() - 60 * 86400 - i
+            os.utime(p, (t, t))
+        stub = os.path.join(d, KEY + ".lateStub.md")
+        with open(stub, "w", encoding="utf-8") as f:
+            f.write("HANDOFF LABEL: Unsaved chat lateStub\n\n<!-- " + STUB_MARKER + " -->\n\nx\n")
+        t = time.time() - 10 * 86400
+        os.utime(stub, (t, t))
+        expect_clean(boot(home, CWD, "newchatR"), "retire-behind")
+        names = handoff_files(home)
+        check("retire-behind: the stale stub was renamed out of the way",
+              not os.path.exists(stub) and any(".lateStub.used-stale-" in n for n in names),
+              repr([n for n in names if "late" in n]))
+        check("retire-behind: all 51 real notes are untouched",
+              len([n for n in names if ".real" in n and n.endswith(".md")
+                   and ".used" not in n]) == 51, str(len(names)))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_the_sweep_writes_a_stub_only_for_a_chat_idle_under_48_hours():
+    home = make_home({})
+    try:
+        stale_chat(home, "idle40h1", 40 * 3600)        # 40 h: still a thread to resume
+        stale_chat(home, "idle3day", 3 * 86400)        # 72 h: history now
+        expect_clean(boot(home, CWD, "newchatS"), "sweep-48h")
+        got = handoff_files(home)
+        check("sweep-48h: a chat idle 40 h gets a stub", KEY + ".idle40h1.md" in got, repr(got))
+        check("sweep-48h: a chat idle 3 days does not", KEY + ".idle3day.md" not in got, repr(got))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_session_end_skips_a_consumed_note_and_a_tiny_chat():
+    """The sweep already refuses both; SessionEnd used to re-create a stub for a chat whose
+    note had just been picked up (the .used-* file), and for a chat too small to resume."""
+    home = make_home({})
+    try:
+        stale_chat(home, "consum01", 3600)
+        d = os.path.join(home, ".claude", "handoff")
+        used = KEY + ".consum01.used-20261002-000000.md"
+        with open(os.path.join(d, used), "w", encoding="utf-8") as f:
+            f.write("HANDOFF LABEL: Real -1 (2 Oct)\n\nprose.\n")
+        expect_clean(run_session_end(home, "consum01"), "end-consumed")
+        check("end-consumed: no stub next to a consumed note",
+              handoff_files(home) == [used], repr(handoff_files(home)))
+        write_big_chat(home, "tinychat", time.time() - 3600, 130_000)
+        expect_clean(run_session_end(home, "tinychat"), "end-tiny")
+        check("end-tiny: a chat under FRESH_BYTES gets nothing",
+              not [n for n in handoff_files(home) if "tinychat" in n], repr(handoff_files(home)))
+        stale_chat(home, "bigchat1", 3600)
+        expect_clean(run_session_end(home, "bigchat1"), "end-big")
+        check("end-big: CONTROL - a big chat with no note still gets its stub",
+              KEY + ".bigchat1.md" in handoff_files(home), repr(handoff_files(home)))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_manifest_cache_and_sort_failures_are_logged_but_missing_files_are_not():
+    home = make_home({})
+    try:
+        lp = os.path.join(home, ".claude", "context-audit.log")
+
+        def errs():
+            if not os.path.exists(lp):
+                return []
+            with open(lp, encoding="utf-8") as f:
+                return [l for l in f if " error: " in l]
+        code = ("import os\n"
+                "guard.label_list_path('some label')\n"
+                "guard._resolve_key_dir('D--Claude')\n"
+                "tp = os.path.join(guard.PROJECTS, 'D--Claude', 'x.jsonl')\n"
+                "open(os.path.join(guard.handoff_dir(), 'D--Claude.bbbbbbbb.md'), 'w').write('x')\n"
+                "open(os.path.join(guard.handoff_dir(), 'D--Claude.cccccccc.md'), 'w').write('x')\n"
+                "def gone(p): raise FileNotFoundError(p)\n"
+                "os.path.getmtime = gone\n"
+                "guard.all_notes(tp)\n")
+        guard_call(home, code)
+        check("quiet-sites: a missing manifest and a vanished note leave no error line",
+              errs() == [], repr(errs()))
+        code = ("import os\n"
+                "os.makedirs(os.path.dirname(guard.MANIFEST), exist_ok=True)\n"
+                "open(guard.MANIFEST, 'wb').write(b'{ not json')\n"
+                "guard.label_list_path('some label')\n"
+                "guard._resolve_key_dir('D--Claude')\n"
+                "tp = os.path.join(guard.PROJECTS, 'D--Claude', 'x.jsonl')\n"
+                "open(os.path.join(guard.handoff_dir(), 'D--Claude.aaaaaaaa.md'), 'w').write('x')\n"
+                "open(os.path.join(guard.handoff_dir(), 'D--Claude.dddddddd.md'), 'w').write('x')\n"
+                "def denied(p): raise PermissionError(p)\n"
+                "os.path.getmtime = denied\n"
+                "guard.all_notes(tp)\n")
+        guard_call(home, code)
+        e = " ".join(errs())
+        check("quiet-sites: a corrupt manifest is logged by label_list_path",
+              " error: label_list_path:" in e, e[-400:])
+        check("quiet-sites: a corrupt manifest is logged by _resolve_key_dir",
+              " error: _resolve_key_dir:" in e, e[-400:])
+        check("quiet-sites: a note whose mtime cannot be read is logged by all_notes",
+              " error: all_notes:" in e, e[-400:])
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_a_reversed_two_word_keyword_is_not_scored_in_strict_mode():
+    """Word order decides the hit: 'phone android emulator' carries the words of the phrase
+    keyword 'android phone' backwards and also matches the keyword 'emulator'. Only the
+    keyword that really appears may be counted."""
+    home = kw_home(SCORE_MEMS)
+    try:
+        res = kw_json(home, "import json\nprint(json.dumps([[e['slug'], h] for _s, _m, e, h in "
+                            "guard.score_memories('phone android emulator', "
+                            "guard.memory_catalogue(), set(), True)]))")
+        check("kw-order: only 'emulator' scores, never the reversed phrase",
+              res == [["emulator-notes", ["emulator"]]], repr(res))
+        res = kw_json(home, "import json\nprint(json.dumps([[e['slug'], h] for _s, _m, e, h in "
+                            "guard.score_memories('android phone emulator', "
+                            "guard.memory_catalogue(), set(), True)]))")
+        check("kw-order: CONTROL - in order, both of its keywords score",
+              res == [["emulator-notes", ["android phone", "emulator"]]], repr(res))
+    finally:
+        rm_tree(home)
 
 
 # ------------------------------------- change 7: the finished chat archives itself
@@ -8987,7 +9177,15 @@ if __name__ == "__main__":
               test_hook_text_at_or_under_the_cap_is_emitted_unchanged,
               test_hook_text_with_no_newline_in_range_is_cut_hard,
               test_a_failed_overflow_write_emits_the_original_and_logs_it,
-              test_a_real_30k_pickup_fits_the_hook_channel):
+              test_a_real_30k_pickup_fits_the_hook_channel,
+              test_the_plain_200k_handoff_warning_is_emitted_whole,
+              test_the_overflow_pointer_is_neutral_about_what_was_cut,
+              test_two_cuts_in_a_row_for_one_session_write_two_overflow_files,
+              test_a_stale_stub_is_retired_even_behind_fifty_old_real_notes,
+              test_the_sweep_writes_a_stub_only_for_a_chat_idle_under_48_hours,
+              test_session_end_skips_a_consumed_note_and_a_tiny_chat,
+              test_manifest_cache_and_sort_failures_are_logged_but_missing_files_are_not,
+              test_a_reversed_two_word_keyword_is_not_scored_in_strict_mode):
         print(t.__name__)
         t()
     print()

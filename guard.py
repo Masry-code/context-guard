@@ -39,7 +39,7 @@ FREE_REREADS = 2   # allow this many identical reads (covers a post-compaction r
 NOTE_CHARS = 40_000
 # Claude Code moves hook output over about 10,000 characters into a file and shows the
 # chat a 2 KB preview. fit_hook_text() keeps what we emit under this, in CHARACTERS.
-HOOK_TEXT_MAX = 9000
+HOOK_TEXT_MAX = 9800
 TEMPLATE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "handoff-template.md")
 # Re-warn after this much FURTHER growth. Warning once per level left session
 # 143f0320 parked at ~211k in silence forever: it is over 150k but never reaches
@@ -914,17 +914,27 @@ def cmd_session_end():
         d = read_stdin()
         sid = d.get("session_id")
         path = find_transcript(sid, d.get("transcript_path"))
-        if sid and path:
+        if sid and path and stub_wanted(project_key(path), sid, os.path.getsize(path)):
             write_stub(path, sid, live_context(path))
     except Exception as e:
         log("session-end: failed: " + str(e))
 
 
 STUB_SWEEP_MIN_AGE = 6 * 3600       # idle at least this long: the chat is surely over
-STUB_SWEEP_MAX_AGE = 7 * 86400      # older than this is history, not a thread to resume
+STUB_SWEEP_MAX_AGE = 48 * 3600      # idle longer than this is history, not a thread to resume
 STUB_SWEEP_LOOK = 20                # transcripts looked at per start, newest first
 STUB_RETIRE_AGE = 7 * 86400         # a stub older than this is renamed out of the way
 STUB_RETIRE_LOOK = 50
+
+
+def stub_wanted(key, sid, size):
+    """The two rules both stub writers share, so SessionEnd and the SessionStart sweep can
+    never disagree: a transcript under FRESH_BYTES is not worth resuming, and a chat that
+    already has a file of any kind named <key>.<sid8>.* (live note, stub, or .used-*) has
+    had its note - writing a stub next to a consumed one just re-offers the thread."""
+    if size < FRESH_BYTES:
+        return False
+    return not glob.glob(os.path.join(handoff_dir(), glob.escape(key + "." + str(sid)[:8]) + ".*"))
 
 
 def sweep_stubs(d):
@@ -933,7 +943,7 @@ def sweep_stubs(d):
     1. Retire: a stub older than 7 days is renamed <name>.used-stale-<stamp>.md. Rename only,
        never delete. A real note is never touched: is_stub() alone decides.
     2. Sweep: the SessionEnd hook does not fire when a chat dies hard, so give each OTHER
-       transcript of this project that was idle 6 h to 7 days, is not fresh (FRESH_BYTES) and
+       transcript of this project that was idle 6 h to 48 h, is not fresh (FRESH_BYTES) and
        has no note of any kind a stub."""
     try:
         sid = d.get("session_id")
@@ -941,9 +951,10 @@ def sweep_stubs(d):
         key = project_key(own)
         now = time.time()
         stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-        for f in waiting_notes(own)[:STUB_RETIRE_LOOK]:
+        # stubs first, THEN the look limit: 50 old real notes must not starve a stale stub
+        for f in [n for n in waiting_notes(own) if is_stub(n)][:STUB_RETIRE_LOOK]:
             try:
-                if is_stub(f) and now - os.path.getmtime(f) > STUB_RETIRE_AGE:
+                if now - os.path.getmtime(f) > STUB_RETIRE_AGE:
                     os.replace(f, f[:-3] + ".used-stale-" + stamp + ".md")
                     log("stub: retired " + f)
             except Exception as e:
@@ -959,12 +970,12 @@ def sweep_stubs(d):
         for mtime, size, p, other in found[:STUB_SWEEP_LOOK]:
             try:
                 age = now - mtime
-                if other == str(sid) or size < FRESH_BYTES:
+                if other == str(sid):
                     continue
                 if not (STUB_SWEEP_MIN_AGE < age < STUB_SWEEP_MAX_AGE):
                     continue
-                if glob.glob(os.path.join(handoff_dir(), glob.escape(key + "." + other[:8]) + ".*")):
-                    continue      # a note exists (live, stub, or already archived)
+                if not stub_wanted(key, other, size):
+                    continue      # too small, or a note exists (live, stub, or already archived)
                 write_stub(p, other, live_context(p))
             except Exception as e:
                 log("stub: sweep skipped " + p + ": " + str(e))
@@ -2256,7 +2267,8 @@ def all_notes(transcript_path):
     files = [f for f in files if not os.path.basename(f).endswith(".requests.md")]
     try:
         files.sort(key=lambda f: os.path.getmtime(f), reverse=True)
-    except Exception:
+    except Exception as _e:
+        swallowed('all_notes', _e, quiet=MISSING)
         files.sort(reverse=True)
     return files[:LABEL_SCAN_MAX]
 
@@ -2785,10 +2797,9 @@ def cmd_bash():
 
 def _overflow_pointer(n, path):
     """The one line that ends a cut hook message. Under 400 characters."""
-    return ("CONTEXT GUARD OVERFLOW: this message was too long for one hook message. The rest ("
-            + str(n) + " characters) is in " + path + " - Read it with the Read tool NOW, "
-            "before answering, because it holds the rest of the handoff note, the user's own "
-            "words, and the memory index.")
+    return ("CONTEXT GUARD OVERFLOW: the rest of this message (" + str(n) + " characters) is in "
+            + path + " - Read it with the Read tool NOW, before answering. On a handoff "
+            "pickup it holds the rest of the note, the user's own words and the memory index.")
 
 
 def fit_hook_text(out, sid):
@@ -2809,7 +2820,7 @@ def fit_hook_text(out, sid):
         folder = os.path.join(handoff_dir(), "overflow")
         os.makedirs(folder, exist_ok=True)
         path = os.path.join(folder, "%s-%s.md" % (
-            str(sid or "unknown")[:8], datetime.datetime.now().strftime("%Y%m%d-%H%M%S")))
+            str(sid or "unknown")[:8], datetime.datetime.now().strftime("%Y%m%d-%H%M%S-%f")))
         # the real count is never longer than len(text), so this pointer is the longest it can be
         room = HOOK_TEXT_MAX - len(_overflow_pointer(len(text), path))
         cut = text.rfind(chr(10), 0, room) + 1
@@ -3405,8 +3416,8 @@ def _resolve_key_dir(key):
         for _n, e in sorted((man.get("projects") or {}).items()):
             cands.append(e.get("dir") or "")
             cands.extend(e.get("also") or [])
-    except Exception:
-        pass
+    except Exception as _e:
+        swallowed('_resolve_key_dir', _e, quiet=MISSING)
     for c in cands:
         if c and dir_key(c) == key and os.path.isdir(c):
             return c
@@ -3426,8 +3437,8 @@ def _resolve_key_dir(key):
                         if dir_key(c) == key and os.path.isdir(c):
                             return c
                         break
-    except Exception:
-        pass
+    except Exception as _e:
+        swallowed('_resolve_key_dir', _e, quiet=MISSING)
     return None
 
 
@@ -3514,7 +3525,8 @@ def label_list_path(prompt):
     try:
         with open(MANIFEST, encoding="utf-8") as f:
             man = json.load(f)
-    except Exception:
+    except Exception as _e:
+        swallowed('label_list_path', _e, quiet=MISSING)
         return None
     _name, entry = thread_project(prompt, man)
     if not entry:

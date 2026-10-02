@@ -125,8 +125,9 @@ check.
 | `guard.py --size` | UserPromptSubmit | measures live context, warns at escalating levels, and at the top orders a full handoff note |
 | `guard.py --reread` | PreToolUse (Read) | stops the same image being read into context twice |
 | `guard.py --bash` | PreToolUse (Bash) | blocks heredocs, which mangle file content on Windows |
-| `guard.py --ledger` | Stop | appends your own words to a permanent ledger, writes a stub note if none exists, and past the ceiling refuses to let the chat close |
-| `guard.py --bootstrap` | SessionStart | sweeps stray memory files home, and gives a project directory its own memory list the first time a chat opens there |
+| `guard.py --ledger` | Stop | appends your own words to a permanent ledger, and past the ceiling refuses to let the chat close. It writes no stub: stubs come from `--session-end` when a chat closes and from the `--bootstrap` sweep when one died without that hook |
+| `guard.py --session-end` | SessionEnd | when a chat ends with no note of any kind, leaves the mechanical stub (skipped for a chat under 1.5 MB, or one that already has a note, a stub or a consumed `.used-*` note) |
+| `guard.py --bootstrap` | SessionStart | sweeps stray memory files home, gives a project directory its own memory list the first time a chat opens there, and stubs other chats of the project that died without SessionEnd (idle 6 to 48 hours) |
 
 Three ideas do the real work.
 
@@ -260,6 +261,7 @@ The flag is machine-wide and does not expire, so the next chat you open says so 
 | `guard.py --recall <words>` | yes — searches every memory by keyword, writes nothing |
 | `ledger-budget.py [project-key]` | yes — prints what the request budget keeps and drops |
 | `guard.py --size` / `--ledger` / `--bootstrap`, `audit.py --alert` | **no** — hook entry points with side effects, including consuming a handoff note and moving memory files |
+| `guard.py --session-end` | **no** — hook entry point: reads the SessionEnd payload on stdin and writes a stub note for the chat that just ended |
 
 **Run `--attribute` before `ledger-budget.py`.** Entries written before the chat id went
 inline know whose thread they belong to only through the `.attrib.json` sidecar that
