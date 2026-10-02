@@ -12,33 +12,112 @@ it twice and the second run reports "already up to date"; move the folder and re
 it repoints the old entries instead of adding a second copy.
 
 Every write is preceded by a timestamped backup next to the file.
+
+The hooks run from an INSTALLED COPY: the runtime files are copied into
+~/.claude/context-guard/bin/ and settings.json points there, not at this folder. Editing
+the files in this clone changes nothing live until you run install.py again (or
+install.py --update, which re-runs it); a re-run copies only the files that differ and
+refuses to copy a Python file that does not parse. --uninstall removes the copy as well,
+but only a bin/ that holds the source.json this installer wrote.
 """
 import argparse
+import ast
 import datetime
 import difflib
+import hashlib
 import json
 import os
 import shutil
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-GUARD = os.path.join(HERE, "guard.py").replace(os.sep, "/")
+GUARD = os.path.join(HERE, "guard.py").replace(os.sep, "/")      # the clone's own (source) path
 AUDIT = os.path.join(HERE, "audit.py").replace(os.sep, "/")
 PY = sys.executable.replace(os.sep, "/")
 
-# (event, matcher, script, flag, timeout, statusMessage)
+# Everything the three scripts open beside themselves (TEMPLATE, TOUR_FILE, tour_text's
+# {GUARD}/{AUDIT}, load_audit, update_line). A test scans the scripts and fails when one
+# is missing from here.
+RUNTIME = ("guard.py", "audit.py", "update.py", "handoff-template.md", "tour.md")
+
+# (event, matcher, script, flag, timeout, statusMessage). `script` is a file name in RUNTIME;
+# build() turns it into the path inside the installed bin/ folder.
 HOOKS = [
-    ("SessionStart", None, AUDIT, "--alert", 15, "Checking context cost"),
+    ("SessionStart", None, "audit.py", "--alert", 15, "Checking context cost"),
     # Furnishes a project directory's own memory folder the first time a chat opens there.
     # Without a memory-manifest.json in ~/.claude/context-guard/ this is a silent no-op, so
     # it is safe to ship to someone who has never written one.
-    ("SessionStart", None, GUARD, "--bootstrap", 15, "Setting up project memory"),
-    ("UserPromptSubmit", None, GUARD, "--size", 10, None),
-    ("PreToolUse", "Bash", GUARD, "--bash", 10, None),
-    ("Stop", None, GUARD, "--ledger", 30, None),
+    ("SessionStart", None, "guard.py", "--bootstrap", 15, "Setting up project memory"),
+    ("UserPromptSubmit", None, "guard.py", "--size", 10, None),
+    ("PreToolUse", "Bash", "guard.py", "--bash", 10, None),
+    ("Stop", None, "guard.py", "--ledger", 30, None),
     # Leaves the stub note for a chat that ends without writing one (no longer done on Stop).
-    ("SessionEnd", None, GUARD, "--session-end", 10, None),
+    ("SessionEnd", None, "guard.py", "--session-end", 10, None),
 ]
+
+
+def bin_dir(home=None):
+    return os.path.join(home or os.path.expanduser("~"), ".claude", "context-guard", "bin")
+
+
+def _read(path):
+    with open(path, "rb") as f:
+        return f.read()
+
+
+def check_sources():
+    """A problem string for the first runtime file in this clone that is missing or is Python
+    that does not parse, else "". Run before anything is written."""
+    for name in RUNTIME:
+        path = os.path.join(HERE, name)
+        if not os.path.isfile(path):
+            return "%s is missing from %s" % (name, HERE)
+        if name.endswith(".py"):
+            try:
+                ast.parse(_read(path))
+            except (SyntaxError, ValueError) as e:
+                return "%s does not parse (%s)" % (name, e)
+    return ""
+
+
+def copy_plan(home=None):
+    """The RUNTIME names whose bytes in bin/ differ from this clone's (missing counts)."""
+    b = bin_dir(home)
+    out = []
+    for name in RUNTIME:
+        dst = os.path.join(b, name)
+        if not os.path.isfile(dst) or _read(dst) != _read(os.path.join(HERE, name)):
+            out.append(name)
+    return out
+
+
+def source_meta():
+    return json.dumps({"clone": HERE,
+                       "files": {n: hashlib.sha256(_read(os.path.join(HERE, n))).hexdigest()
+                                 for n in RUNTIME}}, indent=2) + "\n"
+
+
+def meta_current(home=None):
+    p = os.path.join(bin_dir(home), "source.json")
+    return os.path.isfile(p) and _read(p) == source_meta().encode("utf-8")
+
+
+def _put(path, data):
+    tmp = path + ".tmp"
+    with open(tmp, "wb") as f:
+        f.write(data)
+    os.replace(tmp, path)
+
+
+def install_copy(home, names):
+    """Write each named file (and source.json) into bin/ via a temp file and os.replace.
+    Binary, so guard.py keeps its CRLF."""
+    b = bin_dir(home)
+    if not os.path.isdir(b):
+        os.makedirs(b)
+    for name in names:
+        _put(os.path.join(b, name), _read(os.path.join(HERE, name)))
+    _put(os.path.join(b, "source.json"), source_meta().encode("utf-8"))
 
 # How an entry is recognised as OURS on a re-run or an uninstall. Deliberately the script
 # FILENAME and not the full path: someone who moves the folder must get their old entries
@@ -83,8 +162,10 @@ def desired_entry(matcher, script, flag, timeout, status):
     return entry
 
 
-def build(current, remove=False):
-    """Return the settings dict Context Guard wants, merged onto `current`."""
+def build(current, remove=False, home=None):
+    """Return the settings dict Context Guard wants, merged onto `current`. The hook
+    commands name the scripts inside <home>/.claude/context-guard/bin/."""
+    b = bin_dir(home)
     out = json.loads(json.dumps(current))          # deep copy, never mutate the original
     hooks = out.setdefault("hooks", {})
     # Every event that holds an entry of ours, not only the events in HOOKS: a retired hook
@@ -104,7 +185,8 @@ def build(current, remove=False):
         # duplicate, and what leaves a friend's own hooks untouched.
         kept = [e for e in hooks.get(event, []) if not is_ours(e)]
         mine = [] if remove else [
-            desired_entry(matcher, script, flag, timeout, status)
+            desired_entry(matcher, os.path.join(b, script).replace(os.sep, "/"), flag, timeout,
+                          status)
             for ev, matcher, script, flag, timeout, status in HOOKS if ev == event]
         if kept or mine:
             hooks[event] = kept + mine
@@ -152,8 +234,23 @@ def dumps(d):
     return json.dumps(d, indent=2, ensure_ascii=False) + "\n"
 
 
+def _remove_bin(b, own, dry):
+    """--uninstall: take the installed copy out, but only one carrying our source.json."""
+    if not os.path.isdir(b):
+        return 0
+    if not own:
+        print("Left %s alone: it has no source.json, so it is not ours." % b)
+        return 0
+    if dry:
+        print("would remove " + b)
+        return 0
+    shutil.rmtree(b)
+    print("Removed the installed copy " + b)
+    return 0
+
+
 def main():
-    ap = argparse.ArgumentParser(description="Install Context Guard's Claude Code hooks.")
+    ap =argparse.ArgumentParser(description="Install Context Guard's Claude Code hooks.")
     ap.add_argument("--dry-run", action="store_true", help="print the diff and write nothing")
     ap.add_argument("--uninstall", action="store_true", help="remove Context Guard's hooks")
     ap.add_argument("--home", default=None, help="treat this directory as the home directory")
@@ -179,20 +276,44 @@ def main():
         current = {}
         print("note: %s does not exist yet; it will be created." % path)
 
-    wanted = build(current, remove=a.uninstall)
+    b = bin_dir(a.home)
+    names = []
+    if not a.uninstall:
+        problem = check_sources()
+        if problem:
+            print("REFUSING: " + problem + ". Nothing was copied or changed.")
+            return 1
+        names = copy_plan(a.home)
+    meta_stale = not a.uninstall and not meta_current(a.home)
+
+    wanted = build(current, remove=a.uninstall, home=a.home)
     fresh = not a.uninstall and is_fresh(current)
     before, after = dumps(current), dumps(wanted)
-    if before == after:
+    own_bin = a.uninstall and os.path.isfile(os.path.join(b, "source.json"))
+    if before == after and not names and not meta_stale:
         print("Already up to date - nothing to change in " + path)
+        if a.uninstall:
+            return _remove_bin(b, own_bin, a.dry_run)
         return 0
 
-    diff = "".join(difflib.unified_diff(before.splitlines(True), after.splitlines(True),
-                                        fromfile=path + " (now)", tofile=path + " (after)"))
-    print(diff if diff.strip() else "(no textual diff)")
+    if before != after:
+        diff = "".join(difflib.unified_diff(before.splitlines(True), after.splitlines(True),
+                                            fromfile=path + " (now)", tofile=path + " (after)"))
+        print(diff if diff.strip() else "(no textual diff)")
     if a.dry_run:
+        if names:
+            print("would copy %d file(s) to %s: %s" % (len(names), b, ", ".join(names)))
+        if a.uninstall:
+            _remove_bin(b, own_bin, True)
         print("--dry-run: nothing was written.")
         return 0
 
+    if names or meta_stale:
+        install_copy(a.home, names)
+        if names:
+            print("refreshed: " + ", ".join(names) + "  (in " + b + ")")
+    if before == after:
+        return 0
     d = os.path.dirname(path)
     if not os.path.isdir(d):
         os.makedirs(d)
@@ -204,6 +325,8 @@ def main():
     with open(path, "w", encoding="utf-8") as f:
         f.write(after)
     print(("Removed" if a.uninstall else "Installed") + " Context Guard hooks in " + path)
+    if a.uninstall:
+        return _remove_bin(b, own_bin, False)
     if not a.uninstall:
         print("")
         print("One optional extra: set \"autoCompactWindow\" in that file to your context")

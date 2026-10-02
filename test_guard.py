@@ -2659,6 +2659,263 @@ def test_uninstall_removes_only_our_hooks():
         shutil.rmtree(home, ignore_errors=True)
 
 
+def inst_module():
+    sys.path.insert(0, os.path.dirname(INSTALL))
+    try:
+        import install as inst
+    finally:
+        sys.path.pop(0)
+    return inst
+
+
+def bin_of(home):
+    return os.path.join(home, ".claude", "context-guard", "bin")
+
+
+def file_bytes(path):
+    with open(path, "rb") as f:
+        return f.read()
+
+
+def make_source_dir():
+    """A throwaway 'clone': install.py + every runtime file, copied, not a git checkout."""
+    src = throwaway_dir("srcdir-")
+    for name in ("install.py",) + tuple(inst_module().RUNTIME):
+        shutil.copy(os.path.join(HERE_DIR, name), os.path.join(src, name))
+    return src
+
+
+def run_install_from(src, home, *args):
+    return subprocess.run([sys.executable, os.path.join(src, "install.py"), "--home", home]
+                          + list(args), capture_output=True, text=True)
+
+
+def test_install_copies_the_runtime_and_points_the_hooks_there():
+    home = make_home({})
+    src = make_source_dir()
+    try:
+        seed_settings(home, {})
+        p = run_install_from(src, home)
+        expect_clean(p, "bincopy")
+        names = tuple(inst_module().RUNTIME)
+        for n in names:
+            same = (os.path.exists(os.path.join(bin_of(home), n))
+                    and file_bytes(os.path.join(bin_of(home), n)) == file_bytes(os.path.join(HERE_DIR, n)))
+            check("bincopy: %s in bin/ is byte-identical to the repo's" % n, same, p.stdout[-300:])
+        check("bincopy: guard.py keeps its CRLF",
+              b"\r\n" in file_bytes(os.path.join(bin_of(home), "guard.py")), "no CRLF")
+        try:
+            meta = json.loads(file_bytes(os.path.join(bin_of(home), "source.json")).decode("utf-8"))
+        except Exception as e:
+            meta = {"err": repr(e)}
+        check("bincopy: source.json names the clone",
+              os.path.normcase(os.path.abspath(meta.get("clone") or "x"))
+              == os.path.normcase(os.path.abspath(src)), repr(meta)[:200])
+        check("bincopy: source.json holds a sha256 per file",
+              meta.get("files") == {n: hashlib.sha256(file_bytes(os.path.join(HERE_DIR, n))).hexdigest()
+                                    for n in names}, repr(meta)[:300])
+        cmds = all_commands(read_settings(home))
+        ours_cmds = [c for c in cmds if "guard.py" in c or "audit.py" in c]
+        check("bincopy: six hook commands of ours", len(ours_cmds) == 6, json.dumps(ours_cmds)[:400])
+        check("bincopy: every one runs from .claude/context-guard/bin",
+              all(".claude/context-guard/bin/" in c.replace("\\", "/") for c in ours_cmds),
+              json.dumps(ours_cmds)[:400])
+        check("bincopy: none names the source dir",
+              not any(src.replace("\\", "/") in c.replace("\\", "/") for c in ours_cmds),
+              json.dumps(ours_cmds)[:400])
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_the_installed_copy_runs():
+    home = make_home({})
+    src = make_source_dir()
+    try:
+        seed_settings(home, {})
+        expect_clean(run_install_from(src, home), "binrun/install")
+        env = child_env(home)
+        b = bin_of(home)
+        sid = "binrun-1"
+        write_transcript(home, sid, 1000)
+        tp = os.path.join(home, ".claude", "projects", KEY, sid + ".jsonl")
+
+        def hook(script, flag, payload=None):
+            return subprocess.run([sys.executable, os.path.join(b, script), flag],
+                                  input=json.dumps(payload or {}), capture_output=True, text=True,
+                                  env=env)
+        r = hook("guard.py", "--report")
+        expect_clean(r, "binrun/report")
+        a = hook("audit.py", "--alert", {"session_id": sid, "transcript_path": tp, "cwd": CWD,
+                                         "hook_event_name": "SessionStart"})
+        expect_clean(a, "binrun/audit --alert")
+        base = {"session_id": sid, "transcript_path": tp, "cwd": CWD}
+        s = hook("guard.py", "--size", dict(base, prompt="context guard tour",
+                                            hook_event_name="UserPromptSubmit"))
+        expect_clean(s, "binrun/prompt")
+        ctx = context_of(s)
+        binpath = os.path.join(b, "guard.py").replace("\\", "/")
+        check("binrun/prompt: the tour came back with {GUARD} filled as the bin path",
+              "show you around" in ctx or "Hand a chat over" in ctx or binpath in ctx,
+              repr(ctx[:300]))
+        check("binrun/prompt: and it names the bin path", binpath in ctx, repr(ctx[:300]))
+        st = hook("guard.py", "--ledger", dict(base, hook_event_name="Stop", stop_hook_active=False))
+        expect_clean(st, "binrun/stop")
+        se = hook("guard.py", "--session-end", dict(base, hook_event_name="SessionEnd"))
+        expect_clean(se, "binrun/session-end")
+        bs = hook("guard.py", "--bootstrap", dict(base, hook_event_name="SessionStart"))
+        expect_clean(bs, "binrun/bootstrap")
+        log = os.path.join(home, ".claude", "context-guard", "log.txt")
+        logtxt = file_bytes(log).decode("utf-8", "replace") if os.path.exists(log) else ""
+        check("binrun: nothing logged about a missing beside-file",
+              "tour.md" not in logtxt and "handoff-template" not in logtxt, logtxt[-300:])
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_runtime_lists_every_file_the_scripts_open_beside_themselves():
+    names = set()
+    pats = (r'os\.path\.join\(os\.path\.dirname\(os\.path\.abspath\(__file__\)\),\s*"([^"]+)"\)',
+            r'os\.path\.join\((?:here|HERE),\s*"([^"]+)"')
+    for script in ("guard.py", "audit.py", "update.py"):
+        text = file_bytes(os.path.join(HERE_DIR, script)).decode("utf-8")
+        for pat in pats:
+            names.update(re.findall(pat, text))
+    runtime = tuple(inst_module().RUNTIME)
+    check("runtime: the scan found the files it should",
+          {"audit.py", "update.py", "tour.md", "handoff-template.md"} <= names, repr(sorted(names)))
+    check("runtime: every file a script opens beside itself is in RUNTIME",
+          all(n in runtime for n in names), repr(sorted(set(names) - set(runtime))))
+
+
+def test_reinstall_refreshes_only_a_changed_copy():
+    home = make_home({})
+    src = make_source_dir()
+    try:
+        seed_settings(home, {})
+        expect_clean(run_install_from(src, home), "reinstall/first")
+        p = run_install_from(src, home)
+        check("reinstall: a second run says Already up to date",
+              "Already up to date" in (p.stdout or ""), (p.stdout or "")[-300:])
+        before = file_bytes(settings_file(home))
+        with open(os.path.join(src, "audit.py"), "ab") as f:
+            f.write(b"\n# a changed line\n")
+        p = run_install_from(src, home)
+        expect_clean(p, "reinstall/third")
+        check("reinstall: the changed file was copied",
+              file_bytes(os.path.join(bin_of(home), "audit.py"))
+              == file_bytes(os.path.join(src, "audit.py")), (p.stdout or "")[-300:])
+        check("reinstall: and it says which file it refreshed",
+              "refreshed" in (p.stdout or "") and "audit.py" in (p.stdout or "")
+              and "tour.md" not in (p.stdout or "").split("refreshed")[-1], (p.stdout or "")[-300:])
+        check("reinstall: settings.json is byte-identical",
+              file_bytes(settings_file(home)) == before, "settings changed")
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_install_refuses_a_runtime_file_that_does_not_parse():
+    home = make_home({})
+    src = make_source_dir()
+    try:
+        seed_settings(home, {})
+        expect_clean(run_install_from(src, home), "refuse/good")
+        s_before = file_bytes(settings_file(home))
+        guard_before = file_bytes(os.path.join(bin_of(home), "guard.py"))
+        with open(os.path.join(src, "guard.py"), "wb") as f:
+            f.write(b"def (:\n")
+        p = run_install_from(src, home)
+        check("refuse: exits non-zero", p.returncode != 0, "rc=%d" % p.returncode)
+        check("refuse: says which file", "guard.py" in (p.stdout or "") + (p.stderr or ""),
+              (p.stdout or "")[-300:])
+        check("refuse: bin/ unchanged", file_bytes(os.path.join(bin_of(home), "guard.py")) == guard_before,
+              "bin changed")
+        check("refuse: settings.json unchanged", file_bytes(settings_file(home)) == s_before,
+              "settings changed")
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_install_repoints_old_working_tree_hooks():
+    home = make_home({})
+    src = make_source_dir()
+    try:
+        inst = inst_module()
+        old = {"hooks": {}}
+        for ev, m, s, f, t, st in inst.HOOKS:
+            old["hooks"].setdefault(ev, []).append(
+                inst.desired_entry(m, "D:/old/place/context-guard/" + os.path.basename(s), f, t, st))
+        old["hooks"].setdefault("Notification", []).append(
+            {"hooks": [{"type": "command", "command": "echo foreign"}]})
+        seed_settings(home, old)
+        expect_clean(run_install_from(src, home), "repoint")
+        cmds = all_commands(read_settings(home))
+        ours_cmds = [c for c in cmds if "guard.py" in c or "audit.py" in c]
+        check("repoint: six entries of ours", len(ours_cmds) == 6, json.dumps(ours_cmds)[:400])
+        check("repoint: none on the old path", not any("/old/place/" in c for c in ours_cmds),
+              json.dumps(ours_cmds)[:400])
+        check("repoint: all on the bin path",
+              all("/.claude/context-guard/bin/" in c.replace("\\", "/") for c in ours_cmds),
+              json.dumps(ours_cmds)[:400])
+        check("repoint: the foreign hook is untouched", "echo foreign" in cmds, json.dumps(cmds)[:400])
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_dry_run_creates_no_copy():
+    home = make_home({})
+    src = make_source_dir()
+    try:
+        p = run_install_from(src, home, "--dry-run")
+        expect_clean(p, "dryrun-copy")
+        out = p.stdout or ""
+        check("dryrun-copy: prints the settings diff", "guard.py" in out and "+" in out, out[:200])
+        check("dryrun-copy: says it would copy 5 file(s) to bin",
+              "would copy 5 file(s) to" in out and out.replace("\\", "/").count("bin") >= 1, out[-300:])
+        check("dryrun-copy: no bin/ created", not os.path.exists(bin_of(home)), "bin exists")
+        check("dryrun-copy: no settings.json created", not os.path.exists(settings_file(home)),
+              "settings exists")
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_uninstall_removes_the_copy_only():
+    home = make_home({})
+    src = make_source_dir()
+    try:
+        seed_settings(home, {})
+        expect_clean(run_install_from(src, home), "uninst-copy/install")
+        cg = os.path.join(home, ".claude", "context-guard")
+        for n in ("config.json", "sess-1.json", "no-ceiling"):
+            with open(os.path.join(cg, n), "w") as f:
+                f.write("x")
+        os.makedirs(os.path.join(bin_of(home), "__pycache__"), exist_ok=True)
+        with open(os.path.join(bin_of(home), "__pycache__", "guard.pyc"), "wb") as f:
+            f.write(b"x")
+        p = run_install_from(src, home, "--uninstall")
+        expect_clean(p, "uninst-copy")
+        check("uninst-copy: bin/ is gone", not os.path.exists(bin_of(home)), "bin exists")
+        check("uninst-copy: the three other files stay",
+              all(os.path.exists(os.path.join(cg, n)) for n in ("config.json", "sess-1.json", "no-ceiling")),
+              repr(os.listdir(cg)))
+        check("uninst-copy: our hooks are gone",
+              not [c for c in all_commands(read_settings(home)) if "guard.py" in c or "audit.py" in c], "")
+        # a bin/ without source.json is not ours
+        home2 = make_home({})
+        try:
+            os.makedirs(bin_of(home2))
+            with open(os.path.join(bin_of(home2), "mine.txt"), "w") as f:
+                f.write("x")
+            q = run_install_from(src, home2, "--uninstall")
+            check("uninst-copy: a bin/ without source.json is left alone",
+                  os.path.exists(os.path.join(bin_of(home2), "mine.txt")), (q.stdout or "")[-300:])
+            check("uninst-copy: and it says so", "not ours" in (q.stdout or "") or "source.json" in (q.stdout or ""),
+                  (q.stdout or "")[-300:])
+        finally:
+            shutil.rmtree(home2, ignore_errors=True)
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
 def old_install_with_reread(foreign_read=True):
     """Settings as an OLDER install wrote them: our entries plus the retired --reread one,
     beside a foreign PreToolUse/Read hook that must survive."""
@@ -6684,6 +6941,9 @@ def upd_setup():
     git_in(work, "checkout", "-q", "-B", "main")
     shutil.copy(INSTALL, os.path.join(work, "install.py"))   # apply() re-runs the clone's own
     git_in(work, "add", "install.py")                         # install.py after an update
+    for name in inst_module().RUNTIME:                        # ... which now copies these to bin/
+        shutil.copy(os.path.join(HERE_DIR, name), os.path.join(work, name))
+        git_in(work, "add", name)
     commit_file(work, "a.txt", "one\n", "first change")
     git_in(work, "remote", "add", "origin", origin)
     git_in(work, "push", "-q", "origin", "main")
@@ -7204,10 +7464,9 @@ def test_install_update_flag_is_wired_and_plain_install_is_unchanged():
     s = upd_setup()
     home = make_home({})
     try:
-        # install.py is already in the clone (upd_setup committed it); update.py is not
-        shutil.copy(os.path.join(HERE_DIR, "update.py"), os.path.join(s["clone"], "update.py"))
+        # install.py and every runtime file are already in the clone (upd_setup committed them)
         with open(os.path.join(s["clone"], ".git", "info", "exclude"), "a") as f:
-            f.write("update.py\n__pycache__/\n")     # keep the tree clean
+            f.write("__pycache__/\n")     # keep the tree clean
         p = subprocess.run([sys.executable, os.path.join(s["clone"], "install.py"), "--home", home,
                             "--update", "--dry-run"], capture_output=True, text=True, timeout=60)
         expect_clean(p, "install-update-flag")
@@ -8527,6 +8786,14 @@ if __name__ == "__main__":
               test_install_wires_the_bootstrap,
               test_uninstall_removes_the_bootstrap_too,
               test_install_keeps_other_peoples_settings_and_hooks,
+              test_install_copies_the_runtime_and_points_the_hooks_there,
+              test_the_installed_copy_runs,
+              test_runtime_lists_every_file_the_scripts_open_beside_themselves,
+              test_reinstall_refreshes_only_a_changed_copy,
+              test_install_refuses_a_runtime_file_that_does_not_parse,
+              test_install_repoints_old_working_tree_hooks,
+              test_dry_run_creates_no_copy,
+              test_uninstall_removes_the_copy_only,
               test_install_dry_run_writes_nothing,
               test_install_backs_the_file_up_before_writing,
               test_uninstall_removes_only_our_hooks,
