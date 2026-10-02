@@ -7260,12 +7260,19 @@ def test_update_apply_refuses_a_dirty_tree_and_changes_nothing():
     s = upd_setup()
     home = make_home({})
     try:
+        pi = run_install_from(s["clone"], home)
+        check("update-dirty: the copy was installed first", pi.returncode == 0, pi.stdout + pi.stderr)
+        bin_before = {n: file_bytes(os.path.join(bin_of(home), n))
+                      for n in sorted(os.listdir(bin_of(home)))}
         upd_push(s, "b.txt", "second change")
         with open(os.path.join(s["clone"], "a.txt"), "w", encoding="utf-8") as f:
             f.write("my local edit\n")
         before = tree_fingerprint(s["clone"])
         refs_before = git_in(s["clone"], "for-each-ref")
         rc, out = upd_apply(u, s, home)
+        check("update-dirty: bin/ is untouched",
+              {n: file_bytes(os.path.join(bin_of(home), n))
+               for n in sorted(os.listdir(bin_of(home)))} == bin_before)
         check("update-dirty: exit 1", rc == 1, "rc=%s" % rc)
         check("update-dirty: names the changed file", "a.txt" in out, out)
         check("update-dirty: says commit or copy them", "commit or copy them somewhere, then run --update again" in out, out)
@@ -7366,11 +7373,12 @@ def test_update_apply_fails_cleanly_when_fetch_fails():
 
 
 def run_alert_in_clone(s, home, with_update=True):
-    """Run a COPY of audit.py (and update.py) sitting in the clone, from another cwd, the way
-    the hook does: by absolute path."""
+    """Run a COPY of audit.py sitting in the clone (upd_setup already committed update.py
+    beside it; `with_update=False` takes it out), from another cwd, the way the hook does:
+    by absolute path."""
     shutil.copy(AUDIT, os.path.join(s["clone"], "audit.py"))
-    if with_update:
-        shutil.copy(os.path.join(HERE_DIR, "update.py"), os.path.join(s["clone"], "update.py"))
+    if not with_update:
+        os.remove(os.path.join(s["clone"], "update.py"))
     return subprocess.run([sys.executable, os.path.join(s["clone"], "audit.py"), "--alert"],
                           capture_output=True, text=True, env=child_env(home),
                           cwd=tempfile.gettempdir(), timeout=60)
@@ -7475,6 +7483,96 @@ def test_install_update_flag_is_wired_and_plain_install_is_unchanged():
               not os.path.exists(settings_file(home)))
         p2 = run_install(home, "--dry-run")
         check("install-update-flag: plain install --dry-run still works", p2.returncode == 0, p2.stderr)
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+        rm_tree(s["tmp"])
+
+
+def load_update_by_path(path):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("cg_update_installed", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_update_check_from_the_installed_copy_reads_the_clone():
+    s = upd_setup()
+    home = make_home({})
+    try:
+        pi = run_install_from(s["clone"], home)
+        expect_clean(pi, "copy-check-install")
+        upd_push(s, "b.txt", "second change")
+        mod = load_update_by_path(os.path.join(bin_of(home), "update.py"))
+        line = mod.check(home=home)
+        check("copy-check: sees the one new change", "update available (1 new change(s))" in line, line)
+        check("copy-check: names the CLONE's install.py",
+              os.path.join(s["clone"], "install.py") in line, line)
+        check("copy-check: does not name the bin folder", bin_of(home) not in line, line)
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+        rm_tree(s["tmp"])
+
+
+def test_the_notice_says_when_the_clone_is_ahead_of_the_running_copy():
+    src = make_source_dir()
+    home = make_home({})
+    try:
+        pi = run_install_from(src, home)
+        expect_clean(pi, "copy-ahead-install")
+        want = 'run: python "%s"' % os.path.join(src, "install.py")
+        guard_src = os.path.join(src, "guard.py")
+        original = file_bytes(guard_src)
+
+        def alert_msg(script):
+            p = subprocess.run([sys.executable, script, "--alert"], capture_output=True, text=True,
+                               env=child_env(home), cwd=tempfile.gettempdir(), timeout=60)
+            expect_clean(p, "copy-ahead-alert")
+            d = one_json(p)
+            return (d or {}).get("systemMessage", "") if d else ""
+
+        check("copy-ahead: in step with the clone says nothing",
+              want not in alert_msg(os.path.join(bin_of(home), "audit.py")))
+        with open(guard_src, "wb") as f:
+            f.write(original + b"\n# a newer line\n")
+        msg = alert_msg(os.path.join(bin_of(home), "audit.py"))
+        check("copy-ahead: a changed clone file says run install.py", want in msg, msg)
+        check("copy-ahead: the line says the copy is older",
+              "older than your clone" in msg, msg)
+        with open(guard_src, "wb") as f:
+            f.write(original)
+        check("copy-ahead: restoring the bytes removes the line",
+              want not in alert_msg(os.path.join(bin_of(home), "audit.py")))
+        # a clone has no source.json beside it: it never shows the line
+        with open(guard_src, "wb") as f:
+            f.write(original + b"\n# a newer line\n")
+        check("copy-ahead: running from the clone itself never shows it",
+              want not in alert_msg(os.path.join(src, "audit.py")))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+        rm_tree(src)
+
+
+def test_update_when_current_still_refreshes_the_copy():
+    u = upd_module()
+    s = upd_setup()
+    home = make_home({})
+    try:
+        pi = run_install_from(s["clone"], home)
+        expect_clean(pi, "current-refresh-install")
+        g = os.path.join(s["clone"], "guard.py")
+        with open(g, "wb") as f:
+            f.write(file_bytes(g) + b"\n# the owner's own commit\n")
+        git_in(s["clone"], "add", "guard.py")
+        git_in(s["clone"], "commit", "-q", "-m", "owner commit")
+        check("current-refresh: bin differs before",
+              file_bytes(os.path.join(bin_of(home), "guard.py")) != file_bytes(g))
+        rc, out = upd_apply(u, s, home)
+        check("current-refresh: exit 0", rc == 0, out)
+        check("current-refresh: still says already up to date",
+              "Context Guard is already up to date" in out, out)
+        check("current-refresh: bin/guard.py now matches the clone",
+              file_bytes(os.path.join(bin_of(home), "guard.py")) == file_bytes(g))
     finally:
         shutil.rmtree(home, ignore_errors=True)
         rm_tree(s["tmp"])
@@ -8689,6 +8787,9 @@ if __name__ == "__main__":
               test_alert_with_nothing_to_say_still_prints_nothing,
               test_alert_survives_an_old_checkout_without_update_py,
               test_install_update_flag_is_wired_and_plain_install_is_unchanged,
+              test_update_check_from_the_installed_copy_reads_the_clone,
+              test_the_notice_says_when_the_clone_is_ahead_of_the_running_copy,
+              test_update_when_current_still_refreshes_the_copy,
               test_handoff_instruction_demands_memory_consolidation,
               test_handoff_label_gets_the_next_number,
               test_a_brand_new_thread_starts_at_one,

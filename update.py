@@ -9,6 +9,7 @@ and stays silent when offline. Switch it off with {"update_check": false} in
 ~/.claude/context-guard/config.json, or an empty ~/.claude/context-guard/no-update-check.
 """
 import datetime
+import hashlib
 import json
 import os
 import subprocess
@@ -111,10 +112,67 @@ def _write_state(home, last_check, behind, remote, rewritten=False):
                    "rewritten": rewritten}, f)
 
 
+SOURCE_FILE = "source.json"        # written by install.py into bin/; not a RUNTIME file
+GIT_DIR = ".git"
+
+
+def _read_source(here):
+    """The parsed source.json beside `here`, or None."""
+    try:
+        with open(os.path.join(here, SOURCE_FILE), encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else None
+    except Exception:
+        return None
+
+
+def _source_clone(here):
+    """The clone the installed copy in `here` (bin/) came from: source.json's `clone`, when
+    `here` itself is not a git clone and that folder holds install.py. Else None."""
+    try:
+        if os.path.exists(os.path.join(here, GIT_DIR)):
+            return None
+        d = _read_source(here)
+        clone = d.get("clone") if d else None
+        if isinstance(clone, str) and os.path.isfile(os.path.join(clone, "install.py")):
+            return clone
+    except Exception:
+        pass
+    return None
+
+
+def copy_line(here=HERE):
+    """'The running copy is older than your clone' (with the command), or "". Only an
+    installed copy (a folder holding source.json) can say it: every file source.json lists
+    is hashed in the clone, and any difference or missing file counts. Never raises."""
+    try:
+        d = _read_source(here)
+        if not d:
+            return ""
+        clone = d.get("clone")
+        files = d.get("files")
+        if not isinstance(clone, str) or not isinstance(files, dict):
+            return ""
+        for name in files:
+            with open(os.path.join(clone, name), "rb") as f:
+                if hashlib.sha256(f.read()).hexdigest() != files[name]:
+                    raise ValueError(name)
+        return ""
+    except Exception:
+        pass
+    try:
+        clone = _read_source(here)["clone"]
+        return ('Context Guard: the running copy is older than your clone - run: '
+                'python "%s"' % os.path.join(clone, "install.py"))
+    except Exception:
+        return ""
+
+
 def check(clone=None, home=None, now=None):
     """The update notice to show, or "". Any failure means "" (and a line in the log)."""
     try:
-        return _check(clone or HERE, home, time.time() if now is None else now)
+        return _check(clone or _source_clone(HERE) or HERE, home,
+                      time.time() if now is None else now)
     except Exception as e:
         _log(home, "check failed: %r" % (e,))
         return ""
@@ -216,7 +274,8 @@ def _apply(dry_run, clone, home, say):
         return 1
     if remote == old or _is_ancestor(clone, remote, "HEAD"):
         say("Context Guard is already up to date")
-        return 0
+        # a clone ahead of origin (the owner's own commits) still has to reach bin/
+        return _after_update(clone, home, say)
     if _is_ancestor(clone, old, remote):
         say("Fast-forwarding to the newest version ...")
         m = _git(clone, "merge", "--ff-only", "origin/main")

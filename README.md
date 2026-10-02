@@ -169,6 +169,10 @@ python install.py --uninstall
 
 Then restart Claude Code. Python 3.8+, nothing to `pip install`.
 
+The installer copies the scripts into `~/.claude/context-guard/bin/`, and the hooks run from
+that copy, not from your clone. A change to the clone goes live when you re-run
+`python install.py` (or `python install.py --update`).
+
 Your first chat after installing opens with a short tour - six things Context Guard does,
 each one tryable on the spot. Type `context guard tour` in any chat to see it again.
 
@@ -180,6 +184,10 @@ the command it shows:
 ```bash
 python install.py --update
 ```
+
+It also refreshes the copy in `bin/`, even when you are already up to date. If your clone is
+ahead of the running copy (your own commits, say), the chat-start line says so and shows the
+`python install.py` command that brings the copy level.
 
 It never updates on its own, and it refuses to overwrite local edits. If the history was
 rebuilt, it saves your copy first as a branch. Switch the check off with an empty

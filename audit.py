@@ -479,7 +479,11 @@ def update_line():
         spec = importlib.util.spec_from_file_location("cg_update", path)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        return mod.check() or ""
+        parts = [mod.check() or ""]
+        copy_line = getattr(mod, "copy_line", None)   # an old update.py has none
+        if copy_line:
+            parts.append(copy_line() or "")
+        return " ".join(p for p in parts if p)
     except Exception:
         return ""
 
