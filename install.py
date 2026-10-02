@@ -17,8 +17,9 @@ The hooks run from an INSTALLED COPY: the runtime files are copied into
 ~/.claude/context-guard/bin/ and settings.json points there, not at this folder. Editing
 the files in this clone changes nothing live until you run install.py again (or
 install.py --update, which re-runs it); a re-run copies only the files that differ and
-refuses to copy a Python file that does not parse. --uninstall removes the copy as well,
-but only a bin/ that holds the source.json this installer wrote.
+refuses to copy a Python file that does not parse. --uninstall removes the hooks but LEAVES
+bin/: chats that are already open keep running their hooks from it, and a missing script
+would block every prompt in them. It prints the path to delete by hand once they are restarted.
 """
 import argparse
 import ast
@@ -102,22 +103,34 @@ def meta_current(home=None):
     return os.path.isfile(p) and _read(p) == source_meta().encode("utf-8")
 
 
-def _put(path, data):
-    tmp = path + ".tmp"
-    with open(tmp, "wb") as f:
-        f.write(data)
-    os.replace(tmp, path)
-
-
 def install_copy(home, names):
-    """Write each named file (and source.json) into bin/ via a temp file and os.replace.
-    Binary, so guard.py keeps its CRLF."""
+    """Write each named file (and source.json) into bin/. Every .tmp file is written first and
+    only then are they all moved into place, so a failure while writing changes nothing live.
+    On OSError: one clean line, the .tmp files are deleted, return 1. Binary, so guard.py
+    keeps its CRLF."""
     b = bin_dir(home)
-    if not os.path.isdir(b):
-        os.makedirs(b)
-    for name in names:
-        _put(os.path.join(b, name), _read(os.path.join(HERE, name)))
-    _put(os.path.join(b, "source.json"), source_meta().encode("utf-8"))
+    jobs = [(os.path.join(b, n), _read(os.path.join(HERE, n))) for n in names]
+    jobs.append((os.path.join(b, "source.json"), source_meta().encode("utf-8")))
+    tmps = []
+    try:
+        if not os.path.isdir(b):
+            os.makedirs(b)
+        for path, data in jobs:
+            tmp = path + ".tmp"
+            tmps.append(tmp)
+            with open(tmp, "wb") as f:
+                f.write(data)
+        for path, _data in jobs:
+            os.replace(path + ".tmp", path)
+    except OSError as e:
+        for tmp in tmps:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+        print("Could not copy Context Guard into %s (%s). Settings were not changed." % (b, e))
+        return 1
+    return 0
 
 # How an entry is recognised as OURS on a re-run or an uninstall. Deliberately the script
 # FILENAME and not the full path: someone who moves the folder must get their old entries
@@ -235,22 +248,19 @@ def dumps(d):
 
 
 def _remove_bin(b, own, dry):
-    """--uninstall: take the installed copy out, but only one carrying our source.json."""
+    """--uninstall: the hooks come out of settings, but bin/ STAYS. Chats that are already
+    open keep running their hooks from it, and a missing script makes `python .../guard.py`
+    exit 2 - which blocks every prompt and Bash call in those chats."""
     if not os.path.isdir(b):
         return 0
-    if not own:
-        print("Left %s alone: it has no source.json, so it is not ours." % b)
-        return 0
-    if dry:
-        print("would remove " + b)
-        return 0
-    shutil.rmtree(b)
-    print("Removed the installed copy " + b)
+    print(("would leave " if dry else "Left ") + "the installed copy in place: " + b)
+    print("Chats that are already open keep using it until they are restarted.")
+    print("Once they have been, delete it by hand: " + b)
     return 0
 
 
 def main():
-    ap =argparse.ArgumentParser(description="Install Context Guard's Claude Code hooks.")
+    ap = argparse.ArgumentParser(description="Install Context Guard's Claude Code hooks.")
     ap.add_argument("--dry-run", action="store_true", help="print the diff and write nothing")
     ap.add_argument("--uninstall", action="store_true", help="remove Context Guard's hooks")
     ap.add_argument("--home", default=None, help="treat this directory as the home directory")
@@ -303,13 +313,16 @@ def main():
     if a.dry_run:
         if names:
             print("would copy %d file(s) to %s: %s" % (len(names), b, ", ".join(names)))
+        if meta_stale:
+            print("would rewrite source.json in " + b)
         if a.uninstall:
             _remove_bin(b, own_bin, True)
         print("--dry-run: nothing was written.")
         return 0
 
     if names or meta_stale:
-        install_copy(a.home, names)
+        if install_copy(a.home, names):
+            return 1
         if names:
             print("refreshed: " + ", ".join(names) + "  (in " + b + ")")
     if before == after:

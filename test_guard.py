@@ -2758,6 +2758,9 @@ def test_the_installed_copy_runs():
               "show you around" in ctx or "Hand a chat over" in ctx or binpath in ctx,
               repr(ctx[:300]))
         check("binrun/prompt: and it names the bin path", binpath in ctx, repr(ctx[:300]))
+        audit_path = os.path.join(b, "audit.py").replace("\\", "/")
+        check("binrun/prompt: {AUDIT} is filled with the bin path too",
+              audit_path in ctx and "{AUDIT}" not in ctx and "{GUARD}" not in ctx, repr(ctx[:600]))
         st = hook("guard.py", "--ledger", dict(base, hook_event_name="Stop", stop_hook_active=False))
         expect_clean(st, "binrun/stop")
         se = hook("guard.py", "--session-end", dict(base, hook_event_name="SessionEnd"))
@@ -2772,14 +2775,56 @@ def test_the_installed_copy_runs():
         shutil.rmtree(home, ignore_errors=True)
 
 
+def test_the_installed_copy_runs_from_a_home_with_a_space():
+    """A home like C:\\Users\\Some One\\ is common on Windows. The settings command is quoted,
+    and the hooks must still find their beside-files."""
+    parent = throwaway_dir("spacehome-")
+    home = os.path.join(parent, "Some One")
+    os.makedirs(os.path.join(home, ".claude", "projects", KEY))
+    os.makedirs(os.path.join(home, ".claude", "handoff"))
+    src = make_source_dir()
+    try:
+        seed_settings(home, {})
+        expect_clean(run_install_from(src, home), "spacehome/install")
+        cmds = [c for c in all_commands(read_settings(home)) if "guard.py" in c or "audit.py" in c]
+        check("spacehome: every command quotes its script path",
+              len(cmds) == 6 and all(c.count('"') >= 4 and "Some One" in c for c in cmds),
+              json.dumps(cmds)[:400])
+        b = bin_of(home)
+        sid = "space-1"
+        write_transcript(home, sid, 1000)
+        tp = os.path.join(home, ".claude", "projects", KEY, sid + ".jsonl")
+        payload = {"session_id": sid, "transcript_path": tp, "cwd": CWD, "prompt": "context guard tour",
+                   "hook_event_name": "UserPromptSubmit"}
+        r = subprocess.run([sys.executable, os.path.join(b, "guard.py"), "--size"],
+                           input=json.dumps(payload), capture_output=True, text=True, env=child_env(home))
+        expect_clean(r, "spacehome/prompt")
+        ctx = context_of(r)
+        check("spacehome: the tour names the guard path inside the spaced home",
+              os.path.join(b, "guard.py").replace("\\", "/") in ctx, repr(ctx[:300]))
+        check("spacehome: and the audit path", os.path.join(b, "audit.py").replace("\\", "/") in ctx,
+              repr(ctx[:600]))
+    finally:
+        shutil.rmtree(parent, ignore_errors=True)
+
+
 def test_runtime_lists_every_file_the_scripts_open_beside_themselves():
     names = set()
     pats = (r'os\.path\.join\(os\.path\.dirname\(os\.path\.abspath\(__file__\)\),\s*"([^"]+)"\)',
             r'os\.path\.join\((?:here|HERE),\s*"([^"]+)"')
+    # Lines with __file__ that do NOT open a file beside the script: the script naming itself
+    # (abspath(__file__) not wrapped in dirname) and the one-line HERE/here assignment.
+    benign = (r'^\s*(?:here|HERE)\s*=\s*os\.path\.dirname\(os\.path\.abspath\(__file__\)\)\s*$',
+              r'(?<!dirname\()os\.path\.abspath\(__file__\)(?!\))')
+    unmatched = []
     for script in ("guard.py", "audit.py", "update.py"):
         text = file_bytes(os.path.join(HERE_DIR, script)).decode("utf-8")
         for pat in pats:
             names.update(re.findall(pat, text))
+        for n, line in enumerate(text.splitlines(), 1):
+            if "__file__" in line and not any(re.search(p, line) for p in pats + benign):
+                unmatched.append("%s:%d %s" % (script, n, line.strip()[:80]))
+    check("runtime: no __file__ line escapes the patterns", not unmatched, repr(unmatched))
     runtime = tuple(inst_module().RUNTIME)
     check("runtime: the scan found the files it should",
           {"audit.py", "update.py", "tour.md", "handoff-template.md"} <= names, repr(sorted(names)))
@@ -2878,7 +2923,10 @@ def test_dry_run_creates_no_copy():
         shutil.rmtree(home, ignore_errors=True)
 
 
-def test_uninstall_removes_the_copy_only():
+def test_uninstall_removes_the_hooks_but_keeps_the_copy():
+    """Chats that are already open keep running their hooks from bin/. Deleting it makes
+    `python .../bin/guard.py` exit 2, and exit 2 from PreToolUse / UserPromptSubmit blocks
+    every Bash call and prompt in those chats. So --uninstall leaves bin/ and says so."""
     home = make_home({})
     src = make_source_dir()
     try:
@@ -2888,18 +2936,27 @@ def test_uninstall_removes_the_copy_only():
         for n in ("config.json", "sess-1.json", "no-ceiling"):
             with open(os.path.join(cg, n), "w") as f:
                 f.write("x")
-        os.makedirs(os.path.join(bin_of(home), "__pycache__"), exist_ok=True)
-        with open(os.path.join(bin_of(home), "__pycache__", "guard.pyc"), "wb") as f:
-            f.write(b"x")
+        guard_before = file_bytes(os.path.join(bin_of(home), "guard.py"))
         p = run_install_from(src, home, "--uninstall")
         expect_clean(p, "uninst-copy")
-        check("uninst-copy: bin/ is gone", not os.path.exists(bin_of(home)), "bin exists")
+        out = (p.stdout or "").replace("\\", "/")
+        check("uninst-copy: bin/ is still there",
+              os.path.isfile(os.path.join(bin_of(home), "guard.py"))
+              and file_bytes(os.path.join(bin_of(home), "guard.py")) == guard_before, "bin gone")
         check("uninst-copy: the three other files stay",
               all(os.path.exists(os.path.join(cg, n)) for n in ("config.json", "sess-1.json", "no-ceiling")),
               repr(os.listdir(cg)))
         check("uninst-copy: our hooks are gone",
               not [c for c in all_commands(read_settings(home)) if "guard.py" in c or "audit.py" in c], "")
-        # a bin/ without source.json is not ours
+        check("uninst-copy: it says open chats keep using the copy until restarted",
+              "open" in out and "restart" in out.lower(), out[-400:])
+        check("uninst-copy: and names the exact path to delete by hand",
+              bin_of(home).replace("\\", "/") in out, out[-400:])
+        # a second uninstall (already up to date) says it again
+        q = run_install_from(src, home, "--uninstall")
+        check("uninst-copy: the second run still names the path",
+              bin_of(home).replace("\\", "/") in (q.stdout or "").replace("\\", "/"), (q.stdout or "")[-300:])
+        # a bin/ that is not ours is left alone too
         home2 = make_home({})
         try:
             os.makedirs(bin_of(home2))
@@ -2908,10 +2965,56 @@ def test_uninstall_removes_the_copy_only():
             q = run_install_from(src, home2, "--uninstall")
             check("uninst-copy: a bin/ without source.json is left alone",
                   os.path.exists(os.path.join(bin_of(home2), "mine.txt")), (q.stdout or "")[-300:])
-            check("uninst-copy: and it says so", "not ours" in (q.stdout or "") or "source.json" in (q.stdout or ""),
-                  (q.stdout or "")[-300:])
         finally:
             shutil.rmtree(home2, ignore_errors=True)
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_a_failed_copy_is_all_or_nothing_and_clean():
+    """A directory sitting where bin/update.py goes: one clean line, rc 1, no *.tmp, settings
+    untouched, no traceback."""
+    home = make_home({})
+    src = make_source_dir()
+    try:
+        seed_settings(home, {})
+        os.makedirs(os.path.join(bin_of(home), "update.py"))
+        before = file_bytes(settings_file(home))
+        p = run_install_from(src, home)
+        err = (p.stdout or "") + (p.stderr or "")
+        check("failcopy: exits 1", p.returncode == 1, "rc=%d %s" % (p.returncode, err[-300:]))
+        check("failcopy: no traceback", "Traceback" not in err, err[-400:])
+        check("failcopy: one clean line says the copy failed",
+              "update.py" in err and len([l for l in err.splitlines() if "could not" in l.lower()]) == 1,
+              err[-400:])
+        left = [n for n in os.listdir(bin_of(home)) if n.endswith(".tmp")]
+        check("failcopy: no .tmp file left", not left, repr(left))
+        check("failcopy: settings.json untouched", file_bytes(settings_file(home)) == before,
+              "settings changed")
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_dry_run_says_when_only_source_json_is_stale():
+    home = make_home({})
+    src = make_source_dir()
+    try:
+        seed_settings(home, {})
+        expect_clean(run_install_from(src, home), "dryrun-meta/install")
+        with open(os.path.join(bin_of(home), "source.json"), "wb") as f:
+            f.write(b"{}\n")
+        p = run_install_from(src, home, "--dry-run")
+        expect_clean(p, "dryrun-meta")
+        out = p.stdout or ""
+        check("dryrun-meta: says it would rewrite source.json", "would rewrite source.json" in out,
+              out[-300:])
+        check("dryrun-meta: does not claim any file copy", "would copy" not in out, out[-300:])
+        check("dryrun-meta: wrote nothing", file_bytes(os.path.join(bin_of(home), "source.json")) == b"{}\n",
+              "source.json changed")
+        q = run_install_from(src, home)
+        r = run_install_from(src, home, "--dry-run")
+        check("dryrun-meta: once current, a dry run is silent about it",
+              "source.json" not in (r.stdout or ""), (r.stdout or "")[-300:])
     finally:
         shutil.rmtree(home, ignore_errors=True)
 
@@ -8894,7 +8997,10 @@ if __name__ == "__main__":
               test_install_refuses_a_runtime_file_that_does_not_parse,
               test_install_repoints_old_working_tree_hooks,
               test_dry_run_creates_no_copy,
-              test_uninstall_removes_the_copy_only,
+              test_uninstall_removes_the_hooks_but_keeps_the_copy,
+              test_a_failed_copy_is_all_or_nothing_and_clean,
+              test_dry_run_says_when_only_source_json_is_stale,
+              test_the_installed_copy_runs_from_a_home_with_a_space,
               test_install_dry_run_writes_nothing,
               test_install_backs_the_file_up_before_writing,
               test_uninstall_removes_only_our_hooks,

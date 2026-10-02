@@ -3143,14 +3143,15 @@ SOURCE_DIR = "D:\\Claude"      # its folder; the key above is derived from it
 # ONE HOME (safeguard c, 25 Sep 2026): every topic file lives in this shared folder, and a
 # project folder holds only its MEMORY.md - the list. Two homes per memory drifted apart:
 # chats saved new memories here and edited old ones in the project folder, until one
-# memory had about 230 lines unique to each copy.
+# memory had about 230 lines unique to each copy. No hook moves files any more: spare copies
+# in project folders are left alone (batch C, 2 Oct 2026).
 SHARED_MEMORY = os.path.join(PROJECTS, SOURCE_KEY, "memory")
 # An entry line in any MEMORY.md: "- [title](slug.md) - ...". One pattern for every reader,
 # so the header below can be shown never to be read as an entry.
 LINK_RE = re.compile(r"\]\(([^)]+)\.md\)")
-# The one line above a project list's entries that says where its files live. Written by
-# the bootstrap into every new list and by rollout step 2 into every existing one, and
-# recognised by this prefix alone, so it is never added twice.
+# The one line above a project list's entries that says where its files live. The bootstrap
+# writes it into new lists only (nothing rewrites an existing list), and it is recognised
+# by this prefix alone, so it is never added twice.
 LIST_HEADER_LEAD = "> The files for these entries live in the shared memory folder"
 
 # The question SEVEN handoff notes have now carried: when the bootstrap below creates a

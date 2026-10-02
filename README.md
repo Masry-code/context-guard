@@ -90,8 +90,9 @@ project, and a label in no list fetches nothing and says nothing. **Review the l
 before they run: a wrong line hands you another project's memories.** A project with no
 memory folder yet is skipped in silence.
 
-**One home for every memory file.** Every memory file lives in the one shared folder
-your chats run in, and a project's own folder holds only its `MEMORY.md`, whose header
+**One home for every memory file.** Every memory file is meant to live in the one shared
+folder your chats run in, and a project's own folder is meant to hold only its `MEMORY.md`
+(no hook enforces this), whose header
 line says where the files are — the label fetch says the same. Spare copies in project
 folders are left alone: nothing moves or deletes a memory file for you.
 
@@ -166,6 +167,11 @@ timestamp first, and running it twice is a no-op. To reverse it:
 ```bash
 python install.py --uninstall
 ```
+
+Uninstalling takes the hooks out of your settings but **leaves** `~/.claude/context-guard/bin/`
+in place: chats that are already open keep running their hooks from it, and deleting it would
+make every prompt and Bash call in them fail. It prints the path; delete the folder by hand
+once those chats are restarted.
 
 Then restart Claude Code. Python 3.8+, nothing to `pip install`.
 
