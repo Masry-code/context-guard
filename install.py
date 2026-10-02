@@ -37,6 +37,8 @@ HOOKS = [
     ("PreToolUse", "Read", GUARD, "--reread", 10, None),
     ("PreToolUse", "Bash", GUARD, "--bash", 10, None),
     ("Stop", None, GUARD, "--ledger", 30, None),
+    # Leaves the stub note for a chat that ends without writing one (no longer done on Stop).
+    ("SessionEnd", None, GUARD, "--session-end", 10, None),
 ]
 
 # How an entry is recognised as OURS on a re-run or an uninstall. Deliberately the script
@@ -54,7 +56,7 @@ def command_for(script, flag):
     return '"%s" "%s" %s' % (PY, script, flag)
 
 
-FLAGS = ("--alert", "--size", "--reread", "--bash", "--ledger", "--bootstrap")
+FLAGS = ("--alert", "--size", "--reread", "--bash", "--ledger", "--bootstrap", "--session-end")
 
 
 def is_ours(entry):

@@ -3074,16 +3074,60 @@ def test_growth_within_one_epoch_is_still_not_a_compaction():
 STUB_MARKER = "context-guard:auto-stub"
 
 
+def run_session_end(home, sid):
+    """Fire the SessionEnd hook exactly as Claude Code does."""
+    payload = {
+        "session_id": sid,
+        "transcript_path": os.path.join(home, ".claude", "projects", KEY, sid + ".jsonl"),
+        "cwd": CWD,
+        "hook_event_name": "SessionEnd",
+        "reason": "other",
+    }
+    return subprocess.run([sys.executable, GUARD, "--session-end"],
+                          input=json.dumps(payload), capture_output=True, text=True,
+                          env=child_env(home))
+
+
+def stale_chat(home, sid, age_s, size=1_501_000):
+    """A chat transcript at least FRESH_BYTES big whose file was last touched `age_s` ago."""
+    p = write_big_chat(home, sid, time.time() - age_s - 60, 130_000)
+    with open(p, "ab") as f:
+        f.write(b" " * max(0, size - os.path.getsize(p)) + b"\n")
+    t = time.time() - age_s
+    os.utime(p, (t, t))
+    return p
+
+
+def handoff_files(home):
+    d = os.path.join(home, ".claude", "handoff")
+    return sorted(os.listdir(d)) if os.path.isdir(d) else []
+
+
+def test_a_stop_writes_no_stub_any_more():
+    """Stop fires at the end of EVERY reply: 223 stub writes into 66 notes measured 2 Oct,
+    and a chat that tried to Write its real note failed 'not read yet'."""
+    home = make_home({})
+    try:
+        write_big_chat(home, "stopnone", time.time() - 3600, 130_000)
+        p = run_stop(home, "stopnone")
+        expect_clean(p, "stop-no-stub")
+        check("stop-no-stub: no note written by a Stop",
+              not [f for f in handoff_files(home) if f.startswith(KEY + ".stopnone")],
+              repr(handoff_files(home)))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
 def test_a_chat_that_never_reaches_the_ceiling_still_leaves_a_stub():
     """The exact failure that prompted this: well under the ceiling, no note, chat ends,
-    thread unresumable. After this, ending a turn is enough to leave something behind."""
+    thread unresumable. The stub is now written when the chat ENDS (SessionEnd)."""
     home = make_home({})
     try:
         write_big_chat(home, "stubaaa1", time.time() - 3600, 130_000)
         note = os.path.join(home, ".claude", "handoff", KEY + ".stubaaa1.md")
-        check("stub: CONTROL - no note exists before the Stop hook runs",
+        check("stub: CONTROL - no note exists before the SessionEnd hook runs",
               not os.path.exists(note), note)
-        p = run_stop(home, "stubaaa1")
+        p = run_session_end(home, "stubaaa1")
         expect_clean(p, "stub")
         check("stub: a note now exists for a chat that never handed off",
               os.path.exists(note), note)
@@ -3116,6 +3160,9 @@ def test_the_stub_never_overwrites_a_real_note():
             f.write(real)
         p = run_stop(home, "stubaaa2")
         expect_clean(p, "stub-nooverwrite")
+        expect_clean(run_session_end(home, "stubaaa2"), "stub-nooverwrite-end")
+        old = stale_chat(home, "stubaaa2", 8 * 3600)    # a stale, big chat with this note
+        expect_clean(boot(home, CWD, "newchat01"), "stub-nooverwrite-boot")
         with open(note, encoding="utf-8") as f:
             after = f.read()
         check("stub-nooverwrite: the real note is byte-for-byte untouched",
@@ -3419,6 +3466,7 @@ def test_a_note_that_mentions_the_marker_is_not_a_stub():
             f.write(real)
         p = run_stop(home, "markerxx")
         expect_clean(p, "marker-mention")
+        expect_clean(run_session_end(home, "markerxx"), "marker-mention-end")
         with open(note, encoding="utf-8") as f:
             after = f.read()
         check("marker-mention: a note that merely NAMES the marker survives untouched",
@@ -3429,6 +3477,111 @@ def test_a_note_that_mentions_the_marker_is_not_a_stub():
         check("marker-mention: and the ceiling no longer claims there is no note",
               "has NOT written a handoff note" not in (p.stdout or ""),
               repr((p.stdout or "")[:200]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_session_end_never_touches_a_real_note_and_stubs_when_none():
+    home = make_home({})
+    try:
+        write_big_chat(home, "endreal1", time.time() - 3600, 130_000)
+        note = os.path.join(home, ".claude", "handoff", KEY + ".endreal1.md")
+        real = "HANDOFF LABEL: Real -1 (2 Oct)\n\nprose.\n"
+        with open(note, "w", encoding="utf-8") as f:
+            f.write(real)
+        expect_clean(run_session_end(home, "endreal1"), "end-real")
+        with open(note, encoding="utf-8") as f:
+            check("end-real: a real note is untouched", f.read() == real)
+        write_big_chat(home, "endnone1", time.time() - 3600, 130_000)
+        expect_clean(run_session_end(home, "endnone1"), "end-none")
+        check("end-none: a stub was written", os.path.exists(
+            os.path.join(home, ".claude", "handoff", KEY + ".endnone1.md")))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_bootstrap_stubs_other_stale_chats_of_the_same_project_only():
+    home = make_home({})
+    try:
+        stale_chat(home, "stale001", 8 * 3600)         # 8 h idle, big: gets a stub
+        stale_chat(home, "recent01", 3600)             # 1 h idle: nothing
+        stale_chat(home, "ancient1", 9 * 86400)        # over 7 days: nothing
+        write_big_chat(home, "tiny0001", time.time() - 8 * 3600 - 60, 130_000)
+        t = time.time() - 8 * 3600
+        os.utime(os.path.join(home, ".claude", "projects", KEY, "tiny0001.jsonl"), (t, t))
+        stale_chat(home, "newchat1", 8 * 3600)         # the starting chat itself
+        other = os.path.join(home, ".claude", "projects", "D--Other")
+        os.makedirs(other)
+        op = os.path.join(other, "othproj1.jsonl")
+        with open(op, "wb") as f:
+            f.write(b" " * 1_501_000 + b"\n")
+        t = time.time() - 8 * 3600
+        os.utime(op, (t, t))
+        p = boot(home, CWD, "newchat1")
+        expect_clean(p, "sweep-stub")
+        check("sweep-stub: at most one json object on stdout",
+              len([l for l in (p.stdout or "").splitlines() if l.strip()]) <= 1,
+              repr((p.stdout or "")[:200]))
+        got = [f for f in handoff_files(home)]
+        check("sweep-stub: the stale chat got a stub",
+              KEY + ".stale001.md" in got, repr(got))
+        check("sweep-stub: nothing else did", [f for f in got if "stale001" not in f] == [],
+              repr(got))
+        mt = os.path.getmtime(os.path.join(home, ".claude", "handoff", KEY + ".stale001.md"))
+        os.utime(os.path.join(home, ".claude", "handoff", KEY + ".stale001.md"),
+                 (mt - 100, mt - 100))
+        boot(home, CWD, "newchat1")
+        check("sweep-stub: a second start does not rewrite it",
+              abs(os.path.getmtime(os.path.join(home, ".claude", "handoff",
+                                                KEY + ".stale001.md")) - (mt - 100)) < 1)
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_bootstrap_retires_old_stubs_by_renaming_and_leaves_real_notes():
+    home = make_home({})
+    try:
+        write_big_chat(home, "retire01", time.time() - 20 * 86400, 130_000)
+        write_big_chat(home, "young001", time.time() - 20 * 86400, 130_000)
+        expect_clean(run_session_end(home, "retire01"), "retire-mk")
+        expect_clean(run_session_end(home, "young001"), "retire-mk2")
+        d = os.path.join(home, ".claude", "handoff")
+        old = os.path.join(d, KEY + ".retire01.md")
+        young = os.path.join(d, KEY + ".young001.md")
+        realp = os.path.join(d, KEY + ".realold1.md")
+        with open(realp, "w", encoding="utf-8") as f:
+            f.write("HANDOFF LABEL: Real -2 (1 Sep)\n\nprose.\n")
+        for p, days in ((old, 8), (young, 3), (realp, 30)):
+            t = time.time() - days * 86400
+            os.utime(p, (t, t))
+        expect_clean(boot(home, CWD, "newchat2"), "retire")
+        names = handoff_files(home)
+        check("retire: the old stub is gone under its own name", not os.path.exists(old),
+              repr(names))
+        check("retire: renamed to .used-stale-<stamp>.md, not deleted",
+              any(re.match(re.escape(KEY) + r"\.retire01\.used-stale-\d{8}-\d{6}\.md$", n)
+                  for n in names), repr(names))
+        check("retire: a stub under 7 days stays", os.path.exists(young), repr(names))
+        check("retire: a real note of any age stays", os.path.exists(realp), repr(names))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_install_wires_the_session_end_hook():
+    home = make_home({})
+    try:
+        seed_settings(home, {})
+        expect_clean(run_install(home), "install-end")
+        run_install(home)
+        s = read_settings(home)
+        cmds = [h.get("command") or "" for e in s.get("hooks", {}).get("SessionEnd", [])
+                for h in e.get("hooks") or []]
+        check("install-end: --session-end is wired to SessionEnd exactly once",
+              len([c for c in cmds if "--session-end" in c]) == 1, json.dumps(cmds)[:300])
+        run_install(home, "--uninstall")
+        s = read_settings(home)
+        check("install-end: uninstall removes it",
+              "SessionEnd" not in s.get("hooks", {}), json.dumps(s)[:300])
     finally:
         shutil.rmtree(home, ignore_errors=True)
 
@@ -8557,7 +8710,12 @@ if __name__ == "__main__":
               test_a_real_label_pickup_keeps_its_list_out_of_the_hints,
               test_a_stop_over_a_string_message_record_does_not_crash,
               test_report_lists_only_real_sessions_not_the_other_state_files,
-              test_recall_finds_a_memory_from_one_word_of_a_phrase_keyword):
+              test_recall_finds_a_memory_from_one_word_of_a_phrase_keyword,
+              test_a_stop_writes_no_stub_any_more,
+              test_session_end_never_touches_a_real_note_and_stubs_when_none,
+              test_bootstrap_stubs_other_stale_chats_of_the_same_project_only,
+              test_bootstrap_retires_old_stubs_by_renaming_and_leaves_real_notes,
+              test_install_wires_the_session_end_hook):
         print(t.__name__)
         t()
     print()

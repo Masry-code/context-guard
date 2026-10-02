@@ -21,7 +21,7 @@ LEVELS = [
     # -40, so each chat built one task of a sixteen-task plan. His auto-compact sits at
     # 93% of a 450k window. REWARN_STEP and CEILING_CAP are unchanged. The price, taken
     # knowingly: a chat that ends between 100k and 200k is no longer asked for a note,
-    # and the Stop hook's write_stub() is its floor.
+    # and the SessionEnd hook's write_stub() (or the next SessionStart's sweep) is its floor.
     # 100k was measured 19 Sep 2026. Chat "Context Guard -10" ran 19 hours, peaked at
     # 132k and so sat UNDER the then-150k tier for its whole life - it was never once
     # asked for a handoff note, and the thread became unresumable. A tier nothing
@@ -540,8 +540,12 @@ def write_stub(transcript_path, sid, ctx):
 
     His words, 19 Sep 2026: "fix this issue i never want for this to happen again".
     The ceiling has never fired in ten chats, so a note written only at the ceiling
-    is a note essentially never written. This runs on every Stop instead, costs
-    nothing, and needs no model: facts only, clearly labelled as facts only.
+    is a note essentially never written. This runs when a chat ENDS (the SessionEnd
+    hook, cmd_session_end) and, for a chat that died without that hook firing, from the
+    next chat's SessionStart sweep (sweep_stubs). It used to run on every Stop, and
+    measured 2 Oct 2026 that rewrote it 223 times into 66 notes and made a chat that was
+    about to Write its real note fail "not read yet". Costs nothing, needs no model:
+    facts only, clearly labelled as facts only.
 
     It NEVER touches a real note. A curated note is worth far more than this, and a
     stub that could overwrite one would destroy the thing it exists to protect."""
@@ -852,11 +856,6 @@ def cmd_ledger():
     if not path:
         return
     append_ledger(path)
-    sid = d.get("session_id")
-    if sid:
-        # Before any decision below: a chat that closes having written nothing is
-        # the failure this whole tool exists to prevent, and it is silent.
-        write_stub(path, sid, live_context(path))
     if ceiling_block(d, path):
         return          # exactly one decision per Stop, and the ceiling outranks the
                         # nag: with no note written there is nothing for the nag to check
@@ -865,6 +864,70 @@ def cmd_ledger():
     if keywords_block(d, path):
         return          # one decision per Stop
     memory_nag(d, path)
+
+
+def cmd_session_end():
+    """SessionEnd hook. The chat is over: if it left no note, leave the stub. Prints nothing."""
+    try:
+        d = read_stdin()
+        sid = d.get("session_id")
+        path = find_transcript(sid, d.get("transcript_path"))
+        if sid and path:
+            write_stub(path, sid, live_context(path))
+    except Exception as e:
+        log("session-end: failed: " + str(e))
+
+
+STUB_SWEEP_MIN_AGE = 6 * 3600       # idle at least this long: the chat is surely over
+STUB_SWEEP_MAX_AGE = 7 * 86400      # older than this is history, not a thread to resume
+STUB_SWEEP_LOOK = 20                # transcripts looked at per start, newest first
+STUB_RETIRE_AGE = 7 * 86400         # a stub older than this is renamed out of the way
+STUB_RETIRE_LOOK = 50
+
+
+def sweep_stubs(d):
+    """SessionStart. Two bounded jobs for this project only, and neither may raise or print.
+
+    1. Retire: a stub older than 7 days is renamed <name>.used-stale-<stamp>.md. Rename only,
+       never delete. A real note is never touched: is_stub() alone decides.
+    2. Sweep: the SessionEnd hook does not fire when a chat dies hard, so give each OTHER
+       transcript of this project that was idle 6 h to 7 days, is not fresh (FRESH_BYTES) and
+       has no note of any kind a stub."""
+    try:
+        sid = d.get("session_id")
+        own = virtual_transcript(d, sid)
+        key = project_key(own)
+        now = time.time()
+        stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        for f in waiting_notes(own)[:STUB_RETIRE_LOOK]:
+            try:
+                if is_stub(f) and now - os.path.getmtime(f) > STUB_RETIRE_AGE:
+                    os.replace(f, f[:-3] + ".used-stale-" + stamp + ".md")
+                    log("stub: retired " + f)
+            except Exception as e:
+                log("stub: could not retire " + f + ": " + str(e))
+        found = []
+        pdir = os.path.dirname(own)
+        if os.path.isdir(pdir):
+            for e in os.scandir(pdir):
+                if e.name.endswith(".jsonl") and e.is_file():
+                    st = e.stat()
+                    found.append((st.st_mtime, st.st_size, e.path, e.name[:-6]))
+        found.sort(reverse=True)
+        for mtime, size, p, other in found[:STUB_SWEEP_LOOK]:
+            try:
+                age = now - mtime
+                if other == str(sid) or size < FRESH_BYTES:
+                    continue
+                if not (STUB_SWEEP_MIN_AGE < age < STUB_SWEEP_MAX_AGE):
+                    continue
+                if glob.glob(os.path.join(handoff_dir(), glob.escape(key + "." + other[:8]) + ".*")):
+                    continue      # a note exists (live, stub, or already archived)
+                write_stub(p, other, live_context(p))
+            except Exception as e:
+                log("stub: sweep skipped " + p + ": " + str(e))
+    except Exception as e:
+        log("stub: sweep failed: " + str(e))
 
 
 def append_ledger(path):
@@ -4413,6 +4476,7 @@ def cmd_bootstrap():
         swept = ""
     else:
         swept = sweep_memory_strays()
+    sweep_stubs(d)          # logs only: it must never add a second object or fail the start
     text = "\n\n".join(t for t in (swept, _bootstrap_list(d),
                                    tour_pending_text(d.get("session_id"))) if t)
     if text:
@@ -4619,6 +4683,8 @@ if __name__ == "__main__":
         cmd_bash()
     elif "--ledger" in a:
         cmd_ledger()
+    elif "--session-end" in a:
+        cmd_session_end()
     elif "--checkpoint" in a:
         cmd_checkpoint()
     elif "--pause" in a or "--resume" in a:
