@@ -37,6 +37,9 @@ FREE_REREADS = 2   # allow this many identical reads (covers a post-compaction r
 # off mid-word, which is exactly how detail gets lost. Past this we point at the file
 # instead of truncating in silence.
 NOTE_CHARS = 40_000
+# Claude Code moves hook output over about 10,000 characters into a file and shows the
+# chat a 2 KB preview. fit_hook_text() keeps what we emit under this, in CHARACTERS.
+HOOK_TEXT_MAX = 9000
 TEMPLATE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "handoff-template.md")
 # Re-warn after this much FURTHER growth. Warning once per level left session
 # 143f0320 parked at ~211k in silence forever: it is over 150k but never reaches
@@ -2780,6 +2783,52 @@ def cmd_bash():
             + os.path.join(STATE, HEREDOC_OFF) + " .")}}))
 
 
+def _overflow_pointer(n, path):
+    """The one line that ends a cut hook message. Under 400 characters."""
+    return ("CONTEXT GUARD OVERFLOW: this message was too long for one hook message. The rest ("
+            + str(n) + " characters) is in " + path + " - Read it with the Read tool NOW, "
+            "before answering, because it holds the rest of the handoff note, the user's own "
+            "words, and the memory index.")
+
+
+def fit_hook_text(out, sid):
+    """Keep the hook's additionalContext within HOOK_TEXT_MAX characters, pointer included.
+
+    Over that, Claude Code moves the whole message to a file and shows the chat a 2 KB
+    preview, so most pickups (20-66 KB) arrived as procedure with the note unread. Here the
+    head stays (cut at the last line break that fits, or hard when there is none) and the
+    rest goes to ~/.claude/handoff/overflow/<sid8>-<timestamp>.md, UTF-8, newline="" so the
+    bytes round-trip. The pointer line closes the head. Called once, at the single print
+    point, and it touches nothing but additionalContext. If the file cannot be written the
+    original is returned unchanged and the error is logged - the note is never lost."""
+    try:
+        hso = out.get("hookSpecificOutput") if isinstance(out, dict) else None
+        text = hso.get("additionalContext") if isinstance(hso, dict) else None
+        if not isinstance(text, str) or len(text) <= HOOK_TEXT_MAX:
+            return out
+        folder = os.path.join(handoff_dir(), "overflow")
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, "%s-%s.md" % (
+            str(sid or "unknown")[:8], datetime.datetime.now().strftime("%Y%m%d-%H%M%S")))
+        # the real count is never longer than len(text), so this pointer is the longest it can be
+        room = HOOK_TEXT_MAX - len(_overflow_pointer(len(text), path))
+        cut = text.rfind(chr(10), 0, room) + 1
+        if cut <= 0:
+            cut = room
+        head, rest = text[:cut], text[cut:]
+        with open(path, "w", encoding="utf-8", newline="") as fh:
+            fh.write(rest)
+        fitted = dict(out)
+        fitted["hookSpecificOutput"] = dict(hso)
+        fitted["hookSpecificOutput"]["additionalContext"] = head + _overflow_pointer(len(rest), path)
+        log("hook text: %d chars cut to %d, %d chars in %s" % (
+            len(text), len(fitted["hookSpecificOutput"]["additionalContext"]), len(rest), path))
+        return fitted
+    except Exception as e:
+        swallowed("fit_hook_text", e)
+        return out
+
+
 def cmd_size():
     d = read_stdin()
     sid = d.get("session_id")
@@ -2833,6 +2882,7 @@ def cmd_size():
         out["systemMessage"] = (back + " " + (out.get("systemMessage") or "")).strip()
     out = archive_step(out, d, sid)
     out = memory_hints(out, d, sid)
+    out = fit_hook_text(out, sid)
     if out:
         print(json.dumps(out))
 

@@ -171,6 +171,21 @@ def context_of(proc):
         return ""
 
 
+def whole_context(home, proc):
+    """context_of() with the overflow put back: the head WITHOUT its pointer line, then the
+    overflow file the pointer names. For tests that read the end of a long message, which
+    fit_hook_text() moves to a file once it passes HOOK_TEXT_MAX."""
+    ctx = context_of(proc)
+    if FIT_MARK not in ctx:
+        return ctx
+    folder = os.path.join(home, ".claude", "handoff", "overflow")
+    names = sorted(os.listdir(folder)) if os.path.isdir(folder) else []
+    if not names:
+        return ctx
+    with open(os.path.join(folder, names[-1]), "r", encoding="utf-8", newline="") as fh:
+        return ctx[:ctx.rindex(FIT_MARK)] + fh.read()
+
+
 def waiting(home):
     hand = os.path.join(home, ".claude", "handoff")
     return sorted(f for f in os.listdir(hand)
@@ -896,7 +911,7 @@ def test_handoff_offers_the_skill_candidates():
         write_tooluse(home, "chatB", ["python test_guard.py"] * 2)
         write_transcript(home, "bigchat", 200_000)
         p = run(home, "bigchat", "carry on")
-        ctx = context_of(p)
+        ctx = whole_context(home, p)
         expect_clean(p, "skills-handoff")
         check("skills-handoff: the warning carries the candidates",
               "SKILL CANDIDATES" in ctx, repr(ctx[:1200]))
@@ -1189,7 +1204,7 @@ def test_the_warning_reports_the_last_checkpoint():
         run_checkpoint(home, "cpwarn", "engine wired")
         write_big_chat(home, "cpwarn", started, 290_000)      # the chat grew since
         p = run(home, "cpwarn", "carry on")
-        ctx = context_of(p)
+        ctx = whole_context(home, p)
         expect_clean(p, "checkpoint-warning")
         check("checkpoint-warning: names the last checkpoint reached",
               "engine wired" in ctx, repr(ctx[-900:]))
@@ -1207,7 +1222,7 @@ def test_the_warning_says_when_no_checkpoint_was_ever_recorded():
     try:
         write_transcript(home, "nocp", 200_000)
         p = run(home, "nocp", "carry on")
-        ctx = context_of(p)
+        ctx = whole_context(home, p)
         expect_clean(p, "no-checkpoint")
         check("no-checkpoint: says outright that none were recorded",
               "NO checkpoint" in ctx, repr(ctx[-900:]))
@@ -2335,7 +2350,7 @@ def pickup(home, bodies, sid8="guardaaa", label="Context Guard -2 (18 Sep)"):
     write_transcript(home, "freshchat", 1000)
     p = run(home, "freshchat", label)
     expect_clean(p, "scope")
-    return context_of(p)
+    return whole_context(home, p)
 
 
 def test_a_thread_whose_history_fits_inherits_all_of_it():
@@ -3582,6 +3597,150 @@ def test_install_wires_the_session_end_hook():
         s = read_settings(home)
         check("install-end: uninstall removes it",
               "SessionEnd" not in s.get("hooks", {}), json.dumps(s)[:300])
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+# ------------------------------------- the hook channel holds ~10k characters
+FIT_MARK = "CONTEXT GUARD OVERFLOW:"
+FIT_BODY = "".join("line %05d of the long text, with an accent: café\n" % i for i in range(700))
+FIT_CODE = ("text = ''.join('line %05d of the long text, with an accent: caf\\u00e9\\n' % i "
+            "for i in range(700))\n")
+
+
+def overflow_files(home):
+    d = os.path.join(home, ".claude", "handoff", "overflow")
+    return sorted(os.listdir(d)) if os.path.isdir(d) else []
+
+
+def test_hook_text_over_the_cap_is_cut_and_the_rest_goes_to_a_file():
+    home = make_home({})
+    try:
+        code = (FIT_CODE +
+                "out = {'hookSpecificOutput': {'hookEventName': 'UserPromptSubmit',"
+                " 'additionalContext': text}, 'systemMessage': 'keep me'}\n"
+                "r = guard.fit_hook_text(out, 'abcd1234-5678')\n"
+                "print(json.dumps(r))\n")
+        p = guard_call(home, "import json\n" + code)
+        res = json.loads(p.stdout)
+        ctx = res["hookSpecificOutput"]["additionalContext"]
+        check("fit: emitted at most 9000 characters", len(ctx) <= 9000, str(len(ctx)))
+        check("fit: it starts with the original text", FIT_BODY.startswith(ctx[:200]))
+        check("fit: other keys are untouched", res.get("systemMessage") == "keep me")
+        check("fit: it ends with the pointer line", ctx.rstrip().splitlines()[-1].startswith(FIT_MARK),
+              ctx[-300:])
+        check("fit: the pointer line is short", len(ctx) - ctx.rindex(FIT_MARK) < 400)
+        i = ctx.rindex(FIT_MARK)
+        head = ctx[:i]
+        check("fit: the head is cut at a line boundary", head.endswith("\n"), repr(head[-30:]))
+        files = overflow_files(home)
+        check("fit: exactly one overflow file", len(files) == 1, str(files))
+        if files:
+            check("fit: it is named with the sid8 and a timestamp",
+                  re.match(r"^abcd1234-\d{8}-\d{6}", files[0]) is not None, files[0])
+            fp = os.path.join(home, ".claude", "handoff", "overflow", files[0])
+            with open(fp, "rb") as fh:
+                raw = fh.read()
+            rest = raw.decode("utf-8")
+            check("fit: head + file is the original, byte for byte",
+                  (head + rest) == FIT_BODY and (head.encode("utf-8") + raw) == FIT_BODY.encode("utf-8"))
+            check("fit: the pointer names the path and the length",
+                  fp in ctx and str(len(rest)) in ctx, ctx[-300:])
+            check("fit: the pointer says to Read it now, before answering",
+                  "Read" in ctx[i:] and "NOW" in ctx[i:] and "before answering" in ctx[i:], ctx[i:])
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_hook_text_at_or_under_the_cap_is_emitted_unchanged():
+    home = make_home({})
+    try:
+        code = ("import json\n"
+                "t = 'x' * 8999 + chr(10)\n"
+                "out = {'hookSpecificOutput': {'additionalContext': t}}\n"
+                "r = guard.fit_hook_text(json.loads(json.dumps(out)), 'abcd1234')\n"
+                "print(json.dumps(r == out and r['hookSpecificOutput']['additionalContext'] == t))\n"
+                "e = {'systemMessage': 'only a message'}\n"
+                "print(json.dumps(guard.fit_hook_text(dict(e), 'abcd1234') == e))\n"
+                "print(json.dumps(guard.fit_hook_text(None, 'abcd1234') is None))\n")
+        p = guard_call(home, code)
+        check("fit/under: unchanged, a message-only object and None too",
+              p.stdout.split() == ["true", "true", "true"], p.stdout + p.stderr[-300:])
+        check("fit/under: no file written", overflow_files(home) == [], str(overflow_files(home)))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_hook_text_with_no_newline_in_range_is_cut_hard():
+    home = make_home({})
+    try:
+        code = ("import json\n"
+                "t = 'y' * 20000\n"
+                "r = guard.fit_hook_text({'hookSpecificOutput': {'additionalContext': t}}, 'abcd1234')\n"
+                "print(json.dumps(r['hookSpecificOutput']['additionalContext']))\n")
+        p = guard_call(home, code)
+        ctx = json.loads(p.stdout)
+        i = ctx.rindex(FIT_MARK)
+        files = overflow_files(home)
+        check("fit/hard: at most 9000 and a pointer", len(ctx) <= 9000 and i > 0, str(len(ctx)))
+        rest = ""
+        if files:
+            with open(os.path.join(home, ".claude", "handoff", "overflow", files[0]),
+                      "r", encoding="utf-8", newline="") as fh:
+                rest = fh.read()
+        check("fit/hard: head + file is the original", ctx[:i] + rest == "y" * 20000)
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_a_failed_overflow_write_emits_the_original_and_logs_it():
+    home = make_home({})
+    try:
+        # a FILE where the overflow folder has to go, so makedirs cannot succeed
+        with open(os.path.join(home, ".claude", "handoff", "overflow"), "w") as fh:
+            fh.write("in the way")
+        code = (FIT_CODE +
+                "out = {'hookSpecificOutput': {'additionalContext': text}}\n"
+                "r = guard.fit_hook_text(out, 'abcd1234')\n"
+                "print(json.dumps(r['hookSpecificOutput']['additionalContext'] == text))\n")
+        p = guard_call(home, "import json\n" + code)
+        check("fit/fail: the original text is emitted whole", p.stdout.strip() == "true",
+              p.stdout + p.stderr[-300:])
+        check("fit/fail: it is logged by swallowed()", "error: fit_hook_text:" in guard_log(home),
+              guard_log(home)[-300:])
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_a_real_30k_pickup_fits_the_hook_channel():
+    """A real pickup through the real hook: the head keeps the procedure and the start of the
+    note, the pointer names a file, and the file holds the end of the note."""
+    big = "HANDOFF LABEL: context guard\n\n# Handoff - the guard\n\n" + "".join(
+        "para %04d of the note, plain words and nothing else in it.\n" % i for i in range(520))
+    big += "THE-VERY-LAST-LINE-OF-THE-NOTE\n"
+    check("fit/real: the note is about 30k characters", 28_000 < len(big) < 36_000, str(len(big)))
+    home = make_home({KEY + ".9e19c7ab.md": big})
+    try:
+        p = run(home, "fit00001-new", "context guard")
+        ctx = context_of(p)
+        expect_clean(p, "fit/real")
+        check("fit/real: at most 9000 characters", 0 < len(ctx) <= 9000, str(len(ctx)))
+        check("fit/real: starts with HANDOFF NOTE", ctx.startswith("HANDOFF NOTE"), ctx[:60])
+        check("fit/real: the note's first heading is in the head", "# Handoff - the guard" in ctx)
+        check("fit/real: the pointer line is last", FIT_MARK in ctx.rstrip().splitlines()[-1],
+              ctx[-200:])
+        files = overflow_files(home)
+        check("fit/real: one overflow file named with the sid8", len(files) == 1
+              and files[0].startswith("fit00001-"), str(files))
+        if files:
+            with open(os.path.join(home, ".claude", "handoff", "overflow", files[0]),
+                      "r", encoding="utf-8", newline="") as fh:
+                rest = fh.read()
+            check("fit/real: the file holds the end of the note",
+                  "THE-VERY-LAST-LINE-OF-THE-NOTE" in rest)
+            check("fit/real: nothing of the note was lost",
+                  big.rstrip("\n").endswith("THE-VERY-LAST-LINE-OF-THE-NOTE")
+                  and ctx[:ctx.rindex(FIT_MARK)].endswith("\n"))
     finally:
         shutil.rmtree(home, ignore_errors=True)
 
@@ -8823,7 +8982,12 @@ if __name__ == "__main__":
               test_session_end_never_touches_a_real_note_and_stubs_when_none,
               test_bootstrap_stubs_other_stale_chats_of_the_same_project_only,
               test_bootstrap_retires_old_stubs_by_renaming_and_leaves_real_notes,
-              test_install_wires_the_session_end_hook):
+              test_install_wires_the_session_end_hook,
+              test_hook_text_over_the_cap_is_cut_and_the_rest_goes_to_a_file,
+              test_hook_text_at_or_under_the_cap_is_emitted_unchanged,
+              test_hook_text_with_no_newline_in_range_is_cut_hard,
+              test_a_failed_overflow_write_emits_the_original_and_logs_it,
+              test_a_real_30k_pickup_fits_the_hook_channel):
         print(t.__name__)
         t()
     print()
