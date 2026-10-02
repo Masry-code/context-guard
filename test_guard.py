@@ -6553,79 +6553,89 @@ def test_the_label_fetch_names_the_shared_folder_and_the_project_list():
         shutil.rmtree(home, ignore_errors=True)
 
 
-# ---------------------------------------------- one home: the list header and the sweep
-# His rule, 25 Sep 2026: "make sure moving forward all chats saves the memories in the
-# correct folder or at least move them when possible at the start of chat with a hook".
-# Every topic file lives in the shared folder and a project folder holds only its list;
-# the sweep tidies strays home at the start of every chat and never deletes anything.
-
-SWEEP_OLD = 3600          # an hour old: well past the sweep's ten-minute settle time
-ALPHA, BETA = "D--Work-Alpha", "D--Work-Beta"
-SWEEP_MANIFEST = {
-    "projects": {
+def _stray_home():
+    """A fake ~ for the 'strays stay put' tests: a manifest naming Alpha and Beta, a
+    shared memory folder, and Alpha's project folder holding its list plus one topic file."""
+    home = throwaway_dir("guardstray-")
+    for parts in (("projects", KEY, "memory"), ("projects", "D--Work-Alpha", "memory"),
+                  ("context-guard",), ("handoff",)):
+        os.makedirs(os.path.join(home, ".claude", *parts))
+    manifest = {"projects": {
         "alpha": {"dir": "D:\\Work\\Alpha", "also": [], "threads": ["alpha"],
                   "files": ["alpha-notes"]},
         "beta": {"dir": "D:\\Work\\Beta", "also": [], "threads": ["beta"],
-                 "files": ["beta-notes"]},
-    },
-}
-
-
-def make_sweep_home(manifest=None):
-    """A fake ~ with an empty shared memory folder, the state folder and a manifest."""
-    home = throwaway_dir("guardsweep-")
-    for parts in (("projects", KEY, "memory"), ("context-guard",), ("handoff",)):
-        os.makedirs(os.path.join(home, ".claude", *parts))
+                 "files": ["beta-notes"]}}}
     with open(os.path.join(home, ".claude", "context-guard", "memory-manifest.json"),
               "w", encoding="utf-8") as f:
-        json.dump(SWEEP_MANIFEST if manifest is None else manifest, f)
+        json.dump(manifest, f)
     return home
 
 
+def test_bootstrap_leaves_stray_memories_where_they_are():
+    """The one-home sweep is gone: a topic file sitting in a project folder stays there,
+    byte for byte, whether or not an old `no-memory-sweep` file is lying in the home."""
+    home = _stray_home()
+    try:
+        alpha = os.path.join(home, ".claude", "projects", "D--Work-Alpha", "memory")
+        shared = os.path.join(home, ".claude", "projects", KEY, "memory")
+        backups = os.path.join(home, ".claude", "memory-backups")
+        topic = os.path.join(alpha, "alpha-notes.md")
+        body = b"---\nname: alpha-notes\ndescription: about alpha-notes\n---\n\nstray-BODY\n"
+        with open(os.path.join(alpha, "MEMORY.md"), "wb") as f:
+            f.write(b"# Memory Index\n- [alpha-notes](alpha-notes.md) - about alpha-notes\n")
+        with open(topic, "wb") as f:
+            f.write(body)
+        old = time.time() - 3600
+        os.utime(topic, (old, old))
+        for tag, off in (("plain", False), ("old-off-switch-file", True)):
+            if off:
+                with open(os.path.join(home, ".claude", "context-guard", "no-memory-sweep"),
+                          "w") as f:
+                    f.write("")
+            for cwd in (CWD, "D:\\Work\\Alpha"):
+                p = boot(home, cwd, sid="stray-" + tag)
+                expect_clean(p, "stray/" + tag)
+                out = (p.stdout or "").strip()
+                check("stray/%s: stdout is empty or one json object" % tag,
+                      out == "" or one_json(p), repr(out[:300]))
+            with open(topic, "rb") as f:
+                got = f.read()
+            check("stray/%s: the topic file is still in the project folder, same bytes" % tag,
+                  got == body, repr(got))
+            check("stray/%s: nothing was created in the shared folder" % tag,
+                  os.listdir(shared) == [], repr(os.listdir(shared)))
+            check("stray/%s: no memory-backups folder appeared" % tag,
+                  not os.path.exists(backups), "")
+            check("stray/%s: the log has no sweep: line" % tag,
+                  "sweep:" not in guard_log(home), repr(guard_log(home)[-400:]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_bootstrap_prints_one_json_object():
+    """A hook that prints two json objects reads as silence. A directory with no list yet
+    AND a pending tour make two texts; both go in ONE object."""
+    home = _stray_home()
+    try:
+        shared = os.path.join(home, ".claude", "projects", KEY, "memory")
+        with open(os.path.join(shared, "beta-notes.md"), "w", encoding="utf-8") as f:
+            f.write("---\nname: beta-notes\ndescription: about beta-notes\n---\n\nbody-BETA\n")
+        os.makedirs(os.path.dirname(tour_flag(home)), exist_ok=True)
+        open(tour_flag(home), "w").close()
+        p = boot(home, "D:\\Work\\Beta", sid="onejson01")
+        expect_clean(p, "one-json")
+        ctx = context_of(p)
+        check("one-json: exactly one json object", one_json(p), repr(p.stdout[:300]))
+        check("one-json: it carries the new list's message", "beta-notes" in ctx,
+              repr(ctx[:400]))
+        check("one-json: and the tour", "Hand a chat over" in ctx, repr(ctx[:400]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+# Helpers the tests above and below share, kept when the sweep tests were deleted.
 def memory_folder(home, key):
     return os.path.join(home, ".claude", "projects", key, "memory")
-
-
-def memory_text(slug, body, modified="2026-09-01"):
-    """A topic file the way auto-memory writes one, frontmatter and all."""
-    return ("---\nname: %s\ndescription: about %s\nmodified: %s\n---\n\n%s\n"
-            % (slug, slug, modified, body))
-
-
-def index_entry(slug):
-    return "- [%s](%s.md) - about %s" % (slug, slug, slug)
-
-
-def plant(home, key, name, text, age=SWEEP_OLD, eol="\n"):
-    """Write one file into a memory folder, `age` seconds old. Returns its path."""
-    p = os.path.join(memory_folder(home, key), name)
-    os.makedirs(os.path.dirname(p), exist_ok=True)
-    with open(p, "wb") as f:
-        f.write(text.replace("\n", eol).encode("utf-8"))
-    t = time.time() - age
-    os.utime(p, (t, t))
-    return p
-
-
-def raw_bytes(p):
-    try:
-        with open(p, "rb") as f:
-            return f.read()
-    except OSError:
-        return None
-
-
-def sweep_backups(home, key, name):
-    """Every backup of `name` (or a -N variant of it) under that key, on any day."""
-    root = os.path.join(home, ".claude", "memory-backups")
-    stem, ext = os.path.splitext(name)
-    pat = re.compile(re.escape(stem) + r"(-\d+)?" + re.escape(ext) + "$")
-    found = []
-    for day in (sorted(os.listdir(root)) if os.path.isdir(root) else []):
-        d = os.path.join(root, day, key)
-        found += [os.path.join(d, f) for f in (sorted(os.listdir(d)) if os.path.isdir(d) else [])
-                  if pat.match(f)]
-    return found
 
 
 def guard_call(home, code):
@@ -6638,925 +6648,6 @@ def guard_call(home, code):
     pre = "import sys; sys.path.insert(0, %r); import guard\n" % os.path.dirname(GUARD)
     return subprocess.run([sys.executable, "-c", pre + code], capture_output=True,
                           text=True, encoding="utf-8", env=env)
-
-
-def header_of(home):
-    """The header line exactly as guard.py writes it for this home."""
-    return guard_call(home, "print(guard.list_header())").stdout.strip()
-
-
-def plant_list(home, key, lines, head, eol="\n", age=SWEEP_OLD):
-    """A project list: its title, then `head` (the header line, "" for none), then lines."""
-    body = ["# Memory Index"] + ([head] if head else []) + list(lines)
-    return plant(home, key, "MEMORY.md", "\n".join(body) + "\n", age=age, eol=eol)
-
-
-def run_sweep(home, sid="sweep001"):
-    """SessionStart from the shared folder's own directory. The bootstrap does nothing
-    there - that folder already has its list, or SWEEP_MANIFEST does not name D:/Claude -
-    so whatever the hook does or says here is the sweep's."""
-    return boot(home, CWD, sid)
-
-
-def test_the_header_goes_into_an_existing_list_once_and_keeps_its_endings():
-    """Rollout step 2 gives every existing project list the header: once, above the first
-    entry, in the file's own line endings and final-newline state, backing the old list up
-    first - and never in a form index_lines() would read as an entry."""
-    home = make_sweep_home()
-    try:
-        shared = memory_folder(home, KEY).encode("utf-8")
-        a = plant(home, ALPHA, "MEMORY.md",
-                  "# Memory Index\n%s\n" % index_entry("alpha-notes"), eol="\r\n")
-        b = plant(home, BETA, "MEMORY.md", "# Memory Index\n%s" % index_entry("beta-notes"))
-        old_a, old_b = raw_bytes(a), raw_bytes(b)
-        call = "print([guard.ensure_list_header(p) for p in %r])" % ([a, b],)
-        p1 = guard_call(home, call)
-        new_a, new_b = raw_bytes(a), raw_bytes(b)
-        p2 = guard_call(home, call)
-        idx = guard_call(home, "print(sorted(guard.index_lines(%r)) + sorted(guard.index_lines(%r)))"
-                         % (a, b))
-        check("list-header: both calls ran cleanly", p1.returncode == 0 and p2.returncode == 0,
-              (p1.stderr + p2.stderr)[-300:])
-        check("list-header: the first call's stdout is exactly [True, True]",
-              p1.stdout.strip() == "[True, True]", repr(p1.stdout))
-        check("list-header: the first call gave both lists the header",
-              new_a != old_a and new_b != old_b, repr(new_a))
-        check("list-header: a second call changes nothing",
-              (raw_bytes(a), raw_bytes(b)) == (new_a, new_b), repr(raw_bytes(a)))
-        check("list-header: the header is never read as an entry",
-              idx.stdout.strip() == "['alpha-notes', 'beta-notes']",
-              (idx.stdout + idx.stderr)[-300:])
-        for tag, blob, crlf, final in (("crlf", new_a, True, True), ("lf", new_b, False, False)):
-            lines = blob.splitlines()
-            heads = [i for i, ln in enumerate(lines) if shared in ln]
-            first = next((i for i, ln in enumerate(lines) if b".md)" in ln), -1)
-            check("list-header: %s list - one header line, above its entry" % tag,
-                  len(heads) == 1 and heads[0] < first, repr(blob))
-            check("list-header: %s list - its own line endings" % tag,
-                  (blob.count(b"\n") == blob.count(b"\r\n")) if crlf else (b"\r" not in blob),
-                  repr(blob))
-            check("list-header: %s list - its final newline as it was" % tag,
-                  blob.endswith(b"\n") == final, repr(blob[-40:]))
-        check("list-header: the old list was backed up first",
-              [raw_bytes(x) for x in sweep_backups(home, ALPHA, "MEMORY.md")] == [old_a],
-              str(sweep_backups(home, ALPHA, "MEMORY.md")))
-        check("list-header: BETA's old list was backed up too",
-              [raw_bytes(x) for x in sweep_backups(home, BETA, "MEMORY.md")] == [old_b],
-              str(sweep_backups(home, BETA, "MEMORY.md")))
-    finally:
-        shutil.rmtree(home, ignore_errors=True)
-
-
-def test_a_list_that_changes_during_the_write_is_left_alone():
-    """_write_list checks the list against `before` once, before the backup is written - not
-    again right before os.replace swaps the new bytes in. A write that lands in that gap,
-    such as another chat saving a memory, is silently overwritten and lost from both the list
-    and the backup. A second check right before os.replace must catch it instead:
-    ensure_list_header returns False, the late entry stays in the list, and the temp file is
-    removed rather than left behind."""
-    home = make_sweep_home()
-    try:
-        a = plant(home, ALPHA, "MEMORY.md",
-                  "# Memory Index\n%s\n" % index_entry("alpha-notes"), eol="\r\n")
-        old_a = raw_bytes(a)
-        late = b"- [late](late.md) - saved during the write\r\n"
-        code = ("p = %r\n"
-                "real = guard._put_new\n"
-                "def put_new_then_another_chat_saves(dest, blob, mtime=None):\n"
-                "    real(dest, blob, mtime)\n"
-                "    with open(p, 'ab') as f:\n"
-                "        f.write(%r)\n"
-                "guard._put_new = put_new_then_another_chat_saves\n"
-                "print(guard.ensure_list_header(p))\n") % (a, late)
-        p1 = guard_call(home, code)
-        new_a = raw_bytes(a)
-        check("write-race: the call ran cleanly", p1.returncode == 0, p1.stderr[-300:])
-        check("write-race: ensure_list_header returned False",
-              p1.stdout.strip() == "False", p1.stdout + p1.stderr[-300:])
-        check("write-race: the late entry another chat saved is still in the list",
-              new_a == old_a + late, repr(new_a))
-        check("write-race: no MEMORY.md.sweep-tmp is left in the memory folder",
-              not os.path.exists(a + ".sweep-tmp"), str(sorted(os.listdir(os.path.dirname(a)))))
-    finally:
-        shutil.rmtree(home, ignore_errors=True)
-
-
-def test_the_sweep_moves_a_memory_with_no_shared_copy_home():
-    """Case 1. A memory saved into a project folder - its only copy - goes home to the
-    shared folder byte for byte, mtime and all. Its list line stays where it is."""
-    home = make_sweep_home()
-    try:
-        lst = plant_list(home, ALPHA, [index_entry("alpha-notes")], header_of(home))
-        src = plant(home, ALPHA, "alpha-notes.md", memory_text("alpha-notes", "body-ALPHA"))
-        blob, mtime, lst_before = raw_bytes(src), os.path.getmtime(src), raw_bytes(lst)
-        p = run_sweep(home)
-        expect_clean(p, "sweep/home")
-        dest = os.path.join(memory_folder(home, KEY), "alpha-notes.md")
-        check("sweep/home: the project folder no longer has it", not os.path.exists(src), src)
-        check("sweep/home: the shared folder has it, byte for byte", raw_bytes(dest) == blob,
-              repr(raw_bytes(dest))[:200])
-        check("sweep/home: it kept its mtime",
-              os.path.exists(dest) and abs(os.path.getmtime(dest) - mtime) < 2, dest)
-        check("sweep/home: its list is untouched", raw_bytes(lst) == lst_before,
-              repr(raw_bytes(lst))[:200])
-        check("sweep/home: and it said nothing", p.stdout == "", repr(p.stdout[:200]))
-    finally:
-        shutil.rmtree(home, ignore_errors=True)
-
-
-def test_the_sweep_leaves_a_file_changed_in_the_last_ten_minutes():
-    """Another chat may be writing it: skipped without a word, and the next chat retries."""
-    home = make_sweep_home()
-    try:
-        src = plant(home, ALPHA, "alpha-notes.md", memory_text("alpha-notes", "body-ALPHA"),
-                    age=60)
-        p = run_sweep(home)
-        expect_clean(p, "sweep/fresh")
-        check("sweep/fresh: a file changed a minute ago stays put", os.path.exists(src), src)
-        check("sweep/fresh: and it said nothing", p.stdout == "", repr(p.stdout[:200]))
-        # CONTROL: the same file, settled, does move - or the check above proves nothing.
-        t = time.time() - SWEEP_OLD
-        os.utime(src, (t, t))
-        run_sweep(home, sid="sweep002")
-        check("sweep/fresh: control - once settled it moves home",
-              not os.path.exists(src)
-              and os.path.isfile(os.path.join(memory_folder(home, KEY), "alpha-notes.md")), src)
-    finally:
-        shutil.rmtree(home, ignore_errors=True)
-
-
-def test_the_sweep_skips_while_another_sweep_holds_the_lock():
-    """Two chats starting at once must not race. A held lock means skip, silently; a lock
-    older than a minute belongs to a sweep that died, and is taken over."""
-    home = make_sweep_home()
-    try:
-        src = plant(home, ALPHA, "alpha-notes.md", memory_text("alpha-notes", "body-ALPHA"))
-        lock = os.path.join(home, ".claude", "context-guard", "sweep.lock")
-        with open(lock, "w") as f:
-            f.write("12345")
-        p = run_sweep(home)
-        expect_clean(p, "sweep/lock")
-        check("sweep/lock: another sweep holds it - nothing moved", os.path.exists(src), src)
-        check("sweep/lock: and it said nothing", p.stdout == "", repr(p.stdout[:200]))
-        check("sweep/lock: the other sweep's lock was left alone", os.path.exists(lock), lock)
-        t = time.time() - 120
-        os.utime(lock, (t, t))
-        run_sweep(home, sid="sweep002")
-        check("sweep/lock: a stale lock is taken over and the sweep runs",
-              not os.path.exists(src), src)
-        check("sweep/lock: and the lock is gone afterwards", not os.path.exists(lock), lock)
-    finally:
-        shutil.rmtree(home, ignore_errors=True)
-
-
-def test_the_sweep_has_an_off_switch():
-    """Every automatic behaviour has an override: an empty file called no-memory-sweep."""
-    home = make_sweep_home()
-    try:
-        src = plant(home, ALPHA, "alpha-notes.md", memory_text("alpha-notes", "body-ALPHA"))
-        off = os.path.join(home, ".claude", "context-guard", "no-memory-sweep")
-        open(off, "w").close()
-        p = run_sweep(home)
-        expect_clean(p, "sweep/off")
-        check("sweep/off: switched off - nothing moved", os.path.exists(src), src)
-        os.remove(off)
-        run_sweep(home, sid="sweep002")
-        check("sweep/off: control - switched back on, it moves", not os.path.exists(src), src)
-    finally:
-        shutil.rmtree(home, ignore_errors=True)
-
-
-def test_a_sweep_with_nothing_to_do_prints_nothing():
-    """Nothing to say means nothing printed at all - not an empty object, not a newline."""
-    home = make_sweep_home()
-    try:
-        plant_list(home, ALPHA, [index_entry("alpha-notes")], header_of(home))
-        p = run_sweep(home)
-        expect_clean(p, "sweep/quiet")
-        check("sweep/quiet: nothing to do - stdout is empty", p.stdout == "",
-              repr(p.stdout[:200]))
-        src = plant(home, ALPHA, "alpha-notes.md", memory_text("alpha-notes", "body-ALPHA"))
-        p2 = run_sweep(home, sid="sweep002")
-        check("sweep/quiet: control - this time it did work", not os.path.exists(src), src)
-        check("sweep/quiet: and still printed nothing", p2.stdout == "", repr(p2.stdout[:200]))
-    finally:
-        shutil.rmtree(home, ignore_errors=True)
-
-
-def test_the_sweep_gives_a_list_the_header_before_moving_out_of_it():
-    """A list Claude Code wrote itself, in a folder the rollout never saw, has no header,
-    and its lines would point at nothing once the file moves home. So the sweep gives it
-    the header first - and leaves the whole folder alone while that list is fresh."""
-    home = make_sweep_home()
-    try:
-        lst = plant_list(home, ALPHA, [index_entry("alpha-notes")], "", age=60)
-        src = plant(home, ALPHA, "alpha-notes.md", memory_text("alpha-notes", "body-ALPHA"))
-        run_sweep(home)
-        check("sweep/header: a fresh list without the header - nothing moved",
-              os.path.exists(src), src)
-        t = time.time() - SWEEP_OLD
-        os.utime(lst, (t, t))
-        p = run_sweep(home, sid="sweep002")
-        expect_clean(p, "sweep/header")
-        body = (raw_bytes(lst) or b"").decode("utf-8")
-        check("sweep/header: once settled, the file moved home", not os.path.exists(src), src)
-        check("sweep/header: and its list now names the shared folder",
-              memory_folder(home, KEY) in body, repr(body[:300]))
-        check("sweep/header: and still lists the memory", "(alpha-notes.md)" in body,
-              repr(body[:300]))
-    finally:
-        shutil.rmtree(home, ignore_errors=True)
-
-
-def test_the_sweep_backs_up_a_spare_identical_to_its_shared_copy():
-    """Case 2. Identical but for the frontmatter `modified:` line: the spare goes to the
-    backup folder, never the bin, and a second spare of that name gets its own -2 file."""
-    home = make_sweep_home()
-    try:
-        shared = plant(home, KEY, "alpha-notes.md",
-                       memory_text("alpha-notes", "body-ALPHA", "2026-09-20"))
-        keep = raw_bytes(shared)
-        spare = plant(home, ALPHA, "alpha-notes.md",
-                      memory_text("alpha-notes", "body-ALPHA", "2026-09-01"))
-        blob = raw_bytes(spare)
-        p = run_sweep(home)
-        expect_clean(p, "sweep/spare")
-        got = sweep_backups(home, ALPHA, "alpha-notes.md")
-        check("sweep/spare: it left the project folder", not os.path.exists(spare), spare)
-        check("sweep/spare: it is in the backup folder, byte for byte",
-              [raw_bytes(g) for g in got] == [blob], str(got))
-        check("sweep/spare: the shared copy is untouched", raw_bytes(shared) == keep)
-        check("sweep/spare: and it said nothing", p.stdout == "", repr(p.stdout[:200]))
-        plant(home, ALPHA, "alpha-notes.md",
-              memory_text("alpha-notes", "body-ALPHA", "2026-09-02"))
-        run_sweep(home, sid="sweep002")
-        got = sweep_backups(home, ALPHA, "alpha-notes.md")
-        check("sweep/spare: a second spare of that name gets a backup of its own",
-              len(got) == 2 and any(os.path.basename(g) == "alpha-notes-2.md" for g in got),
-              str(got))
-    finally:
-        shutil.rmtree(home, ignore_errors=True)
-
-
-def test_a_failure_between_copy_and_remove_loses_nothing():
-    """The move copies, checks, then removes. Break it between the copy and the remove:
-    both copies must be whole, the error logged, the lock released - and the next sweep
-    must heal it, as case 2."""
-    home = make_sweep_home()
-    try:
-        src = plant(home, ALPHA, "alpha-notes.md", memory_text("alpha-notes", "body-ALPHA"))
-        blob = raw_bytes(src)
-        dest = os.path.join(memory_folder(home, KEY), "alpha-notes.md")
-        p = guard_call(home, "import os\n"
-                             "real = os.remove\n"
-                             "def boom(path, *a, **k):\n"
-                             "    if str(path).endswith('.md'):\n"
-                             "        raise OSError('injected between copy and remove')\n"
-                             "    return real(path, *a, **k)\n"
-                             "os.remove = boom\n"
-                             "print(repr(guard.sweep_memory_strays()))\n")
-        check("sweep/crash: the sweep swallowed the error",
-              p.returncode == 0 and p.stdout.strip() == "''", (p.stdout + p.stderr)[-300:])
-        check("sweep/crash: the source is still there, whole", raw_bytes(src) == blob, src)
-        check("sweep/crash: the copy is there, whole", raw_bytes(dest) == blob, dest)
-        check("sweep/crash: the error is in the log",
-              "injected between copy and remove" in guard_log(home), guard_log(home)[-300:])
-        check("sweep/crash: the lock was released", not os.path.exists(
-            os.path.join(home, ".claude", "context-guard", "sweep.lock")))
-        p2 = run_sweep(home, sid="sweep002")
-        expect_clean(p2, "sweep/crash")
-        check("sweep/crash: the next sweep healed it - the spare is in the backup",
-              not os.path.exists(src)
-              and [raw_bytes(g) for g in sweep_backups(home, ALPHA, "alpha-notes.md")] == [blob],
-              src)
-        check("sweep/crash: and the shared copy is still whole", raw_bytes(dest) == blob, dest)
-    finally:
-        shutil.rmtree(home, ignore_errors=True)
-
-
-def test_two_different_copies_are_left_alone_and_reported_once():
-    """The one case that speaks. Both copies untouched, one line naming the memory, the
-    same pair never reported twice - and a copy that changes again is a new pair."""
-    home = make_sweep_home()
-    try:
-        shared = plant(home, KEY, "alpha-notes.md", memory_text("alpha-notes", "body-SHARED"))
-        spare = plant(home, ALPHA, "alpha-notes.md", memory_text("alpha-notes", "body-SPARE"))
-        a, b = raw_bytes(shared), raw_bytes(spare)
-        p = run_sweep(home)
-        expect_clean(p, "sweep/two")
-        ctx = context_of(p)
-        check("sweep/two: one json object", one_json(p), repr(p.stdout[:200]))
-        check("sweep/two: it names the memory", "alpha-notes" in ctx, repr(ctx[:300]))
-        check("sweep/two: in one line", len(ctx.strip().splitlines()) == 1, repr(ctx[:300]))
-        check("sweep/two: both copies untouched",
-              raw_bytes(shared) == a and raw_bytes(spare) == b)
-        p2 = run_sweep(home, sid="sweep002")
-        check("sweep/two: the same pair is not reported twice", p2.stdout == "",
-              repr(p2.stdout[:200]))
-        plant(home, ALPHA, "alpha-notes.md", memory_text("alpha-notes", "body-SPARE-EDITED"))
-        p3 = run_sweep(home, sid="sweep003")
-        check("sweep/two: a copy that changed again is reported again",
-              "alpha-notes" in context_of(p3), repr(p3.stdout[:200]))
-        check("sweep/two: every occurrence is logged",
-              guard_log(home).count("alpha-notes.md") >= 3, guard_log(home)[-400:])
-    finally:
-        shutil.rmtree(home, ignore_errors=True)
-
-
-def test_bootstrap_and_the_sweep_print_one_json_object():
-    """A hook that prints two json objects reads as silence. When the sweep has something
-    to say AND the bootstrap furnishes a new folder, both go in ONE object."""
-    home = make_sweep_home()
-    try:
-        plant(home, KEY, "alpha-notes.md", memory_text("alpha-notes", "body-SHARED"))
-        plant(home, KEY, "beta-notes.md", memory_text("beta-notes", "body-BETA"))
-        plant(home, ALPHA, "alpha-notes.md", memory_text("alpha-notes", "body-SPARE"))
-        p = boot(home, r"D:\Work\Beta")
-        expect_clean(p, "sweep/one-json")
-        ctx = context_of(p)
-        check("sweep/one-json: exactly one json object", one_json(p), repr(p.stdout[:300]))
-        check("sweep/one-json: it carries the sweep's report", "alpha-notes" in ctx,
-              repr(ctx[:400]))
-        check("sweep/one-json: and the bootstrap's message",
-              BETA in ctx and "beta-notes" in ctx, repr(ctx[:400]))
-    finally:
-        shutil.rmtree(home, ignore_errors=True)
-
-
-def test_the_sweep_drops_a_shared_line_its_one_claimant_already_lists():
-    """Case 3. alpha-notes has one claimant - Alpha's list and the manifest agree - and
-    Alpha's list already has the line, so the shared list stops carrying it."""
-    home = make_sweep_home()
-    try:
-        plant(home, KEY, "alpha-notes.md", memory_text("alpha-notes", "body-ALPHA"))
-        plant(home, KEY, "keep-me.md", memory_text("keep-me", "body-KEEP"))
-        top = plant(home, KEY, "MEMORY.md", "# Memory Index\n%s\n%s\n"
-                    % (index_entry("alpha-notes"), index_entry("keep-me")))
-        old_top = raw_bytes(top)
-        alst = plant_list(home, ALPHA, [index_entry("alpha-notes")], header_of(home))
-        old_alpha = raw_bytes(alst)
-        p = run_sweep(home)
-        expect_clean(p, "sweep/case3")
-        body = raw_bytes(top).decode("utf-8")
-        check("sweep/case3: the line left the shared list", "(alpha-notes.md)" not in body,
-              repr(body))
-        check("sweep/case3: a line nobody claims stayed", "(keep-me.md)" in body, repr(body))
-        check("sweep/case3: Alpha's list is untouched", raw_bytes(alst) == old_alpha)
-        check("sweep/case3: the old shared list was backed up first",
-              [raw_bytes(x) for x in sweep_backups(home, KEY, "MEMORY.md")] == [old_top],
-              str(sweep_backups(home, KEY, "MEMORY.md")))
-        check("sweep/case3: and it said nothing", p.stdout == "", repr(p.stdout[:200]))
-    finally:
-        shutil.rmtree(home, ignore_errors=True)
-
-
-def test_the_sweep_moves_a_shared_line_to_the_one_claimant_that_lacks_it():
-    """Case 4. beta-notes is claimed by the manifest alone, and Beta's list lacks it: his
-    line is appended there word for word, and then it leaves the shared list."""
-    home = make_sweep_home()
-    try:
-        plant(home, KEY, "beta-notes.md", memory_text("beta-notes", "body-BETA"))
-        line = "- [Beta, in his words](beta-notes.md) - the wording he chose"
-        top = plant(home, KEY, "MEMORY.md", "# Memory Index\n%s\n" % line)
-        blst = plant_list(home, BETA, [index_entry("beta-own")], header_of(home))
-        p = run_sweep(home)
-        expect_clean(p, "sweep/case4")
-        got = raw_bytes(blst).decode("utf-8")
-        check("sweep/case4: his line was appended to Beta's list, word for word",
-              got.splitlines()[-1] == line, repr(got[-200:]))
-        check("sweep/case4: Beta's own line is still there", "(beta-own.md)" in got, repr(got))
-        check("sweep/case4: the line left the shared list",
-              "(beta-notes.md)" not in raw_bytes(top).decode("utf-8"), repr(raw_bytes(top)))
-        check("sweep/case4: Beta's list is still LF", b"\r" not in raw_bytes(blst),
-              repr(raw_bytes(blst)[-80:]))
-    finally:
-        shutil.rmtree(home, ignore_errors=True)
-
-
-def test_the_sweep_leaves_a_slug_with_zero_or_two_claimants():
-    """Unsure means it stays in the shared list, where every chat still sees it: no
-    claimant, two claimants, or only a list in a folder no project maps to - no label
-    fetch ever shows that list, so it is no claim."""
-    home = make_sweep_home()
-    try:
-        h = header_of(home)
-        slugs = ("nobody", "both", "stray", "alpha-notes")
-        for s in slugs:
-            plant(home, KEY, s + ".md", memory_text(s, "body-" + s))
-        top = plant(home, KEY, "MEMORY.md",
-                    "# Memory Index\n" + "\n".join(index_entry(s) for s in slugs) + "\n")
-        plant_list(home, ALPHA, [index_entry("both"), index_entry("alpha-notes")], h)
-        plant_list(home, BETA, [index_entry("both")], h)
-        plant_list(home, "D--Somewhere-Else", [index_entry("stray")], h)
-        p = run_sweep(home)
-        expect_clean(p, "sweep/unsure")
-        body = raw_bytes(top).decode("utf-8")
-        check("sweep/unsure: zero claimants - it stays", "(nobody.md)" in body, repr(body))
-        check("sweep/unsure: two claimants - it stays", "(both.md)" in body, repr(body))
-        check("sweep/unsure: only an unmapped folder lists it - it stays",
-              "(stray.md)" in body, repr(body))
-        check("sweep/unsure: control - one claimant, and it left",
-              "(alpha-notes.md)" not in body, repr(body))
-    finally:
-        shutil.rmtree(home, ignore_errors=True)
-
-
-def test_a_crlf_list_stays_crlf():
-    """The shared MEMORY.md is CRLF today. Every rewrite keeps each file's own line
-    endings, measured per file, and its final newline."""
-    home = make_sweep_home()
-    try:
-        plant(home, KEY, "beta-notes.md", memory_text("beta-notes", "body-BETA"))
-        plant(home, KEY, "keep-me.md", memory_text("keep-me", "body-KEEP"))
-        top = plant(home, KEY, "MEMORY.md", "# Memory Index\n%s\n%s\n"
-                    % (index_entry("beta-notes"), index_entry("keep-me")), eol="\r\n")
-        blst = plant_list(home, BETA, [index_entry("beta-own")], header_of(home), eol="\r\n")
-        p = run_sweep(home)
-        expect_clean(p, "sweep/crlf")
-        t, b = raw_bytes(top), raw_bytes(blst)
-        check("sweep/crlf: control - the shared list was rewritten", b"beta-notes" not in t,
-              repr(t))
-        check("sweep/crlf: control - Beta's list was rewritten", b"beta-notes" in b, repr(b))
-        for tag, blob in (("shared", t), ("beta", b)):
-            check("sweep/crlf: the %s list has no bare LF" % tag,
-                  blob.count(b"\n") == blob.count(b"\r\n"), repr(blob))
-            check("sweep/crlf: the %s list still ends in CRLF" % tag, blob.endswith(b"\r\n"),
-                  repr(blob[-20:]))
-    finally:
-        shutil.rmtree(home, ignore_errors=True)
-
-
-def test_the_sweep_leaves_a_list_changed_in_the_last_ten_minutes():
-    """A list another chat may be writing is not rewritten - neither the shared list nor
-    the one list a line would be appended to. The next chat retries."""
-    home = make_sweep_home()
-    try:
-        h = header_of(home)
-        plant(home, KEY, "beta-notes.md", memory_text("beta-notes", "body-BETA"))
-        top = plant(home, KEY, "MEMORY.md", "# Memory Index\n%s\n" % index_entry("beta-notes"),
-                    age=60)
-        blst = plant_list(home, BETA, [index_entry("beta-own")], h)
-        run_sweep(home)
-        check("sweep/fresh-list: a fresh shared list is not rewritten",
-              b"beta-notes" in raw_bytes(top), repr(raw_bytes(top)))
-        t = time.time() - SWEEP_OLD
-        os.utime(top, (t, t))
-        plant_list(home, BETA, [index_entry("beta-own")], h, age=60)
-        run_sweep(home, sid="sweep002")
-        check("sweep/fresh-list: a fresh target list - the line stays shared",
-              b"beta-notes" in raw_bytes(top) and b"beta-notes" not in raw_bytes(blst),
-              repr(raw_bytes(top)))
-        os.utime(blst, (t, t))
-        run_sweep(home, sid="sweep003")
-        check("sweep/fresh-list: control - both settled, the line moves",
-              b"beta-notes" not in raw_bytes(top) and b"beta-notes" in raw_bytes(blst),
-              repr(raw_bytes(blst)))
-    finally:
-        shutil.rmtree(home, ignore_errors=True)
-
-
-# ---------------------------------------------- one home: commit B's quality-review fixes
-def test_one_unwritable_list_does_not_stop_the_sweep():
-    """I1. A list that cannot be replaced - here a read-only MEMORY.md in the first folder -
-    used to raise out of the whole sweep: no other folder was reached, an orphan
-    MEMORY.md.sweep-tmp was left, and every retry piled up one more list backup. Now that
-    folder is left alone, everything else is swept, nothing is left behind, and the folder
-    is swept on the first sweep after the list is writable again."""
-    import stat
-    home = make_sweep_home()
-    a = None
-    try:
-        a = plant_list(home, ALPHA, [index_entry("alpha-notes")], "")
-        asrc = plant(home, ALPHA, "alpha-notes.md", memory_text("alpha-notes", "body-ALPHA"))
-        plant_list(home, BETA, [index_entry("beta-notes")], header_of(home))
-        bsrc = plant(home, BETA, "beta-notes.md", memory_text("beta-notes", "body-BETA"))
-        plant(home, KEY, "dup.md", memory_text("dup", "body-SHARED"))
-        plant(home, BETA, "dup.md", memory_text("dup", "body-SPARE"))
-        old_a = raw_bytes(a)
-        os.chmod(a, stat.S_IREAD)
-        p1 = run_sweep(home)
-        p2 = run_sweep(home, sid="sweep002")
-        expect_clean(p1, "sweep/unwritable")
-        shared_beta = os.path.join(memory_folder(home, KEY), "beta-notes.md")
-        check("sweep/unwritable: the folder after it was still swept",
-              not os.path.exists(bsrc) and os.path.isfile(shared_beta), bsrc)
-        check("sweep/unwritable: the sweep did not stop - its log has no 'stopped by'",
-              "stopped by" not in guard_log(home), guard_log(home)[-400:])
-        check("sweep/unwritable: no MEMORY.md.sweep-tmp is left",
-              not os.path.exists(a + ".sweep-tmp"), str(sorted(os.listdir(os.path.dirname(a)))))
-        check("sweep/unwritable: the list itself is untouched", raw_bytes(a) == old_a,
-              repr(raw_bytes(a)))
-        check("sweep/unwritable: and so is its stray - the list does not name the shared "
-              "folder yet", os.path.exists(asrc), asrc)
-        check("sweep/unwritable: two sweeps left no list backup piling up for it",
-              len(sweep_backups(home, ALPHA, "MEMORY.md")) <= 1,
-              str(sweep_backups(home, ALPHA, "MEMORY.md")))
-        check("sweep/unwritable: the one-json report of the later folder still holds",
-              one_json(p1) and "dup" in context_of(p1), repr(p1.stdout[:300]))
-        check("sweep/unwritable: the same pair is not reported again", p2.stdout == "",
-              repr(p2.stdout[:200]))
-        os.chmod(a, stat.S_IREAD | stat.S_IWRITE)
-        run_sweep(home, sid="sweep003")
-        check("sweep/unwritable: control - once writable its stray goes home",
-              not os.path.exists(asrc)
-              and os.path.isfile(os.path.join(memory_folder(home, KEY), "alpha-notes.md")),
-              asrc)
-        check("sweep/unwritable: and its list names the shared folder now",
-              memory_folder(home, KEY) in (raw_bytes(a) or b"").decode("utf-8"),
-              repr(raw_bytes(a)))
-    finally:
-        if a and os.path.exists(a):
-            os.chmod(a, stat.S_IREAD | stat.S_IWRITE)
-        shutil.rmtree(home, ignore_errors=True)
-
-
-def test_a_list_held_open_piles_up_no_backups_and_no_debris():
-    """I1, the other way a list cannot be replaced: another program holds it open, so
-    os.replace fails even though the file is writable. On Windows a plain open() blocks the
-    replace. The sweep logs it, removes its temp file, and a retry does not add a second,
-    identical backup."""
-    home = make_sweep_home()
-    fh = None
-    try:
-        a = plant_list(home, ALPHA, [index_entry("alpha-notes")], "")
-        asrc = plant(home, ALPHA, "alpha-notes.md", memory_text("alpha-notes", "body-ALPHA"))
-        plant_list(home, BETA, [index_entry("beta-notes")], header_of(home))
-        bsrc = plant(home, BETA, "beta-notes.md", memory_text("beta-notes", "body-BETA"))
-        old_a = raw_bytes(a)
-        fh = open(a, "rb")
-        run_sweep(home)
-        run_sweep(home, sid="sweep002")
-        check("sweep/held: the folder after it was still swept", not os.path.exists(bsrc), bsrc)
-        check("sweep/held: no MEMORY.md.sweep-tmp is left", not os.path.exists(a + ".sweep-tmp"),
-              str(sorted(os.listdir(os.path.dirname(a)))))
-        check("sweep/held: two sweeps made one list backup, not two",
-              len(sweep_backups(home, ALPHA, "MEMORY.md")) <= 1,
-              str(sweep_backups(home, ALPHA, "MEMORY.md")))
-        if os.name == "nt":
-            check("sweep/held: the held list is untouched, and so is its stray",
-                  raw_bytes(a) == old_a and os.path.exists(asrc), repr(raw_bytes(a)))
-        fh.close()
-        fh = None
-        run_sweep(home, sid="sweep003")
-        check("sweep/held: control - once released its stray goes home", not os.path.exists(asrc),
-              asrc)
-        check("sweep/held: and the list has exactly one backup, of the original",
-              [raw_bytes(x) for x in sweep_backups(home, ALPHA, "MEMORY.md")] == [old_a],
-              str(sweep_backups(home, ALPHA, "MEMORY.md")))
-    finally:
-        if fh:
-            fh.close()
-        shutil.rmtree(home, ignore_errors=True)
-
-
-def test_a_write_that_fails_midway_leaves_no_half_file_at_the_shared_path():
-    """I-1. _put_new opens the destination with "xb" and then writes it. A write that dies
-    midway (disk full) used to leave a TRUNCATED file at the canonical path, so the next
-    sweep read it as a different copy - "two different copies" - and left both. Now the
-    half file is removed and the error still raised; a destination that already existed
-    is never touched (the "xb" open itself fails, so there is nothing of ours to remove)."""
-    home = make_sweep_home()
-    try:
-        dest = os.path.join(memory_folder(home, KEY), "alpha-notes.md")
-        code = ("real = open\n"
-                "class W:\n"
-                "    def __init__(s, f): s.f = f\n"
-                "    def __enter__(s): return s\n"
-                "    def __exit__(s, *a):\n"
-                "        s.f.close()\n"
-                "        return False\n"
-                "    def write(s, b):\n"
-                "        s.f.write(b[:5])\n"
-                "        s.f.flush()\n"
-                "        raise OSError('injected disk full')\n"
-                "def fake(p, mode='r', *a, **k):\n"
-                "    f = real(p, mode, *a, **k)\n"
-                "    return W(f) if mode == 'xb' else f\n"
-                "guard.open = fake\n"
-                "try:\n"
-                "    guard._put_new(%r, b'x' * 100)\n"
-                "except OSError as e:\n"
-                "    print('raised', e)\n" % dest)
-        p = guard_call(home, code)
-        check("put_new: the write error was raised to the caller",
-              "raised injected disk full" in p.stdout, (p.stdout + p.stderr)[-300:])
-        check("put_new: no half file is left at the destination",
-              not os.path.exists(dest), repr(raw_bytes(dest)))
-        keep = plant(home, KEY, "beta-notes.md", memory_text("beta-notes", "body-KEPT"))
-        before = raw_bytes(keep)
-        p2 = guard_call(home, "try:\n"
-                              "    guard._put_new(%r, b'other')\n"
-                              "except FileExistsError:\n"
-                              "    print('exists')\n" % keep)
-        check("put_new: an existing destination still refuses the write",
-              "exists" in p2.stdout, (p2.stdout + p2.stderr)[-300:])
-        check("put_new: and is never removed or changed", raw_bytes(keep) == before,
-              repr(raw_bytes(keep)))
-    finally:
-        shutil.rmtree(home, ignore_errors=True)
-
-
-def test_one_failing_folder_file_or_list_step_does_not_stop_the_rest_of_the_sweep():
-    """I-2. The sweep isolates trouble three ways: a try per folder, a try per file, and a
-    try around the shared list's lines. Each is broken here with an injected fault, and the
-    work after it must still happen and the later report still be printed."""
-    # the folder layer: the first folder raises out of _sweep_folder
-    home = make_sweep_home()
-    try:
-        plant_list(home, ALPHA, [], header_of(home))
-        aa = plant(home, ALPHA, "a.md", memory_text("a", "only-A"))
-        plant_list(home, BETA, [], header_of(home))
-        bb = plant(home, BETA, "b.md", memory_text("b", "only-B"))
-        p = guard_call(home, "real = guard._sweep_folder\n"
-                             "def f(d, now, pairs):\n"
-                             "    if 'Alpha' in d:\n"
-                             "        raise PermissionError('folder boom')\n"
-                             "    return real(d, now, pairs)\n"
-                             "guard._sweep_folder = f\n"
-                             "print(repr(guard.sweep_memory_strays()))\n")
-        check("sweep/isolation folder: the sweep ended cleanly", p.returncode == 0, p.stderr[-300:])
-        check("sweep/isolation folder: the failing folder is logged and left as it was",
-              "PermissionError: folder boom" in guard_log(home) and os.path.exists(aa),
-              guard_log(home)[-300:])
-        check("sweep/isolation folder: the next folder was still swept",
-              not os.path.exists(bb)
-              and os.path.isfile(os.path.join(memory_folder(home, KEY), "b.md")), bb)
-    finally:
-        shutil.rmtree(home, ignore_errors=True)
-    # the file layer: one file raises out of _move, the file after it is still moved
-    home = make_sweep_home()
-    try:
-        plant_list(home, ALPHA, [], header_of(home))
-        a = plant(home, ALPHA, "a.md", memory_text("a", "only-A"))
-        b = plant(home, ALPHA, "b.md", memory_text("b", "only-B"))
-        plant(home, KEY, "dup.md", memory_text("dup", "body-SHARED"))
-        plant(home, ALPHA, "dup.md", memory_text("dup", "body-SPARE"))
-        p = guard_call(home, "real = guard._move\n"
-                             "def m(src, dest):\n"
-                             "    if src.endswith('a.md'):\n"
-                             "        raise OSError('file boom')\n"
-                             "    return real(src, dest)\n"
-                             "guard._move = m\n"
-                             "print(repr(guard.sweep_memory_strays()))\n")
-        check("sweep/isolation file: the sweep ended cleanly", p.returncode == 0, p.stderr[-300:])
-        check("sweep/isolation file: the failing file is logged and left as it was",
-              "a.md stopped by OSError: file boom" in guard_log(home) and os.path.exists(a),
-              guard_log(home)[-300:])
-        check("sweep/isolation file: the next file in the same folder was still moved home",
-              not os.path.exists(b)
-              and os.path.isfile(os.path.join(memory_folder(home, KEY), "b.md")), b)
-        check("sweep/isolation file: and the two-copies report after it is still printed",
-              "dup" in p.stdout, repr(p.stdout[:300]))
-    finally:
-        shutil.rmtree(home, ignore_errors=True)
-    # the lines layer: _sweep_lines raises, the folders and the report are unaffected
-    home = make_sweep_home()
-    try:
-        plant_list(home, ALPHA, [], header_of(home))
-        plant(home, KEY, "dup.md", memory_text("dup", "body-SHARED"))
-        plant(home, ALPHA, "dup.md", memory_text("dup", "body-SPARE"))
-        plant_list(home, BETA, [], header_of(home))
-        b = plant(home, BETA, "b.md", memory_text("b", "only-B"))
-        p = guard_call(home, "def l(*a):\n"
-                             "    raise OSError('lines boom')\n"
-                             "guard._sweep_lines = l\n"
-                             "print(repr(guard.sweep_memory_strays()))\n")
-        check("sweep/isolation lines: the sweep ended cleanly", p.returncode == 0, p.stderr[-300:])
-        check("sweep/isolation lines: the failure is logged",
-              "lines stopped by OSError: lines boom" in guard_log(home), guard_log(home)[-300:])
-        check("sweep/isolation lines: the folders were still swept", not os.path.exists(b), b)
-        check("sweep/isolation lines: and the report is still printed", "dup" in p.stdout,
-              repr(p.stdout[:300]))
-    finally:
-        shutil.rmtree(home, ignore_errors=True)
-
-
-def test_a_spare_that_cannot_be_removed_piles_up_no_backups():
-    """M-1. Case 2 backs a spare up and then removes it. If the remove always fails (held
-    open, read-only folder) every chat's sweep used to make one more identical backup. Now
-    two sweeps leave exactly one, and once the remove works the spare goes and the backup
-    stays."""
-    home = make_sweep_home()
-    try:
-        plant(home, KEY, "alpha-notes.md", memory_text("alpha-notes", "body-ALPHA", "2026-09-20"))
-        spare = plant(home, ALPHA, "alpha-notes.md",
-                      memory_text("alpha-notes", "body-ALPHA", "2026-09-01"))
-        blob = raw_bytes(spare)
-        code = ("import os\n"
-                "real = os.remove\n"
-                "def boom(path, *a, **k):\n"
-                "    if str(path).endswith('.md'):\n"
-                "        raise OSError('injected cannot remove')\n"
-                "    return real(path, *a, **k)\n"
-                "os.remove = boom\n"
-                "print(repr(guard.sweep_memory_strays()))\n")
-        guard_call(home, code)
-        guard_call(home, code)
-        got = sweep_backups(home, ALPHA, "alpha-notes.md")
-        check("sweep/spare-stuck: two failing sweeps left exactly one backup", len(got) == 1,
-              str(got))
-        check("sweep/spare-stuck: and the spare is still there, whole", raw_bytes(spare) == blob,
-              spare)
-        run_sweep(home, sid="sweep003")
-        got = sweep_backups(home, ALPHA, "alpha-notes.md")
-        check("sweep/spare-stuck: once removable the spare goes, still with one backup",
-              not os.path.exists(spare) and [raw_bytes(g) for g in got] == [blob], str(got))
-    finally:
-        shutil.rmtree(home, ignore_errors=True)
-
-
-def test_a_project_folder_that_is_a_junction_onto_the_shared_folder_is_left_alone():
-    """M-b. A project `memory` dir that is a junction onto the shared folder holds the
-    shared copies themselves. It used to read as a folder of spares: every shared file was
-    'identical to its shared copy' and moved to the backup folder, and the shared list lost
-    its lines. It must be skipped whole."""
-    home = make_sweep_home()
-    link = memory_folder(home, ALPHA)
-    made = False
-    try:
-        shared_dir = memory_folder(home, KEY)
-        top = plant_list(home, KEY, [index_entry("alpha-notes")], header_of(home))
-        note = plant(home, KEY, "alpha-notes.md", memory_text("alpha-notes", "body-SHARED"))
-        old_top, old_note = raw_bytes(top), raw_bytes(note)
-        os.makedirs(os.path.dirname(link))
-        r = subprocess.run(["cmd", "/c", "mklink", "/J", link, shared_dir],
-                           capture_output=True, text=True)
-        made = r.returncode == 0 and os.path.isdir(link)
-        if not made:
-            print("  SKIP  junction: mklink failed here (%s) - the hard-link test covers "
-                  "the samefile branch" % (r.stdout + r.stderr).strip())
-            return
-        p = run_sweep(home)
-        expect_clean(p, "sweep/junction")
-        check("sweep/junction: every shared file is still in the shared folder",
-              raw_bytes(note) == old_note, repr(raw_bytes(note)))
-        check("sweep/junction: the shared list is untouched", raw_bytes(top) == old_top,
-              repr(raw_bytes(top)))
-        check("sweep/junction: nothing was moved to a backup folder",
-              not sweep_backups(home, ALPHA, "alpha-notes.md"), str(
-                  sweep_backups(home, ALPHA, "alpha-notes.md")))
-        check("sweep/junction: and it said nothing", p.stdout == "", repr(p.stdout[:200]))
-    finally:
-        if made:
-            os.rmdir(link)       # removes the junction only, never the shared folder
-        shutil.rmtree(home, ignore_errors=True)
-
-
-def test_a_file_hard_linked_to_its_shared_copy_is_not_a_spare():
-    """M-b, the file-level half: a project file that IS the shared file (a hard link) is
-    not a spare copy of it, and must not be moved to the backup folder."""
-    home = make_sweep_home()
-    try:
-        plant_list(home, ALPHA, [index_entry("alpha-notes")], header_of(home))
-        shared = plant(home, KEY, "alpha-notes.md", memory_text("alpha-notes", "body-SHARED"))
-        src = os.path.join(memory_folder(home, ALPHA), "alpha-notes.md")
-        os.link(shared, src)
-        blob = raw_bytes(shared)
-        p = run_sweep(home)
-        expect_clean(p, "sweep/hardlink")
-        check("sweep/hardlink: the linked file stays in the project folder",
-              raw_bytes(src) == blob, repr(raw_bytes(src)))
-        check("sweep/hardlink: the shared file is untouched", raw_bytes(shared) == blob,
-              repr(raw_bytes(shared)))
-        check("sweep/hardlink: nothing went to a backup folder",
-              not sweep_backups(home, ALPHA, "alpha-notes.md"),
-              str(sweep_backups(home, ALPHA, "alpha-notes.md")))
-        check("sweep/hardlink: and it said nothing", p.stdout == "", repr(p.stdout[:200]))
-    finally:
-        shutil.rmtree(home, ignore_errors=True)
-
-
-def test_a_move_re_reads_its_source_before_removing_it():
-    """M-d. _move verified the copy against what it read, but removed the source without
-    looking again: a chat that saved into the source between the copy and the remove lost
-    that write. Now the source is compared once more, and a source that changed is left
-    where it is, next to the copy, and logged."""
-    home = make_sweep_home()
-    try:
-        plant_list(home, ALPHA, [index_entry("alpha-notes")], header_of(home))
-        src = plant(home, ALPHA, "alpha-notes.md", memory_text("alpha-notes", "body-ALPHA"))
-        old = raw_bytes(src)
-        late = b"\nsaved by another chat during the move\n"
-        dest = os.path.join(memory_folder(home, KEY), "alpha-notes.md")
-        code = ("real = guard._put_new\n"
-                "def put_new_then_another_chat_saves(dest, blob, mtime=None):\n"
-                "    real(dest, blob, mtime)\n"
-                "    with open(%r, 'ab') as f:\n"
-                "        f.write(%r)\n"
-                "guard._put_new = put_new_then_another_chat_saves\n"
-                "print(repr(guard.sweep_memory_strays()))\n") % (src, late)
-        p = guard_call(home, code)
-        check("move-race: the sweep ran cleanly", p.returncode == 0 and p.stdout.strip() == "''",
-              (p.stdout + p.stderr)[-300:])
-        check("move-race: the source is still there with the late write",
-              raw_bytes(src) == old + late, repr(raw_bytes(src)))
-        check("move-race: the copy is there too, whole", raw_bytes(dest) == old,
-              repr(raw_bytes(dest)))
-        log = guard_log(home)
-        check("move-race: it is logged", "alpha-notes.md" in log and "both copies" in log,
-              log[-400:])
-        check("move-race: it did not claim to have moved it",
-              "moved %s/alpha-notes.md home" % ALPHA not in log, log[-400:])
-    finally:
-        shutil.rmtree(home, ignore_errors=True)
-
-
-def test_an_already_backed_up_spare_is_re_read_before_it_is_removed():
-    """Case 2's skip branch (an identical backup already exists) removes the spare. A chat
-    that saved into it after it was read must not lose that write: the spare is compared
-    once more, and one that changed stays where it is, logged."""
-    home = make_sweep_home()
-    try:
-        plant(home, KEY, "alpha-notes.md", memory_text("alpha-notes", "body-ALPHA", "2026-09-20"))
-        src = plant(home, ALPHA, "alpha-notes.md",
-                    memory_text("alpha-notes", "body-ALPHA", "2026-09-01"))
-        old = raw_bytes(src)
-        bdir = os.path.join(home, ".claude", "memory-backups",
-                            datetime.date.today().isoformat() + "-sweep", ALPHA)
-        os.makedirs(bdir)
-        with open(os.path.join(bdir, "alpha-notes.md"), "wb") as f:
-            f.write(old)
-        late = b"\nsaved by another chat after the read\n"
-        code = ("real = guard._has_backup\n"
-                "def has_then_another_chat_saves(d, name, blob):\n"
-                "    r = real(d, name, blob)\n"
-                "    with open(%r, 'ab') as f:\n"
-                "        f.write(%r)\n"
-                "    return r\n"
-                "guard._has_backup = has_then_another_chat_saves\n"
-                "print(repr(guard.sweep_memory_strays()))\n") % (src, late)
-        p = guard_call(home, code)
-        check("spare-race: the sweep ran cleanly", p.returncode == 0 and p.stdout.strip() == "''",
-              (p.stdout + p.stderr)[-300:])
-        check("spare-race: the late write survives at the spare", raw_bytes(src) == old + late,
-              repr(raw_bytes(src)))
-        check("spare-race: it is logged", "alpha-notes.md" in guard_log(home)
-              and "changed" in guard_log(home), guard_log(home)[-400:])
-    finally:
-        shutil.rmtree(home, ignore_errors=True)
-
-
-def test_a_put_new_cleanup_that_fails_is_logged_and_the_original_error_raised():
-    """When the write fails AND removing the half file fails too, the half file is still
-    there: say so in the log, naming it, and raise the write's error, not the remove's."""
-    home = make_sweep_home()
-    try:
-        dest = os.path.join(memory_folder(home, KEY), "alpha-notes.md")
-        code = ("import os\n"
-                "real = open\n"
-                "class W:\n"
-                "    def __init__(s, f): s.f = f\n"
-                "    def __enter__(s): return s\n"
-                "    def __exit__(s, *a):\n"
-                "        s.f.close()\n"
-                "        return False\n"
-                "    def write(s, b):\n"
-                "        s.f.write(b[:5])\n"
-                "        raise OSError('injected disk full')\n"
-                "def fake(p, mode='r', *a, **k):\n"
-                "    f = real(p, mode, *a, **k)\n"
-                "    return W(f) if mode == 'xb' else f\n"
-                "guard.open = fake\n"
-                "def nope(path, *a, **k):\n"
-                "    raise PermissionError('injected cannot remove')\n"
-                "os.remove = nope\n"
-                "try:\n"
-                "    guard._put_new(%r, b'x' * 100)\n"
-                "except Exception as e:\n"
-                "    print('raised', type(e).__name__, e)\n" % dest)
-        p = guard_call(home, code)
-        check("put_new-cleanup: the ORIGINAL error propagates",
-              "raised OSError injected disk full" in p.stdout, (p.stdout + p.stderr)[-300:])
-        log = guard_log(home)
-        check("put_new-cleanup: the failed cleanup is logged, naming the file",
-              dest in log and "injected cannot remove" in log, log[-400:])
-    finally:
-        shutil.rmtree(home, ignore_errors=True)
-
-
-def test_case_4_gives_a_target_list_with_no_header_the_header():
-    """M-f. Case 4 appended a line into a settled target list as it was. A list that has no
-    header does not say where the shared files are, so the line would point at nothing:
-    the appended list gets the header too."""
-    home = make_sweep_home()
-    try:
-        plant(home, KEY, "beta-notes.md", memory_text("beta-notes", "body-BETA"))
-        line = "- [Beta, in his words](beta-notes.md) - the wording he chose"
-        top = plant(home, KEY, "MEMORY.md", "# Memory Index\n%s\n" % line)
-        blst = plant_list(home, BETA, [index_entry("beta-own")], "")
-        p = run_sweep(home)
-        expect_clean(p, "sweep/case4-header")
-        got = raw_bytes(blst).decode("utf-8")
-        check("sweep/case4-header: his line was appended", got.splitlines()[-1] == line,
-              repr(got[-200:]))
-        check("sweep/case4-header: and the list now names the shared folder",
-              memory_folder(home, KEY) in got, repr(got))
-        check("sweep/case4-header: the header sits above the first entry",
-              got.find(memory_folder(home, KEY)) < got.find("(beta-own.md)"), repr(got))
-        check("sweep/case4-header: the line left the shared list",
-              "(beta-notes.md)" not in raw_bytes(top).decode("utf-8"), repr(raw_bytes(top)))
-    finally:
-        shutil.rmtree(home, ignore_errors=True)
 
 
 # ---------------------------------------------------------------- update notice + --update
@@ -9330,8 +8421,6 @@ if __name__ == "__main__":
               test_the_note_template_names_the_log_it_is_written_from,
               test_the_label_fetch_names_the_shared_folder_and_the_project_list,
               test_bootstrap_writes_only_the_list_with_the_header,
-              test_the_header_goes_into_an_existing_list_once_and_keeps_its_endings,
-              test_a_list_that_changes_during_the_write_is_left_alone,
               test_the_first_warning_waits_for_225k,
               test_audit_states_the_same_first_warning_as_guard,
               test_weekly_one_call_written_as_several_lines_counts_once,
@@ -9349,32 +8438,8 @@ if __name__ == "__main__":
               test_report_session_list_hides_the_weekly_files,
               test_alert_adds_the_weekly_line_only_from_a_fresh_complete_summary,
               test_the_pickup_names_the_effort_the_note_asks_for,
-              test_the_sweep_moves_a_memory_with_no_shared_copy_home,
-              test_the_sweep_leaves_a_file_changed_in_the_last_ten_minutes,
-              test_the_sweep_skips_while_another_sweep_holds_the_lock,
-              test_the_sweep_has_an_off_switch,
-              test_a_sweep_with_nothing_to_do_prints_nothing,
-              test_the_sweep_gives_a_list_the_header_before_moving_out_of_it,
-              test_the_sweep_backs_up_a_spare_identical_to_its_shared_copy,
-              test_a_failure_between_copy_and_remove_loses_nothing,
-              test_two_different_copies_are_left_alone_and_reported_once,
-              test_bootstrap_and_the_sweep_print_one_json_object,
-              test_the_sweep_drops_a_shared_line_its_one_claimant_already_lists,
-              test_the_sweep_moves_a_shared_line_to_the_one_claimant_that_lacks_it,
-              test_the_sweep_leaves_a_slug_with_zero_or_two_claimants,
-              test_a_crlf_list_stays_crlf,
-              test_the_sweep_leaves_a_list_changed_in_the_last_ten_minutes,
-              test_one_unwritable_list_does_not_stop_the_sweep,
-              test_a_list_held_open_piles_up_no_backups_and_no_debris,
-              test_a_write_that_fails_midway_leaves_no_half_file_at_the_shared_path,
-              test_one_failing_folder_file_or_list_step_does_not_stop_the_rest_of_the_sweep,
-              test_a_spare_that_cannot_be_removed_piles_up_no_backups,
-              test_a_project_folder_that_is_a_junction_onto_the_shared_folder_is_left_alone,
-              test_a_file_hard_linked_to_its_shared_copy_is_not_a_spare,
-              test_a_move_re_reads_its_source_before_removing_it,
-              test_an_already_backed_up_spare_is_re_read_before_it_is_removed,
-              test_a_put_new_cleanup_that_fails_is_logged_and_the_original_error_raised,
-              test_case_4_gives_a_target_list_with_no_header_the_header,
+              test_bootstrap_leaves_stray_memories_where_they_are,
+              test_bootstrap_prints_one_json_object,
               test_a_consumed_pickup_adds_the_writer_to_the_pending_list,
               test_the_menu_adds_nothing_to_the_pending_list,
               test_a_second_pickup_of_the_same_title_is_not_a_duplicate,

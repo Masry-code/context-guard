@@ -1,5 +1,7 @@
 # Safeguard (c): One Home for Every Memory File - Implementation Plan
 
+> 2 Oct 2026: Tasks 11-16 cancelled - the sweep was deleted in batch C (2026-10-02-review-fixes-cleanup.md, Task 4).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Every memory topic file lives only in the shared folder, a project folder keeps just its `MEMORY.md` list, and a SessionStart sweep moves strays home without deleting anything.

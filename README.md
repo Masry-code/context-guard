@@ -92,13 +92,8 @@ memory folder yet is skipped in silence.
 
 **One home for every memory file.** Every memory file lives in the one shared folder
 your chats run in, and a project's own folder holds only its `MEMORY.md`, whose header
-line says where the files are — the label fetch says the same. At the start of every
-chat the SessionStart hook sweeps strays home: a memory saved into a project folder
-moves to the shared one, a spare copy identical to its shared copy moves to
-`~/.claude/memory-backups/`, and a shared index line that exactly one project claims
-moves to that project's list. Nothing is ever deleted, anything changed in the last ten
-minutes waits for the next chat, and it says nothing unless one memory has two different
-copies — then it tells you once and leaves both alone.
+line says where the files are — the label fetch says the same. Spare copies in project
+folders are left alone: nothing moves or deletes a memory file for you.
 
 ### Memory keywords
 
@@ -124,9 +119,9 @@ check.
 | `audit.py --alert` | SessionStart | flags sessions whose size × age make them expensive to resume, delivers a waiting handoff note, and once a day says when an update is ready |
 | `guard.py --size` | UserPromptSubmit | measures live context, warns at escalating levels, and at the top orders a full handoff note |
 | `guard.py --bash` | PreToolUse (Bash) | blocks heredocs, which mangle file content on Windows |
-| `guard.py --ledger` | Stop | appends your own words to a permanent ledger, and past the ceiling refuses to let the chat close. It writes no stub: stubs come from `--session-end` when a chat closes and from the `--bootstrap` sweep when one died without that hook |
+| `guard.py --ledger` | Stop | appends your own words to a permanent ledger, and past the ceiling refuses to let the chat close. It writes no stub: stubs come from `--session-end` when a chat closes and from `--bootstrap` when one died without that hook |
 | `guard.py --session-end` | SessionEnd | when a chat ends with no note of any kind, leaves the mechanical stub (skipped for a chat under 1.5 MB, or one that already has a note, a stub or a consumed `.used-*` note) |
-| `guard.py --bootstrap` | SessionStart | sweeps stray memory files home, gives a project directory its own memory list the first time a chat opens there, and stubs other chats of the project that died without SessionEnd (idle 6 to 48 hours) |
+| `guard.py --bootstrap` | SessionStart | gives a project directory its own memory list the first time a chat opens there, and stubs other chats of the project that died without SessionEnd (idle 6 to 48 hours) |
 
 Three ideas do the real work.
 
@@ -266,7 +261,7 @@ chat ends.
 | `guard.py --report` | yes — prints what it knows, writes nothing |
 | `guard.py --checkpoint <session-id> "<text>"` | yes — records a milestone |
 | `guard.py --recall <words>` | yes — searches every memory by keyword, writes nothing |
-| `guard.py --size` / `--ledger` / `--bootstrap`, `audit.py --alert` | **no** — hook entry points with side effects, including consuming a handoff note and moving memory files |
+| `guard.py --size` / `--ledger` / `--bootstrap`, `audit.py --alert` | **no** — hook entry points with side effects, including consuming a handoff note |
 | `guard.py --session-end` | **no** — hook entry point: reads the SessionEnd payload on stdin and writes a stub note for the chat that just ended |
 
 ### Turning bits off
@@ -277,7 +272,6 @@ Create an empty file in `~/.claude/context-guard/`:
 * `no-memory-nag` — stop it checking that memories were written
 * `no-note-head-check` — stop it sending back a handoff note whose head lacks the numbered label, writer or effort line
 * `no-heredoc-guard` — allow heredocs again (or put `# heredoc-ok` in a single command)
-* `no-memory-sweep` — stop the SessionStart sweep moving memory files and index lines
 * `no-update-check` — stop the once-a-day look for a newer version
 * `no-memory-hints` — stop the one-line hint about another project's matching memory
 * `no-keywords-check` — stop it sending back a memory saved without a `keywords:` line
