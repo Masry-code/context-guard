@@ -8181,6 +8181,26 @@ def test_a_real_label_pickup_keeps_its_list_out_of_the_hints():
         rm_tree(home)
 
 
+def test_report_lists_only_real_sessions_not_the_other_state_files():
+    """Review row 12: memory-catalogue, memory-manifest and update-check are dicts in STATE
+    but are not chat sessions, and --report listed them under 'sessions being tracked'."""
+    home = make_home({})
+    try:
+        st = os.path.join(home, ".claude", "context-guard")
+        os.makedirs(st, exist_ok=True)
+        sid = "0a1b2c3d-1111-2222-3333-444455556666"
+        for name in (sid, "memory-catalogue", "memory-manifest", "update-check"):
+            with open(os.path.join(st, name + ".json"), "w", encoding="utf-8") as f:
+                json.dump({"warned_ctx": 120000, "reads": {}}, f)
+        out = run_report(home).stdout
+        part = out.split("-- sessions being tracked --")[-1].split("-- request ledgers")[0]
+        check("report-sessions: the real session is listed", sid in part, repr(part))
+        for other in ("memory-catalogue", "memory-manifest", "update-check"):
+            check("report-sessions: %s is not listed" % other, other not in part, repr(part))
+    finally:
+        rm_tree(home)
+
+
 def test_a_stop_over_a_string_message_record_does_not_crash():
     """Second review fix 13: a transcript record whose message is a plain string."""
     home = kw_home({})
@@ -8499,7 +8519,8 @@ if __name__ == "__main__":
               test_the_written_memories_scan_is_incremental,
               test_odd_state_and_short_arabic_words_are_safe,
               test_a_real_label_pickup_keeps_its_list_out_of_the_hints,
-              test_a_stop_over_a_string_message_record_does_not_crash):
+              test_a_stop_over_a_string_message_record_does_not_crash,
+              test_report_lists_only_real_sessions_not_the_other_state_files):
         print(t.__name__)
         t()
     print()

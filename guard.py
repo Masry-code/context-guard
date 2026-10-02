@@ -4490,6 +4490,14 @@ def _bootstrap_list(d):
     return "\n".join(out)
 
 
+# STATE/*.json files that are NOT a chat session. A session id is whatever the host hands
+# in (state_path keeps the first 40 characters of it, any characters), so there is no
+# shape to match: the list of what else lives in STATE is the reliable side.
+NOT_A_SESSION_STATE = frozenset((
+    "memory-catalogue", "memory-manifest", "update-check", "pending-archive",
+    "ordering-probe", "sweep-seen"))
+
+
 def cmd_report():
     """Human-readable: what the guards have actually been doing. Run by hand.
 
@@ -4525,6 +4533,8 @@ def cmd_report():
 
     print(chr(10) + "-- sessions being tracked --")
     for p in sorted(glob.glob(os.path.join(STATE, "*.json"))):
+        if os.path.basename(p)[:-5] in NOT_A_SESSION_STATE:
+            continue                  # guard bookkeeping that lives beside the sessions
         try:
             with open(p) as f:
                 st = json.load(f)
