@@ -4139,10 +4139,13 @@ def score_memories(text, catalogue, exclude=(), strict=True):
     """[(score, mtime, entry, hits)], best first. score = distinct keywords whose words all
     appear in `text`, in order. strict (the prompt hook) asks for two, or one RARE keyword of
     3+ characters, and always two when the keywords are derived; loose (--recall, which the
-    chat asked for on purpose) takes one."""
+    chat asked for on purpose) takes one, and also counts a weak hit: a query word of 3+
+    characters (not a stopword) that equals a word inside a keyword phrase. Rank is
+    (phrase hits, weak hits, mtime)."""
     words = _words(text)
     if not words:
         return []
+    query = {w for w in words if len(w) >= 3 and w not in KW_STOP}
     carried = {}
     for e in catalogue:
         if not e.get("derived"):
@@ -4152,17 +4155,22 @@ def score_memories(text, catalogue, exclude=(), strict=True):
     for e in catalogue:
         if e.get("slug") in exclude:
             continue
-        hits = [k for k in dict.fromkeys(e.get("keywords") or [])
-                if _has_phrase(words, _words(k))]
-        if not hits:
+        kws = list(dict.fromkeys(e.get("keywords") or []))
+        hits = [k for k in kws if _has_phrase(words, _words(k))]
+        weak = 0
+        if not strict:
+            inside = {w for k in kws if k not in hits for w in _words(k)}
+            weak = len(query & inside)
+        if not hits and not weak:
             continue
         if strict and len(hits) < 2:
             if e.get("derived"):
                 continue
             if not any(carried.get(k, 0) <= RARE_MAX and len(k) >= 3 for k in hits):
                 continue
-        out.append((len(hits), e.get("mtime") or 0, e, hits))
-    out.sort(key=lambda t: (-t[0], -t[1]))
+        out.append((len(hits), weak, e.get("mtime") or 0, e, hits))
+    out.sort(key=lambda t: (-t[0], -t[1], -t[2]))
+    out = [(a, m, e, h) for a, _w, m, e, h in out]
     return out
 
 

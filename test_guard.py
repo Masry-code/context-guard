@@ -7726,8 +7726,8 @@ def test_the_scorer_asks_for_two_keywords_or_one_rare_one():
               scored(home, "can adb see the device") == ["adb-setup"])
         check("kw-score: two keywords qualify",
               scored(home, "android phone and the emulator crashed") == ["emulator-notes"])
-        check("kw-score: a phrase needs its words in order",
-              scored(home, "phone android is slow", strict=False) == [])
+        check("kw-score: word order matters for the prompt hook (strict)",
+              scored(home, "phone android is slow", strict=True) == [])
         check("kw-score: a derived keyword alone is not enough",
               scored(home, "telegram is down again") == [])
         check("kw-score: two derived keywords qualify",
@@ -8219,6 +8219,42 @@ def test_a_stop_over_a_string_message_record_does_not_crash():
         rm_tree(home)
 
 
+def test_recall_finds_a_memory_from_one_word_of_a_phrase_keyword():
+    """Plan batch A task 2: loose mode counts a 3+ character query word that sits inside a
+    keyword phrase as a weak hit; a whole-phrase hit still ranks first; strict is unchanged."""
+    mems = {
+        (KEY, "adb-fails"): mem_text("adb-fails", "d", ["adb install fails", "usb cable"]),
+        (KEY, "adb-bare"): mem_text("adb-bare", "d", ["adb", "logcat"]),
+        (KEY, "red-bar"): mem_text("red-bar", "d", ["red usage credits bar", "billing"]),
+        (KEY, "state-art"): mem_text("state-art", "d", ["state of the art", "qa checks"]),
+    }
+    home = kw_home(mems)
+    try:
+        d = os.path.join(home, ".claude", "projects", KEY, "memory")
+        os.utime(os.path.join(d, "adb-bare.md"), (1000000000, 1000000000))   # OLDER than adb-fails
+        p = run_recall(home, "adb")
+        expect_clean(p, "kw-weak")
+        heads = [l.split(" (")[0] for l in p.stdout.splitlines() if l and not l.startswith(" ")]
+        check("kw-weak: one word of a phrase keyword finds it", "adb-fails" in " ".join(heads)
+              or any("adb-fails.md" in l for l in p.stdout.splitlines()), p.stdout[:300])
+        order = [l for l in p.stdout.splitlines() if l and not l.startswith(" ")]
+        check("kw-weak: a whole-phrase hit ranks above a one-word hit",
+              len(order) == 2 and "adb-bare.md" in order[0] and "adb-fails.md" in order[1],
+              p.stdout[:300])
+        q = run_recall(home, "red", "usage", "bar")
+        check("kw-weak: red usage bar finds red usage credits bar", "red-bar.md" in q.stdout,
+              q.stdout[:300])
+        for words in (("the", "a", "of"), ("qa",), ("of",)):
+            r = run_recall(home, *words)
+            check("kw-weak: %r finds nothing" % (words,),
+                  r.stdout.strip() == "No memory matches: " + " ".join(words), r.stdout[:300])
+        check("kw-weak: strict mode still gives no hint for one word of a phrase",
+              scored(home, "why does adb break on my phone today") == ["adb-bare"]
+              and scored(home, "the red thing is here today") == [])
+    finally:
+        rm_tree(home)
+
+
 def test_a_cross_session_message_gets_no_hint():
     """Review fix 7: hints are for HIS typing - not a hand-back or a relayed message."""
     home = kw_home(HINT_MEMS, lists=HINT_LISTS, manifest=KW_MANIFEST)
@@ -8520,7 +8556,8 @@ if __name__ == "__main__":
               test_odd_state_and_short_arabic_words_are_safe,
               test_a_real_label_pickup_keeps_its_list_out_of_the_hints,
               test_a_stop_over_a_string_message_record_does_not_crash,
-              test_report_lists_only_real_sessions_not_the_other_state_files):
+              test_report_lists_only_real_sessions_not_the_other_state_files,
+              test_recall_finds_a_memory_from_one_word_of_a_phrase_keyword):
         print(t.__name__)
         t()
     print()
