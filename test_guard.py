@@ -415,7 +415,7 @@ def test_handoff_instruction_demands_memory_consolidation():
     a new one."""
     home = make_home({})
     try:
-        write_transcript(home, "bigchat", 200_000)
+        write_transcript(home, "bigchat", 240_000)
         p = run(home, "bigchat", "carry on")
         ctx = context_of(p)
         expect_clean(p, "memory-step")
@@ -909,7 +909,7 @@ def test_handoff_offers_the_skill_candidates():
     try:
         write_tooluse(home, "chatA", ["python test_guard.py"] * 2)
         write_tooluse(home, "chatB", ["python test_guard.py"] * 2)
-        write_transcript(home, "bigchat", 200_000)
+        write_transcript(home, "bigchat", 240_000)
         p = run(home, "bigchat", "carry on")
         ctx = whole_context(home, p)
         expect_clean(p, "skills-handoff")
@@ -927,7 +927,7 @@ def test_handoff_stays_quiet_when_nothing_is_repeated():
     him to stop reading the end of the warning."""
     home = make_home({})
     try:
-        write_transcript(home, "bigchat", 200_000)
+        write_transcript(home, "bigchat", 240_000)
         ctx = context_of(run(home, "bigchat", "carry on"))
         check("skills-quiet: the warning still fired", "THIS CHAT IS NOW" in ctx, repr(ctx[:160]))
         check("skills-quiet: but proposed nothing", "SKILL CANDIDATES" not in ctx,
@@ -1031,7 +1031,7 @@ def test_handoff_label_gets_the_next_number():
             "HANDOFF LABEL: Harbor -7 (17 Sep)\n\n# Handoff\n\nspot\n",
     })
     try:
-        write_transcript(home, "numchat", 200_000)
+        write_transcript(home, "numchat", 240_000)
         p = run(home, "numchat", "carry on")
         ctx = context_of(p)
         expect_clean(p, "label-number")
@@ -1064,7 +1064,7 @@ def test_a_brand_new_thread_starts_at_one():
     first note of a thread."""
     home = make_home({})
     try:
-        write_transcript(home, "freshthread", 200_000)
+        write_transcript(home, "freshthread", 240_000)
         p = run(home, "freshthread", "carry on")
         ctx = context_of(p)
         expect_clean(p, "first-number")
@@ -1220,7 +1220,7 @@ def test_the_warning_says_when_no_checkpoint_was_ever_recorded():
     them its own test files. If nothing is recorded, say so and hand over the exact command."""
     home = make_home({})
     try:
-        write_transcript(home, "nocp", 200_000)
+        write_transcript(home, "nocp", 240_000)
         p = run(home, "nocp", "carry on")
         ctx = context_of(p)
         expect_clean(p, "no-checkpoint")
@@ -1370,15 +1370,15 @@ def test_a_paused_chat_is_not_told_to_hand_off():
     home = make_home({})
     try:
         started = time.time() - 3600
-        write_big_chat(home, "pausedchat", started, 200_000)
-        write_big_chat(home, "otherchat", started, 200_000)
+        write_big_chat(home, "pausedchat", started, 240_000)
+        write_big_chat(home, "otherchat", started, 240_000)
         p = run_pause(home, "pausedchat", "reading", "the", "books")
         expect_clean(p, "pause")
         check("pause: says it paused", "paused" in (p.stdout or ""), repr(p.stdout[:200]))
         quiet = run(home, "pausedchat", "next book please")
         loud = run(home, "otherchat", "next book please")
         expect_clean(quiet, "pause-size")
-        check("pause: the paused chat hears nothing at 200k", (quiet.stdout or "").strip() == "",
+        check("pause: the paused chat hears nothing at 240k", (quiet.stdout or "").strip() == "",
               repr((quiet.stdout or "")[:200]))
         check("pause: its sibling is still told to hand off",
               "STOP - THIS CHAT" in context_of(loud), repr(context_of(loud)[:200]))
@@ -1422,7 +1422,7 @@ def test_a_paused_chat_still_gets_the_memory_nag():
 def test_resume_brings_the_warning_back_and_a_typo_pauses_nothing():
     home = make_home({})
     try:
-        write_big_chat(home, "resumed", time.time() - 3600, 200_000)
+        write_big_chat(home, "resumed", time.time() - 3600, 240_000)
         run_pause(home, "resumed", "reading")
         r = run_pause(home, "resumed", resume=True)
         expect_clean(r, "resume")
@@ -1706,11 +1706,11 @@ def test_a_trailing_zero_usage_record_does_not_read_as_an_empty_chat():
     freshness gate. One all-zero trailing record silenced the lot."""
     home = make_home({})
     try:
-        write_zero_tail_chat(home, "zerotail", time.time() - 3600, 200_000)
+        write_zero_tail_chat(home, "zerotail", time.time() - 3600, 240_000)
         p = run(home, "zerotail", "carry on")
         expect_clean(p, "zero-tail")
         ctx = context_of(p)
-        check("zero-tail: still warned about a 200k chat", "200k" in ctx, repr(ctx[:200]))
+        check("zero-tail: still warned about a 240k chat", "240k" in ctx, repr(ctx[:200]))
     finally:
         shutil.rmtree(home, ignore_errors=True)
 
@@ -2139,7 +2139,7 @@ def test_bash_output_files_are_not_reported_as_background_jobs():
     tmp = throwaway_dir("guardtemp-")
     try:
         sid = "jobschat"
-        write_transcript(home, sid, 200_000)
+        write_transcript(home, sid, 240_000)
         d = os.path.join(tmp, "claude", "D--Claude", sid, "tasks")
         os.makedirs(d)
         for n in ("bpfx450ba.output", "bzli9m01q.output"):
@@ -2952,7 +2952,7 @@ def test_a_compaction_re_arms_the_warning_even_far_above_the_floor():
     now resembles". 290007 -> 203980 are his real numbers."""
     home = make_home({})
     try:
-        write_big_chat(home, "compctl", time.time() - 3600, 203_980)
+        write_big_chat(home, "compctl", time.time() - 3600, 243_980)
         c = run(home, "compctl", "carry on")
         expect_clean(c, "compaction-rearm/control")
         control = sysmsg(c)
@@ -2963,7 +2963,7 @@ def test_a_compaction_re_arms_the_warning_even_far_above_the_floor():
 
     home = make_home({})
     try:
-        write_big_chat(home, "compacted", time.time() - 3600, 203_980)
+        write_big_chat(home, "compacted", time.time() - 3600, 243_980)
         seed_state(home, "compacted", warned_ctx=290_007)
         p = run(home, "compacted", "carry on")
         expect_clean(p, "compaction-rearm")
@@ -3195,10 +3195,10 @@ def test_a_chat_is_told_to_write_its_note_long_before_the_ceiling():
     130k is where chat "Context Guard -10" actually died, just under the then-150k first
     tier, which is why nobody was ever asked for a note. The first tier moved to 200k on
     26 Sep 2026, his decision, so this test now pins "asked well under the ceiling"
-    instead - 210k, 90k clear of the 300k cap."""
+    instead - 240k, 80k clear of the 320k cap."""
     home = make_home({})
     try:
-        write_big_chat(home, "earlyaaa", time.time() - 3600, 210_000)
+        write_big_chat(home, "earlyaaa", time.time() - 3600, 240_000)
         p = run(home, "earlyaaa", "carry on with the build")
         expect_clean(p, "early-note")
         ctx = context_of(p)
@@ -3226,12 +3226,13 @@ def test_a_small_chat_is_not_asked_for_a_note():
         shutil.rmtree(home, ignore_errors=True)
 
 
-def test_the_first_warning_waits_for_200k():
-    """The first tier moved from 100k to 200k on 26 Sep 2026, his decision (see the LEVELS
-    comment) - so a chat sitting at 150k or 190k, which the OLD floor would already have
-    warned, must now stay silent. A 205k chat crosses the NEW floor and must still be asked,
-    by the tier's own name, for a handoff note. The three untouched budgets are pinned here
-    too, so a later edit to LEVELS[0] cannot silently drag them along with it."""
+def test_the_first_warning_waits_for_225k():
+    """The first tier moved from 100k to 200k on 26 Sep 2026 and from 200k to 225k on
+    2 Oct 2026, his decision (see the LEVELS comment) - so a chat sitting at 150k or 215k,
+    which the OLD floor would already have warned, must now stay silent. A 230k chat crosses
+    the NEW floor and must still be asked, by the tier's own name, for a handoff note. The
+    other budgets are pinned here too, so a later edit to LEVELS[0] cannot silently drag
+    them along with it."""
     home = make_home({})
     try:
         write_big_chat(home, "midtier1", time.time() - 3600, 150_000)
@@ -3245,34 +3246,63 @@ def test_the_first_warning_waits_for_200k():
 
     home = make_home({})
     try:
-        write_big_chat(home, "midtier2", time.time() - 3600, 190_000)
+        write_big_chat(home, "midtier2", time.time() - 3600, 215_000)
         p = run(home, "midtier2", "carry on with the build")
-        expect_clean(p, "first-warning/190k")
+        expect_clean(p, "first-warning/215k")
         ctx = context_of(p)
-        check("first-warning: a 190k chat is not warned either",
+        check("first-warning: a 215k chat is not warned either",
               "handoff note" not in ctx.lower(), repr(ctx[:300]))
     finally:
         shutil.rmtree(home, ignore_errors=True)
 
     home = make_home({})
     try:
-        write_big_chat(home, "midtier3", time.time() - 3600, 205_000)
+        write_big_chat(home, "midtier3", time.time() - 3600, 230_000)
         p = run(home, "midtier3", "carry on with the build")
-        expect_clean(p, "first-warning/205k")
+        expect_clean(p, "first-warning/230k")
         ctx = context_of(p)
-        check("first-warning: a 205k chat IS asked for a handoff note",
+        check("first-warning: a 230k chat IS asked for a handoff note",
               "handoff note" in ctx.lower(), repr(ctx[:300]))
         check("first-warning: and named as GETTING EXPENSIVE",
               "GETTING EXPENSIVE" in ctx, repr(ctx[:300]))
     finally:
         shutil.rmtree(home, ignore_errors=True)
 
-    check("first-warning: the ceiling is unchanged",
-          guard_constant("CEILING_CAP") == 300_000, str(guard_constant("CEILING_CAP")))
+    home = make_home({})
+    try:
+        p = guard_call(home, "print(guard.LEVELS)")
+        check("first-warning: the three tiers are 225k / 260k / 290k, same names",
+              p.stdout.strip() == "[(225000, 'getting expensive'), (260000, 'expensive'), "
+                                  "(290000, 'very expensive')]", repr(p.stdout[:200] + p.stderr[-200:]))
+        check("first-warning: the top tier sits below the ceiling",
+              guard_constant("CEILING_CAP") > 290_000, str(guard_constant("CEILING_CAP")))
+        write_settings(home, 420_000)
+        p = guard_call(home, "print(guard._ceiling())")
+        check("first-warning: a 420k window gives a 320k ceiling",
+              p.stdout.strip() == "320000", repr(p.stdout[:100] + p.stderr[-200:]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+    check("first-warning: the ceiling cap is 320k",
+          guard_constant("CEILING_CAP") == 320_000, str(guard_constant("CEILING_CAP")))
     check("first-warning: the rewarn step is unchanged",
           guard_constant("REWARN_STEP") == 40_000, str(guard_constant("REWARN_STEP")))
     check("first-warning: the freshness gate is unchanged",
           guard_constant("FRESH_CTX") == 120_000, str(guard_constant("FRESH_CTX")))
+
+
+def test_audit_states_the_same_first_warning_as_guard():
+    """audit.py tells the model its standing rules in prose. That number was typed by hand
+    and drifted from LEVELS once; pin the two together."""
+    home = make_home({})
+    try:
+        p = guard_call(home, "print(guard.LEVELS[0][0])")
+        first = int(p.stdout.strip())
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+    with open(os.path.join(os.path.dirname(GUARD), "audit.py"), encoding="utf-8") as f:
+        src = f.read()
+    check("audit-rule: audit.py says the same first-warning number as LEVELS",
+          ("warn past ~%dk context" % (first // 1000)) in src, str(first))
 
 
 PICKUP_PLAIN = "Picked up the handoff note from your last chat."
@@ -3318,7 +3348,7 @@ def test_the_pickup_names_the_effort_the_note_asks_for():
         with open(tmpl, encoding="utf-8") as f:
             check("effort: the note template carries the NEXT CHAT EFFORT line",
                   "NEXT CHAT EFFORT:" in f.read(), tmpl)
-        write_transcript(home, "effort002", 200_000)
+        write_transcript(home, "effort002", 240_000)
         p = run(home, "effort002", "carry on")
         expect_clean(p, "effort/instruction")
         ctx = context_of(p)
@@ -3752,7 +3782,7 @@ def test_the_plain_200k_handoff_warning_is_emitted_whole():
     characters of its own warning."""
     home = make_home({})
     try:
-        write_transcript(home, "whole001", 200_000)
+        write_transcript(home, "whole001", 240_000)
         p = run(home, "whole001", "carry on")
         expect_clean(p, "whole-warning")
         ctx = context_of(p)
@@ -4036,7 +4066,7 @@ def test_the_note_instruction_asks_for_the_writer_line():
     note ever written - green tests about a feature that can never fire."""
     home = make_home({})
     try:
-        write_transcript(home, "arch0004", 200_000)
+        write_transcript(home, "arch0004", 240_000)
         p = run(home, "arch0004", "carry on")
         ctx = context_of(p)
         expect_clean(p, "note-instruction")
@@ -9075,7 +9105,8 @@ if __name__ == "__main__":
               test_bootstrap_writes_only_the_list_with_the_header,
               test_the_header_goes_into_an_existing_list_once_and_keeps_its_endings,
               test_a_list_that_changes_during_the_write_is_left_alone,
-              test_the_first_warning_waits_for_200k,
+              test_the_first_warning_waits_for_225k,
+              test_audit_states_the_same_first_warning_as_guard,
               test_the_pickup_names_the_effort_the_note_asks_for,
               test_the_sweep_moves_a_memory_with_no_shared_copy_home,
               test_the_sweep_leaves_a_file_changed_in_the_last_ten_minutes,

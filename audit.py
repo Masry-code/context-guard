@@ -312,7 +312,7 @@ def alert():
         # 2026, into the context-guard folder beside guard.py). It is also the last
         # "D:/..." in the alert, which is what made the alert Windows-only.
         '  python "' + os.path.abspath(__file__).replace("\\", "/") + '" --deep\n'
-        "Standing rules: warn past ~200k context, read any image exactly once, "
+        "Standing rules: warn past ~225k context, read any image exactly once, "
         "one session per task."
     )
     full = ((hand + chr(10) + chr(10) + "") if hand else "") + ctx

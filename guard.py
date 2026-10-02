@@ -15,20 +15,25 @@ LOG = os.path.join(HOME, ".claude", "context-audit.log")
 # Context thresholds in tokens. Measured 2026-09-11: a turn at 316k costs about
 # 4x the same turn at 73k, and total cost is (context size) x (turn count).
 LEVELS = [
+    # 225k decided 2 Oct 2026 (his "c", chat -50): first warning 225k, ceiling 320k, auto-compact
+    # window 420k. Measured over 129 real chats (27,902 calls): a new chat starts at ~72k and
+    # grows ~1.9k per call, and once handover overhead is counted the cheapest first-warning
+    # point sits around 200-225k. The tiers move down under the 320k ceiling (a last resort,
+    # not another warning); REWARN_STEP is unchanged.
     # 200k decided 26 Sep 2026 (his "a", chat "Context Guard -40"). At 100k every
     # picked-up chat was told to hand off on its SECOND reply: the pickup alone lands
     # near 100k, and the warning fired at ~153k, ~146k and ~135k in chats -38, -39 and
     # -40, so each chat built one task of a sixteen-task plan. His auto-compact sits at
-    # 93% of a 450k window. REWARN_STEP and CEILING_CAP are unchanged. The price, taken
+    # 93% of a 450k window (420k from 2 Oct 2026). REWARN_STEP and CEILING_CAP are unchanged. The price, taken
     # knowingly: a chat that ends between 100k and 200k is no longer asked for a note,
     # and the SessionEnd hook's write_stub() (or the next SessionStart's sweep) is its floor.
     # 100k was measured 19 Sep 2026. Chat "Context Guard -10" ran 19 hours, peaked at
     # 132k and so sat UNDER the then-150k tier for its whole life - it was never once
     # asked for a handoff note, and the thread became unresumable. A tier nothing
     # reaches is not a tier.
-    (200_000, "getting expensive"),
-    (250_000, "expensive"),
-    (320_000, "very expensive"),
+    (225_000, "getting expensive"),
+    (260_000, "expensive"),
+    (290_000, "very expensive"),
 ]
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
 FREE_REREADS = 2   # allow this many identical reads (covers a post-compaction re-read)
@@ -127,7 +132,7 @@ NAG_MAX = 2
 # six days. Compaction then drops the meter back to ~30k, so a chat that slips past is
 # never caught at all. Derive it from his own settings so a window change cannot strand
 # it above the roof a second time; CEILING_CAP keeps it a last resort on a big window.
-CEILING_CAP = 300_000       # never higher than this, however large the window
+CEILING_CAP = 320_000       # never higher than this, however large the window
 CEILING_HEADROOM = 18_000   # room to actually write the note before compaction hits
 
 
