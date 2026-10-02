@@ -264,7 +264,6 @@ chat ends.
 | command | safe by hand? |
 |---|---|
 | `guard.py --report` | yes — prints what it knows, writes nothing |
-| `guard.py --skills` | yes — counts repeated command patterns |
 | `guard.py --checkpoint <session-id> "<text>"` | yes — records a milestone |
 | `guard.py --recall <words>` | yes — searches every memory by keyword, writes nothing |
 | `guard.py --size` / `--ledger` / `--bootstrap`, `audit.py --alert` | **no** — hook entry points with side effects, including consuming a handoff note and moving memory files |

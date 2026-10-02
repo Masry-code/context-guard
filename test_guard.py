@@ -828,10 +828,16 @@ def write_tooluse(home, sid, commands):
     return p
 
 
-def run_skills(home, key=KEY):
-    env = child_env(home)
-    return subprocess.run([sys.executable, GUARD, "--skills", key],
-                          capture_output=True, text=True, env=env)
+def skill_shapes(home, key=KEY):
+    """The shapes the skill-candidate scan puts forward for a project folder, straight from
+    the engine (the by-hand --skills command is gone)."""
+    p = guard_call(home, "print(guard.json.dumps(guard.skill_candidates(%r)[0]))"
+                   % os.path.join(home, ".claude", "projects", key, "x.jsonl"))
+    try:
+        rows = json.loads(p.stdout.strip().splitlines()[-1])
+    except Exception:
+        return None, p
+    return [r[3] for r in rows], p
 
 
 def snapshot(home):
@@ -858,13 +864,13 @@ def test_skills_proposes_a_shape_repeated_across_chats():
                                       "python D:/Claude/context-guard/test_guard.py"])
         write_tooluse(home, "chatB", ['cd "D:/Claude" && python test_guard.py',
                                       "python test_guard.py"])
-        p = run_skills(home)
-        out = p.stdout or ""
-        check("skills: exited 0", p.returncode == 0, (p.stderr or "")[:300])
-        check("skills: proposed the repeated shape", "python test_guard.py" in out, repr(out[:500]))
-        check("skills: counted it across both chats", "2 chats" in out, repr(out[:500]))
-        check("skills: says out loud that it only proposes",
-              "never creates a skill" in out, repr(out[:500]))
+        got, p = skill_shapes(home)
+        check("skills: the engine ran", got is not None, (p.stderr or p.stdout or "")[:300])
+        check("skills: proposed the repeated shape", "python test_guard.py" in (got or []), str(got))
+        p = guard_call(home, "print(guard.json.dumps(guard.skill_candidates(%r)[0]))"
+                       % os.path.join(home, ".claude", "projects", KEY, "x.jsonl"))
+        row = json.loads(p.stdout.strip().splitlines()[-1])[0]
+        check("skills: counted it across both chats", row[2] == 2, str(row))
     finally:
         shutil.rmtree(home, ignore_errors=True)
 
@@ -875,28 +881,31 @@ def test_skills_ignores_a_shape_repeated_inside_one_chat():
     home = make_home({})
     try:
         write_tooluse(home, "chatA", ["git status"] * 6)
-        p = run_skills(home)
-        out = p.stdout or ""
-        check("skills-noise: exited 0", p.returncode == 0, (p.stderr or "")[:300])
+        got, p = skill_shapes(home)
+        check("skills-noise: the engine ran", got is not None, (p.stderr or p.stdout or "")[:300])
         check("skills-noise: did not propose a one-chat repeat",
-              "git status" not in out, repr(out[:500]))
+              "git status" not in (got or []), str(got))
     finally:
         shutil.rmtree(home, ignore_errors=True)
 
 
-def test_skills_writes_nothing_at_all():
-    """PROPOSE ONLY. He confirmed it in his own words - "propose-only for skills" - and the
-    handoff note says not to reopen it. A scan that can write is a different feature."""
+def test_skills_command_is_gone_and_writes_nothing():
+    """The by-hand --skills command was deleted (the handoff warning still carries the
+    candidates). Asking for it now does nothing at all: exit 0, no output, nothing written.
+    PROPOSE ONLY stays true - "propose-only for skills", 17 Sep 2026."""
     home = make_home({})
     try:
         write_tooluse(home, "chatA", ["python test_guard.py"] * 2)
         write_tooluse(home, "chatB", ["python test_guard.py"] * 2)
         before = snapshot(home)
-        run_skills(home)
+        p = subprocess.run([sys.executable, GUARD, "--skills", KEY], capture_output=True,
+                           text=True, env=child_env(home))
         after = snapshot(home)
-        check("skills: created nothing", sorted(after) == sorted(before),
+        check("skills-gone: exits 0", p.returncode == 0, (p.stderr or "")[:300])
+        check("skills-gone: prints nothing", not (p.stdout or "").strip(), repr(p.stdout[:300]))
+        check("skills-gone: created nothing", sorted(after) == sorted(before),
               str(sorted(set(after) - set(before))[:5]))
-        check("skills: changed nothing", after == before,
+        check("skills-gone: changed nothing", after == before,
               str([k for k in before if after.get(k) != before[k]][:5]))
     finally:
         shutil.rmtree(home, ignore_errors=True)
@@ -936,16 +945,6 @@ def test_handoff_stays_quiet_when_nothing_is_repeated():
         shutil.rmtree(home, ignore_errors=True)
 
 
-def proposed(proc):
-    """Just the shapes a --skills run actually put forward."""
-    out = []
-    for l in (proc.stdout or "").splitlines():
-        if " runs across " not in l:
-            continue
-        out.append(l.split(" runs across ")[0].rsplit(None, 1)[0].strip())
-    return out
-
-
 # These are real commands, copied from his own transcripts on 17 Sep 2026. The first scan
 # over 12 of them proposed "python" (122 runs), "grep" (23), "cat" (17), "ls" (10), "echo" (7)
 # and "sam" (23) - and "sam" is not a command at all, it is the front half of
@@ -973,9 +972,9 @@ def test_skills_does_not_propose_the_shapes_it_actually_found():
         # the shape function - which is exactly how this test passed on its first run.
         write_tooluse(home, "chatA", REAL_NOISE * 3)
         write_tooluse(home, "chatB", REAL_NOISE * 3)
-        p = run_skills(home)
-        got = proposed(p)
-        check("skills-real: exited 0", p.returncode == 0, (p.stderr or "")[:300])
+        got, p = skill_shapes(home)
+        check("skills-real: the engine ran", got is not None, (p.stderr or p.stdout or "")[:300])
+        got = got or []
         for bad in ("python", "grep", "cat", "ls", "echo", "sam"):
             check("skills-real: did not propose bare " + repr(bad), bad not in got, str(got))
         # and not with an argument bolted on either - the first run also produced
@@ -994,7 +993,7 @@ def test_skills_still_proposes_a_script_run_by_path():
     try:
         write_tooluse(home, "chatA", ["./scripts/deploy.sh --prod"] * 2)
         write_tooluse(home, "chatB", ["./scripts/deploy.sh --prod"])
-        got = proposed(run_skills(home))
+        got = skill_shapes(home)[0] or []
         check("skills-script: proposed the repeated script", "deploy.sh" in got, str(got))
     finally:
         shutil.rmtree(home, ignore_errors=True)
@@ -9222,7 +9221,7 @@ if __name__ == "__main__":
               test_the_ceiling_does_not_block_a_stop_it_already_blocked,
               test_skills_proposes_a_shape_repeated_across_chats,
               test_skills_ignores_a_shape_repeated_inside_one_chat,
-              test_skills_writes_nothing_at_all,
+              test_skills_command_is_gone_and_writes_nothing,
               test_handoff_offers_the_skill_candidates,
               test_handoff_stays_quiet_when_nothing_is_repeated,
               test_skills_does_not_propose_the_shapes_it_actually_found,

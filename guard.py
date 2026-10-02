@@ -176,7 +176,7 @@ AWAY_OFF = ("back", "im back", "i m back", "afk off", "away off", "afk done",
 # still records his words and still writes the auto-stub, and the memory nag stays armed,
 # because the memories were the part he asked to keep.
 PAUSE_KEY = "paused"
-# --skills scan. A repeat inside ONE chat is somebody iterating; the same shape turning up
+# The skill-candidate scan. A repeat inside ONE chat is somebody iterating; the same shape turning up
 # in several chats is a workflow being re-derived from scratch every time, which is the
 # thing a skill actually fixes. Ranked by runs x distinct chats, his rule from 17 Sep 2026.
 SKILL_MIN_CHATS = 2
@@ -2653,29 +2653,6 @@ def skill_proposals(transcript_path):
             "obvious does not need a skill. Say which ONE you would actually build, and why.")
 
 
-def cmd_skills():
-    """Run by hand: python guard.py --skills [PROJECT-KEY]. Proposes, never writes."""
-    a = [x for x in sys.argv[1:] if x != "--skills"]
-    key = a[0] if a else "".join(c if c.isalnum() else "-" for c in os.getcwd())
-    d = os.path.join(PROJECTS, key)
-    if not os.path.isdir(d):
-        print("no transcripts for project key: " + key)
-        print("available keys:")
-        for p in sorted(glob.glob(os.path.join(PROJECTS, "*"))):
-            if glob.glob(os.path.join(p, "*.jsonl")):
-                print("  " + os.path.basename(p))
-        return
-    cands, scanned = skill_candidates(os.path.join(d, "x.jsonl"))
-    print("SKILL CANDIDATES for " + key + " - scanned " + str(scanned) + " transcript(s)")
-    print("=" * 64)
-    print("Proposals only. This command never creates a skill - you decide.")
-    if not cands:
-        print("  nothing repeated across " + str(SKILL_MIN_CHATS) + "+ chats yet")
-        return
-    for _s, n, c, shape in cands:
-        print("  %-40s %3d runs across %d chats" % (shape[:40], n, c))
-
-
 # --- the heredoc rule, enforced rather than asked for -----------------------------------
 # His words, 17 Sep 2026: "Heredoc choked on the content. Writing the note with the file tool
 # instead. i see this a lot can we fix this "Heredoc "". The previous chat answered it by
@@ -4763,8 +4740,6 @@ if __name__ == "__main__":
         cmd_checkpoint()
     elif "--pause" in a or "--resume" in a:
         cmd_pause()
-    elif "--skills" in a:
-        cmd_skills()
     elif "--bootstrap" in a:
         cmd_bootstrap()
     elif "--report" in a:
