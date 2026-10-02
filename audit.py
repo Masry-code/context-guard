@@ -228,8 +228,43 @@ def _local_day(ts):
         return None
 
 
-def _read_new(path, st, seen, days, cutoff):
-    """Count the complete new lines of one file. Mutates st, seen, days. Never raises."""
+CHECK_EVERY = 2000      # lines between looks at the clock inside one file
+
+
+def _count_line(raw, st, seen, days, cutoff):
+    try:
+        d = json.loads(raw)
+        if d.get("type") != "assistant" or d.get("isSidechain"):
+            return
+        m = d.get("message") or {}
+        u = m.get("usage") or {}
+        mid = m.get("id") or d.get("requestId")
+        if not u or not mid:
+            return
+        day = _local_day(d.get("timestamp") or "")
+        if not day or day < cutoff:
+            return
+        h = hashlib.sha1(str(mid).encode("utf-8")).hexdigest()[:12]
+        if h in seen:
+            return
+        seen[h] = day
+        ctx = ((u.get("input_tokens") or 0) + (u.get("cache_read_input_tokens") or 0)
+               + (u.get("cache_creation_input_tokens") or 0))
+        row = days.setdefault(day, {"calls": 0, "sum_ctx": 0, "hist": {}})
+        row["calls"] += 1
+        row["sum_ctx"] += ctx
+        b = str(int(ctx // BUCKET))
+        row["hist"][b] = row["hist"].get(b, 0) + 1
+        st["last"] = h
+    except Exception:
+        pass
+
+
+def _read_new(path, st, seen, days, cutoff, deadline=None):
+    """Count the complete new lines of one file. Mutates st, seen, days. Never raises.
+    Returns True when it stopped early because `deadline` (a time.monotonic() value) passed:
+    the clock is looked at every CHECK_EVERY lines, the offset saved is that of the last
+    complete line read, so a later run carries on exactly there."""
     try:
         size = os.path.getsize(path)
         off = st.get("off", 0)
@@ -237,44 +272,24 @@ def _read_new(path, st, seen, days, cutoff):
             off = 0                      # rewritten smaller: rescan; seen ids stop double counts
         if size == off:
             st.update(off=off, size=size)
-            return
+            return False
+        pos, n, early = off, 0, False
         with open(path, "rb") as f:
             f.seek(off)
-            data = f.read()
-        cut = data.rfind(b"\n")
-        if cut < 0:
-            st.update(off=off, size=size)
-            return
-        for raw in data[:cut + 1].split(b"\n"):
-            try:
-                d = json.loads(raw)
-                if d.get("type") != "assistant" or d.get("isSidechain"):
-                    continue
-                m = d.get("message") or {}
-                u = m.get("usage") or {}
-                mid = m.get("id") or d.get("requestId")
-                if not u or not mid:
-                    continue
-                day = _local_day(d.get("timestamp") or "")
-                if not day or day < cutoff:
-                    continue
-                h = hashlib.sha1(str(mid).encode("utf-8")).hexdigest()[:12]
-                if h in seen:
-                    continue
-                seen[h] = day
-                ctx = ((u.get("input_tokens") or 0) + (u.get("cache_read_input_tokens") or 0)
-                       + (u.get("cache_creation_input_tokens") or 0))
-                row = days.setdefault(day, {"calls": 0, "sum_ctx": 0, "hist": {}})
-                row["calls"] += 1
-                row["sum_ctx"] += ctx
-                b = str(int(ctx // BUCKET))
-                row["hist"][b] = row["hist"].get(b, 0) + 1
-                st["last"] = h
-            except Exception:
-                continue
-        st.update(off=off + cut + 1, size=size)
+            while True:
+                raw = f.readline()
+                if not raw or not raw.endswith(b"\n"):
+                    break                # end of file, or a line still being written
+                _count_line(raw, st, seen, days, cutoff)
+                pos += len(raw)
+                n += 1
+                if deadline is not None and n % CHECK_EVERY == 0 and time.monotonic() >= deadline:
+                    early = pos < size
+                    break
+        st.update(off=pos, size=size)
+        return early
     except Exception:
-        pass
+        return False
 
 
 def weekly_refresh(home_state, budget_s=None, save=True):
@@ -309,8 +324,12 @@ def weekly_refresh(home_state, budget_s=None, save=True):
             complete = False
             break
         st = files.get(p) if isinstance(files.get(p), dict) else {}
-        _read_new(p, st, seen, days, cutoff)
+        early = _read_new(p, st, seen, days, cutoff,
+                          None if budget_s is None else started + budget_s)
         files[p] = st
+        if early:
+            complete = False
+            break
     live = {p for _mt, p in paths}
     files = {p: s for p, s in files.items() if p in live}
     summary = {"days": days, "complete": complete,
@@ -457,6 +476,25 @@ def update_line():
         return ""
 
 
+WEEKLY_FRESH_DAYS = 3
+
+
+def weekly_note():
+    """The weekly chat-size line from the SAVED summary, or "". SessionStart must stay fast,
+    so this never scans a transcript: a summary that is incomplete, or was refreshed more than
+    WEEKLY_FRESH_DAYS ago, says nothing."""
+    try:
+        s = _load_json(os.path.join(STATE_DIR, SUMMARY_FILE))
+        if s.get("complete") is not True:
+            return ""
+        when = datetime.datetime.fromisoformat(s.get("refreshed") or "")
+        if datetime.datetime.now() - when > datetime.timedelta(days=WEEKLY_FRESH_DAYS):
+            return ""
+        return weekly_line(s)
+    except Exception:
+        return ""
+
+
 def alert():
     # unconditional breadcrumb: proves whether the hook ran at all
     try:
@@ -480,9 +518,11 @@ def alert():
     # and refuses above FRESH_CTX. One path, one gate, one thing to get right.
     hand = None
     upd = update_line()
+    wk = weekly_note()
     if not hits and not hand:
-        if upd:     # the update notice is for the USER only: no additionalContext at all
-            print(json.dumps({"systemMessage": upd}))
+        quiet = " ".join(x for x in (wk, upd) if x)
+        if quiet:   # these notices are for the USER only: no additionalContext at all
+            print(json.dumps({"systemMessage": quiet}))
         return
     hits.sort(reverse=True)
     lines = [f"  {sid}  {proj[:20]:<20} {mb:6.0f} MB  {age:.0f}d alive" for mb, age, sid, proj in hits[:5]]
@@ -508,6 +548,8 @@ def alert():
     if hits:
         sysmsg.append("Context-cost audit: %d bloated session(s) flagged - largest %.0f MB, %.0f days alive."
                       % (len(hits), hits[0][0], hits[0][1]))
+    if wk:
+        sysmsg.append(wk)
     if upd:
         sysmsg.append(upd)
     print(json.dumps({

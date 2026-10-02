@@ -923,6 +923,34 @@ def cmd_session_end():
             write_stub(path, sid, live_context(path))
     except Exception as e:
         log("session-end: failed: " + str(e))
+    # The weekly chat-size number is refreshed here, AFTER the stub logic and in its own try,
+    # so a slow or failing scan can never cost the stub. The hook has a 10 s timeout, so the
+    # scan is budgeted (also inside one huge file) and carries on from its saved offsets.
+    try:
+        mod = load_audit()
+        if mod:
+            mod.weekly_refresh(STATE, budget_s=WEEKLY_BUDGET_S)
+    except Exception as e:
+        log("session-end: weekly refresh failed: " + str(e))
+
+
+WEEKLY_BUDGET_S = 6
+
+
+def load_audit():
+    """audit.py sits beside this file and is loaded by path (the same pattern audit.update_line
+    uses for update.py). Any failure just means no number; it must never break a hook."""
+    try:
+        import importlib.util
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "audit.py")
+        if not os.path.exists(path):
+            return None
+        spec = importlib.util.spec_from_file_location("cg_audit", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    except Exception:
+        return None
 
 
 STUB_SWEEP_MIN_AGE = 6 * 3600       # idle at least this long: the chat is surely over
@@ -4702,7 +4730,7 @@ def _bootstrap_list(d):
 # shape to match: the list of what else lives in STATE is the reliable side.
 NOT_A_SESSION_STATE = frozenset((
     "memory-catalogue", "memory-manifest", "update-check", "pending-archive",
-    "ordering-probe", "sweep-seen"))
+    "ordering-probe", "sweep-seen", "weekly-context", "weekly-context-scan"))
 
 
 def cmd_report():
@@ -4757,6 +4785,15 @@ def cmd_report():
         print("  %-24s %5d   %s -> %s" % ("errors (last 7 days)", len(errs), days[0], days[-1]))
         for l in errs[-5:]:
             print("        %-9s %s" % (log_day(l), l[20:].strip()))
+
+    print(chr(10) + "-- chat size, week on week --")
+    try:
+        mod = load_audit()
+        # save=False: --report is safe by hand and writes nothing
+        wk = mod.weekly_line(mod.weekly_refresh(STATE, save=False)) if mod else ""
+    except Exception:
+        wk = ""
+    print("  " + (wk or "no calls measured yet"))
 
     print(chr(10) + "-- sessions being tracked --")
     for p in sorted(glob.glob(os.path.join(STATE, "*.json"))):

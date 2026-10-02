@@ -250,6 +250,16 @@ The flag is machine-wide and does not expire, so the next chat you open says so 
 > ⏸ Away mode is ON (since 18 Sep 20:30) — notes are still being saved, but nothing will ask
 > you to open a new chat. Type `back` or `afk off` to resume normal prompts.
 
+### The chat-size line
+
+`guard.py --report` has a "chat size, week on week" section with a line like *Average context per call: 186k this
+week (1,204 calls), 212k last week (980 calls) - 12% smaller.* It is the average amount of
+conversation sent with each request, this week against last week, plus how many calls ran past
+the first warning. Smaller is cheaper: every request re-sends the whole chat. The same line
+appears when a session starts (only if it was refreshed in the last 3 days), and `audit.py
+--weekly` refreshes and prints it by hand. It is refreshed in small, time-boxed steps when a
+chat ends.
+
 ### Commands you can run yourself
 
 | command | safe by hand? |

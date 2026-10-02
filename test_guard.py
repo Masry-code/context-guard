@@ -3506,6 +3506,140 @@ def test_weekly_line_wording_follows_the_sign_and_drops_a_missing_comparison():
         shutil.rmtree(home, ignore_errors=True)
 
 
+def test_weekly_budget_also_applies_inside_one_huge_file():
+    """The SessionEnd hook has 10 s. One huge transcript on a cold cache must not be able to
+    overrun it: the budget is checked every ~2000 lines, the read stops at the last complete
+    line with its offset saved, and repeated budgeted runs finish it with exact totals."""
+    home = make_home({})
+    try:
+        n = 4500
+        plant_calls(home, "huge", [call_line("h%d" % i, 1, 100_000 + i) for i in range(n)])
+        want_sum = sum(100_000 + i for i in range(n))
+        t1 = weekly_totals(home, budget="0")
+        check("weekly/budget-inside: budget 0 reads the big file only partly, incomplete",
+              0 < t1["this_calls"] < n and t1["complete"] is False, str(t1))
+        got = [t1["this_calls"]]
+        t = t1
+        for _ in range(5):
+            if t["complete"]:
+                break
+            t = weekly_totals(home, budget="0")
+            got.append(t["this_calls"])
+        check("weekly/budget-inside: every budgeted run makes progress", got == sorted(set(got)), str(got))
+        check("weekly/budget-inside: repeated budgeted runs finish it with exact totals",
+              t["complete"] is True and t["this_calls"] == n and t["this_sum"] == want_sum, str((got, t)))
+        t2 = weekly_totals(home)
+        check("weekly/budget-inside: one more unbudgeted run double counts nothing",
+              t2["this_calls"] == n and t2["this_sum"] == want_sum and t2["complete"] is True, str(t2))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def weekly_state_dir(home):
+    return os.path.join(home, ".claude", "context-guard")
+
+
+def test_session_end_also_refreshes_the_weekly_number_and_still_prints_nothing():
+    home = make_home({})
+    try:
+        plant_calls(home, "endwk001", [call_line("e1", 1, 100_000), call_line("e2", 1, 120_000)])
+        p = run_session_end(home, "endwk001")
+        expect_clean(p, "weekly-end")
+        check("weekly-end: the hook prints nothing", (p.stdout or "").strip() == "", p.stdout)
+        sp = os.path.join(weekly_state_dir(home), "weekly-context.json")
+        try:
+            with open(sp, encoding="utf-8") as f:
+                s = json.load(f)
+        except Exception:
+            s = {}
+        calls = sum(r.get("calls", 0) for r in (s.get("days") or {}).values())
+        check("weekly-end: weekly-context.json holds the transcript's calls", calls == 2, str(s)[:300])
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_report_shows_the_weekly_line_and_writes_nothing():
+    home = make_home({})
+    try:
+        plant_calls(home, "rep", [call_line("r1", 1, 100_000), call_line("r2", 1, 140_000)])
+        run_report(home)                       # creates the log; snapshot AFTER that
+        st = weekly_state_dir(home)
+        listing = lambda: sorted(os.listdir(st)) if os.path.isdir(st) else None
+        logp = os.path.join(home, ".claude", "context-audit.log")
+        before = (listing(), open(logp, "rb").read())
+        p = run_report(home, log=None)
+        out = p.stdout
+        check("weekly-report: the section is there with the line",
+              "-- chat size, week on week --" in out
+              and "Average context per call: 120k this week (2 calls)" in out, out[-600:])
+        check("weekly-report: it sits after the errors row and before the sessions list",
+              out.index("errors (last 7 days)") < out.index("-- chat size, week on week --")
+              < out.index("-- sessions being tracked --"), out)
+        after = (listing(), open(logp, "rb").read())
+        check("weekly-report: STATE listing and log bytes are identical", before == after, str((before[0], after[0])))
+        check("weekly-report: no weekly file was created", not any(
+            os.path.exists(os.path.join(st, n)) for n in ("weekly-context.json", "weekly-context-scan.json")))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_report_session_list_hides_the_weekly_files():
+    home = make_home({})
+    try:
+        st = weekly_state_dir(home)
+        os.makedirs(st, exist_ok=True)
+        for name in ("weekly-context", "weekly-context-scan"):
+            with open(os.path.join(st, name + ".json"), "w", encoding="utf-8") as f:
+                json.dump({"days": {}, "files": {}, "seen": {}, "warned_ctx": 120000, "reads": {}}, f)
+        part = run_report(home).stdout.split("-- sessions being tracked --")[-1].split("-- request ledgers")[0]
+        check("weekly-report-list: neither weekly file is listed as a session",
+              "weekly-context" not in part, repr(part))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_alert_adds_the_weekly_line_only_from_a_fresh_complete_summary():
+    def alert_in(home):
+        return subprocess.run([sys.executable, AUDIT, "--alert"], capture_output=True, text=True,
+                              env=child_env(home), cwd=tempfile.gettempdir(), timeout=60)
+
+    def put_summary(home, complete, age_days):
+        st = weekly_state_dir(home)
+        os.makedirs(st, exist_ok=True)
+        # no update fetch from a test: the flag file update.py honours
+        with open(os.path.join(st, "no-update-check"), "w") as f:
+            f.write("")
+        day = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
+        when = (datetime.datetime.now() - datetime.timedelta(days=age_days)).isoformat(timespec="seconds")
+        with open(os.path.join(st, "weekly-context.json"), "w", encoding="utf-8") as f:
+            json.dump({"days": {day: {"calls": 1, "sum_ctx": 100_000, "hist": {"4": 1}}},
+                       "complete": complete, "refreshed": when}, f)
+
+    home = make_home({})
+    try:
+        put_summary(home, True, 1)
+        p = alert_in(home)
+        expect_clean(p, "weekly-alert-fresh")
+        d = one_json(p)
+        check("weekly-alert: a fresh complete summary adds the line to systemMessage, nothing else to say",
+              isinstance(d, dict) and "Average context per call: 100k this week (1 call)" in d.get("systemMessage", "")
+              and "hookSpecificOutput" not in d, p.stdout)
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+    for label, complete, age in (("stale", True, 5), ("incomplete", False, 1)):
+        home = make_home({})
+        try:
+            put_summary(home, complete, age)
+            plant_calls(home, "tr", [call_line("a1", 1, 100_000)])
+            p = alert_in(home)
+            expect_clean(p, "weekly-alert-" + label)
+            check("weekly-alert: a %s summary prints no line" % label, (p.stdout or "").strip() == "", p.stdout)
+            check("weekly-alert: %s - transcripts were not scanned" % label,
+                  not os.path.exists(os.path.join(weekly_state_dir(home), "weekly-context-scan.json")))
+        finally:
+            shutil.rmtree(home, ignore_errors=True)
+
+
 PICKUP_PLAIN = "Picked up the handoff note from your last chat."
 
 
@@ -9316,6 +9450,11 @@ if __name__ == "__main__":
               test_weekly_budget_stops_after_one_file_and_a_later_run_completes,
               test_weekly_cli_prints_the_sentence_or_says_nothing_measured,
               test_weekly_line_wording_follows_the_sign_and_drops_a_missing_comparison,
+              test_weekly_budget_also_applies_inside_one_huge_file,
+              test_session_end_also_refreshes_the_weekly_number_and_still_prints_nothing,
+              test_report_shows_the_weekly_line_and_writes_nothing,
+              test_report_session_list_hides_the_weekly_files,
+              test_alert_adds_the_weekly_line_only_from_a_fresh_complete_summary,
               test_the_pickup_names_the_effort_the_note_asks_for,
               test_the_sweep_moves_a_memory_with_no_shared_copy_home,
               test_the_sweep_leaves_a_file_changed_in_the_last_ten_minutes,
