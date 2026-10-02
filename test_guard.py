@@ -1342,11 +1342,12 @@ def test_the_ceiling_does_not_block_a_stop_it_already_blocked():
 # made them look right: a bare number with no dates and no examples. The three blocks were
 # real blocks - of probe.png and hooktest.png, inside a two-minute window on 11 Sep, while
 # the guard was being tested. Nothing in the report said so.
+# (The re-read guard was deleted 2 Oct 2026; the fixture now uses the ledger budget row.)
 
 REPORT_LOG = chr(10).join([
-    "2026-09-11T10:29:39 reread: flagged probe.png (x3)",
-    "2026-09-11T10:30:52 reread: flagged hooktest.png (x3)",
-    "2026-09-11T10:31:39 reread: flagged hooktest.png (x4)",
+    "2026-09-11T10:29:39 ledger: budget dropped 3 request(s) of thread alpha",
+    "2026-09-11T10:30:52 ledger: budget dropped 3 request(s) of thread alpha",
+    "2026-09-11T10:31:39 ledger: budget dropped 3 request(s) of thread alpha",
     "2026-09-11T11:00:00 size: ctx=190000 level=150000 last=0 due=True",
     "2026-09-14T11:00:00 size: ctx=260000 level=250000 last=190000 due=True",
     "2026-09-17T12:00:00 handoff picked up by UserPromptSubmit (1 note(s), 20000 chars)",
@@ -1471,8 +1472,8 @@ def test_report_shows_what_was_blocked_not_just_how_many():
         check("report: exited 0", p.returncode == 0, (p.stderr or "")[:200])
         check("report: no traceback", "Traceback" not in (p.stderr or ""),
               (p.stderr or "")[:200])
-        check("report: names what was actually blocked", "probe.png" in out
-              and "hooktest.png" in out, repr(out[:900]))
+        check("report: names what was actually blocked", "thread alpha" in out,
+              repr(out[:900]))
         check("report: dates the blocks", "11 Sep" in out, repr(out[:900]))
     finally:
         shutil.rmtree(home, ignore_errors=True)
@@ -1487,9 +1488,9 @@ def test_report_flags_a_counter_that_only_ever_fired_on_one_day():
         out = (run_report(home).stdout or "")
         check("report: flags the all-in-one-day counter", "all on one day" in out,
               repr(out[:900]))
-        check("report: flags it on the re-read row, not the warnings row",
-              "all on one day" in line_with(out, "image re-reads blocked"),
-              repr(line_with(out, "image re-reads blocked")))
+        check("report: flags it on the ledger budget row, not the warnings row",
+              "all on one day" in line_with(out, "ledger budget drops"),
+              repr(line_with(out, "ledger budget drops")))
         check("report: does not flag events spread over several days",
               "all on one day" not in line_with(out, "warnings fired"),
               repr(line_with(out, "warnings fired")))
@@ -1527,8 +1528,9 @@ def test_report_counts_the_guards_that_were_added_later():
               repr(line_with(out, "checkpoint")))
         check("report: still counts the original four",
               all(line_with(out, n) for n in ("warnings fired", "handoff notes picked up",
-                                              "ledger appends", "image re-reads blocked")),
+                                              "ledger appends", "ledger budget drops")),
               repr(out[:900]))
+        check("report: has no image re-reads row", "image re-reads" not in out, repr(out[:900]))
     finally:
         shutil.rmtree(home, ignore_errors=True)
 
@@ -2560,7 +2562,7 @@ def test_install_is_idempotent():
               len(ours(s["hooks"]["UserPromptSubmit"])) == 1,
               json.dumps(s["hooks"]["UserPromptSubmit"])[:300])
         check("install-twice: both PreToolUse matchers present exactly once",
-              sorted(e.get("matcher") for e in ours(s["hooks"]["PreToolUse"])) == ["Bash", "Read"],
+              sorted(e.get("matcher") for e in ours(s["hooks"]["PreToolUse"])) == ["Bash"],
               json.dumps(s["hooks"]["PreToolUse"])[:300])
     finally:
         shutil.rmtree(home, ignore_errors=True)
@@ -2678,6 +2680,97 @@ def test_uninstall_removes_only_our_hooks():
                   for e in s["hooks"]["Stop"] for h in e.get("hooks") or []),
               json.dumps(s.get("hooks"))[:300])
         check("uninstall: unrelated settings survive", s.get("theme") == "dark", repr(s.get("theme")))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def old_install_with_reread(foreign_read=True):
+    """Settings as an OLDER install wrote them: our entries plus the retired --reread one,
+    beside a foreign PreToolUse/Read hook that must survive."""
+    sys.path.insert(0, os.path.dirname(INSTALL))
+    try:
+        import install as inst
+    finally:
+        sys.path.pop(0)
+    entries = [inst.desired_entry(m, s, f, t, st) for _ev, m, s, f, t, st in inst.HOOKS]
+    hooks = {}
+    for (ev, *_rest), entry in zip(inst.HOOKS, entries):
+        hooks.setdefault(ev, []).append(entry)
+    hooks.setdefault("PreToolUse", []).insert(
+        0, inst.desired_entry("Read", inst.GUARD, "--reread", 10, None))
+    if foreign_read:
+        hooks["PreToolUse"].append(
+            {"matcher": "Read", "hooks": [{"type": "command", "command": "echo other-tool"}]})
+    return {"hooks": hooks}
+
+
+def all_commands(settings):
+    return [h.get("command") or "" for lst in settings.get("hooks", {}).values()
+            for e in lst for h in e.get("hooks") or []]
+
+
+def test_install_drops_a_stale_reread_hook():
+    home = make_home({})
+    try:
+        seed_settings(home, old_install_with_reread())
+        p = run_install(home)
+        expect_clean(p, "stale-reread")
+        s = read_settings(home)
+        check("stale-reread: no command mentions --reread",
+              not any("--reread" in c for c in all_commands(s)), json.dumps(s["hooks"])[:400])
+        check("stale-reread: the foreign Read hook is kept, unchanged",
+              {"matcher": "Read", "hooks": [{"type": "command", "command": "echo other-tool"}]}
+              in s["hooks"]["PreToolUse"], json.dumps(s["hooks"]["PreToolUse"])[:400])
+        check("stale-reread: exactly one --bash PreToolUse entry",
+              sum("--bash" in c for c in all_commands({"hooks": {"PreToolUse": s["hooks"]["PreToolUse"]}})) == 1,
+              json.dumps(s["hooks"]["PreToolUse"])[:400])
+        p2 = run_install(home)
+        check("stale-reread: a second run says Already up to date",
+              "Already up to date" in (p2.stdout or ""), repr((p2.stdout or "")[:200]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_uninstall_also_removes_a_stale_reread_hook():
+    home = make_home({})
+    try:
+        seed_settings(home, old_install_with_reread())
+        p = run_install(home, "--uninstall")
+        expect_clean(p, "stale-reread-uninstall")
+        s = read_settings(home)
+        check("stale-reread-uninstall: no --reread left",
+              not any("--reread" in c for c in all_commands(s)), json.dumps(s.get("hooks"))[:400])
+        check("stale-reread-uninstall: the foreign hook is kept",
+              any("echo other-tool" in c for c in all_commands(s)), json.dumps(s.get("hooks"))[:400])
+        check("stale-reread-uninstall: none of ours remain",
+              not any("guard.py" in c or "audit.py" in c for c in all_commands(s)),
+              json.dumps(s.get("hooks"))[:400])
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_a_leftover_reread_hook_is_a_silent_no_op():
+    """A settings.json not yet re-installed still calls --reread on every Read. It must do
+    nothing: rc 0, no output, no state written."""
+    home = make_home({})
+    try:
+        img = os.path.join(home, "pic.png")
+        with open(img, "wb") as f:
+            f.write(b"\x89PNG not really")
+        payload = {"session_id": "rereadchat", "cwd": CWD, "hook_event_name": "PreToolUse",
+                   "tool_name": "Read", "tool_input": {"file_path": img}}
+        for i in range(3):
+            p = subprocess.run([sys.executable, GUARD, "--reread"], input=json.dumps(payload),
+                               capture_output=True, text=True, env=child_env(home))
+            check("leftover-reread: run %d rc 0, no stdout" % (i + 1),
+                  p.returncode == 0 and (p.stdout or "") == "",
+                  "rc=%s out=%r err=%r" % (p.returncode, p.stdout, (p.stderr or "")[:200]))
+        sp = os.path.join(home, ".claude", "context-guard", "rereadchat.json")
+        reads = None
+        if os.path.exists(sp):
+            with open(sp, encoding="utf-8") as f:
+                reads = json.load(f).get("reads")
+        check("leftover-reread: no reads key in the state file", reads is None, repr(reads))
     finally:
         shutil.rmtree(home, ignore_errors=True)
 
@@ -9398,6 +9491,9 @@ if __name__ == "__main__":
               test_install_dry_run_writes_nothing,
               test_install_backs_the_file_up_before_writing,
               test_uninstall_removes_only_our_hooks,
+              test_install_drops_a_stale_reread_hook,
+              test_uninstall_also_removes_a_stale_reread_hook,
+              test_a_leftover_reread_hook_is_a_silent_no_op,
               test_install_refuses_to_touch_a_settings_file_it_cannot_parse,
               test_the_suite_cannot_reach_a_real_home_on_any_platform,
               test_away_is_armed_only_by_an_explicit_phrase,

@@ -123,7 +123,6 @@ check.
 |---|---|---|
 | `audit.py --alert` | SessionStart | flags sessions whose size × age make them expensive to resume, delivers a waiting handoff note, and once a day says when an update is ready |
 | `guard.py --size` | UserPromptSubmit | measures live context, warns at escalating levels, and at the top orders a full handoff note |
-| `guard.py --reread` | PreToolUse (Read) | stops the same image being read into context twice |
 | `guard.py --bash` | PreToolUse (Bash) | blocks heredocs, which mangle file content on Windows |
 | `guard.py --ledger` | Stop | appends your own words to a permanent ledger, and past the ceiling refuses to let the chat close. It writes no stub: stubs come from `--session-end` when a chat closes and from the `--bootstrap` sweep when one died without that hook |
 | `guard.py --session-end` | SessionEnd | when a chat ends with no note of any kind, leaves the mechanical stub (skipped for a chat under 1.5 MB, or one that already has a note, a stub or a consumed `.used-*` note) |

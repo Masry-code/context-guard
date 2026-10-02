@@ -34,7 +34,6 @@ HOOKS = [
     # it is safe to ship to someone who has never written one.
     ("SessionStart", None, GUARD, "--bootstrap", 15, "Setting up project memory"),
     ("UserPromptSubmit", None, GUARD, "--size", 10, None),
-    ("PreToolUse", "Read", GUARD, "--reread", 10, None),
     ("PreToolUse", "Bash", GUARD, "--bash", 10, None),
     ("Stop", None, GUARD, "--ledger", 30, None),
     # Leaves the stub note for a chat that ends without writing one (no longer done on Stop).
@@ -56,7 +55,9 @@ def command_for(script, flag):
     return '"%s" "%s" %s' % (PY, script, flag)
 
 
-FLAGS = ("--alert", "--size", "--reread", "--bash", "--ledger", "--bootstrap", "--session-end")
+FLAGS = ("--alert", "--size", "--bash", "--ledger", "--bootstrap", "--session-end")
+# An older install wrote these; a re-run (or an uninstall) must take them out.
+RETIRED_FLAGS = ("--reread",)
 
 
 def is_ours(entry):
@@ -67,7 +68,7 @@ def is_ours(entry):
     silently gaining a second copy that runs the old location."""
     for h in entry.get("hooks") or []:
         cmd = h.get("command") or ""
-        if any(m in cmd for m in MARKERS) and any((" " + f) in cmd for f in FLAGS):
+        if any(m in cmd for m in MARKERS) and any((" " + f) in cmd for f in FLAGS + RETIRED_FLAGS):
             return True
     return False
 
@@ -86,7 +87,18 @@ def build(current, remove=False):
     """Return the settings dict Context Guard wants, merged onto `current`."""
     out = json.loads(json.dumps(current))          # deep copy, never mutate the original
     hooks = out.setdefault("hooks", {})
-    for event in sorted(set(e for e, _m, _s, _f, _t, _st in HOOKS)):
+    # Every event that holds an entry of ours, not only the events in HOOKS: a retired hook
+    # may sit under an event we no longer install anything for.
+    # Another tool's malformed entry must not turn this scan into a traceback, so a surprise
+    # counts as "not ours".
+    def holds_ours(lst):
+        try:
+            return isinstance(lst, list) and any(is_ours(e) for e in lst if isinstance(e, dict))
+        except Exception:
+            return False
+    events = set(e for e, _m, _s, _f, _t, _st in HOOKS) | {
+        ev for ev, lst in hooks.items() if holds_ours(lst)}
+    for event in sorted(events):
         # Drop every entry of OURS for this event and keep everyone else's, in their own
         # order, then re-add ours. That is what makes a second run a no-op instead of a
         # duplicate, and what leaves a friend's own hooks untouched.

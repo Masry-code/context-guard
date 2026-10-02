@@ -2,8 +2,6 @@
 
 --size    UserPromptSubmit : measures THIS chat's live context and warns when it
                              crosses a threshold (once per threshold, no nagging).
---reread  PreToolUse/Read  : stops re-reading an image whose bytes have not
-                             changed since it was already read in this chat.
 """
 import json, sys, os, glob, hashlib, datetime, re, time, calendar, shlex, math, unicodedata
 
@@ -35,8 +33,6 @@ LEVELS = [
     (260_000, "expensive"),
     (290_000, "very expensive"),
 ]
-IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
-FREE_REREADS = 2   # allow this many identical reads (covers a post-compaction re-read)
 # How much of a handoff note to inject. ~40k chars is ~10k tokens - cheap against a
 # 110k context, and worth it. The old 6k cap silently cut a real 17,672-char note
 # off mid-word, which is exactly how detail gets lost. Past this we point at the file
@@ -3184,45 +3180,6 @@ def _size_check(d, sid):
     return out
 
 
-def cmd_reread():
-    d = read_stdin()
-    sid = d.get("session_id")
-    fp = (d.get("tool_input") or {}).get("file_path") or ""
-    if os.path.splitext(fp)[1].lower() not in IMAGE_EXT or not os.path.exists(fp):
-        return
-    try:
-        with open(fp, "rb") as f:
-            h = hashlib.sha256(f.read()).hexdigest()[:16]
-    except Exception as _e:
-        swallowed('cmd_reread', _e, quiet=MISSING)
-        return
-    st = load_state(sid)
-    seen = st.setdefault("reads", {})
-    key = os.path.normcase(os.path.abspath(fp))
-    prev = seen.get(key)
-    if prev and prev.get("hash") == h:
-        prev["n"] = prev.get("n", 1) + 1
-        save_state(sid, st)
-        if prev["n"] > FREE_REREADS:
-            log("reread: flagged " + os.path.basename(fp) + " (x" + str(prev["n"]) + ")")
-            print(json.dumps({"hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "deny",
-                "permissionDecisionReason": (
-                    "BLOCKED to save context. This image is byte-identical to the copy already "
-                    "read " + str(prev["n"] - 1) + "x in this chat (first at "
-                    + str(prev.get("first")) + "). Re-reading adds the whole image to the context "
-                    "again and it is paid for on every remaining turn. The file has NOT changed - "
-                    "the hash matches, so use what you already described. Two reads are allowed "
-                    "free; this is beyond that. If you genuinely lost it to compaction, say so to "
-                    "the user rather than re-reading."),
-            }}))
-            return
-    else:
-        seen[key] = {"hash": h, "n": 1, "first": datetime.datetime.now().strftime("%H:%M")}
-        save_state(sid, st)
-
-
 # Every guard that writes to the log, with the exact string it writes and whether its
 # actual lines are worth printing. Measured 17 Sep 2026, and this list is why the change
 # exists: the old report counted four events and had never been updated, so three guards
@@ -3230,7 +3187,6 @@ def cmd_reread():
 # quietly described an older tool than the one running.
 REPORT_EVENTS = [
     ("warnings fired",          "due=True",                 False),
-    ("image re-reads blocked",  "reread: flagged",          True),
     ("handoff notes picked up", "handoff picked up",        False),
     ("handoff menus offered",   "offered the menu",         False),
     ("memory nags",             "memory-nag: note written", True),
@@ -4807,8 +4763,8 @@ def cmd_report():
         if not isinstance(st, dict):
             continue                  # pending-archive.json is a list, not a session
         w = st.get("warned_ctx", 0) or st.get("warned_at", 0)
-        print("  %-40s last warned at %3dk, %d image(s) tracked"
-              % (os.path.basename(p)[:-5][:40], round(w / 1000), len(st.get("reads", {}))))
+        print("  %-40s last warned at %3dk"
+              % (os.path.basename(p)[:-5][:40], round(w / 1000)))
 
     d = os.path.join(HOME, ".claude", "handoff")
     print(chr(10) + "-- request ledgers (his own words, never consumed) --")
@@ -4869,8 +4825,6 @@ if __name__ == "__main__":
         cmd_archived()
     elif "--size" in a:
         cmd_size()
-    elif "--reread" in a:
-        cmd_reread()
     elif "--bash" in a:
         cmd_bash()
     elif "--ledger" in a:
