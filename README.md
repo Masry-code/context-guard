@@ -266,18 +266,9 @@ chat ends.
 | `guard.py --report` | yes — prints what it knows, writes nothing |
 | `guard.py --skills` | yes — counts repeated command patterns |
 | `guard.py --checkpoint <session-id> "<text>"` | yes — records a milestone |
-| `guard.py --attribute` | yes — backfills ledger attribution |
 | `guard.py --recall <words>` | yes — searches every memory by keyword, writes nothing |
-| `ledger-budget.py [project-key]` | yes — prints what the request budget keeps and drops |
 | `guard.py --size` / `--ledger` / `--bootstrap`, `audit.py --alert` | **no** — hook entry points with side effects, including consuming a handoff note and moving memory files |
 | `guard.py --session-end` | **no** — hook entry point: reads the SessionEnd payload on stdin and writes a stub note for the chat that just ended |
-
-**Run `--attribute` before `ledger-budget.py`.** Entries written before the chat id went
-inline know whose thread they belong to only through the `.attrib.json` sidecar that
-`--attribute` builds. Without it the budget tool sees a smaller ledger than the pickup
-path does and will happily tell you the budget is fine when it is not — measured here on
-19 Sep 2026, 399 of 505 attributed requests were invisible to it. It now prints how many
-it recovered, and says so when the answer is none.
 
 ### Turning bits off
 

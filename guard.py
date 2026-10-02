@@ -90,7 +90,7 @@ LEDGER_OTHERS = 15        # ...of which this many may come from the OTHER thread
 # requests keep turning out to still be open, so the trade is the right way round.
 LEDGER_OWN_CHARS = 20000    # the resumed thread's share of the injection
 # 19 Sep 2026, chosen from the real 505-request ledger once ledger-budget.py could see
-# all of it. Not the no-drop knee: that is 69,706 chars, ~17.4k tokens on turn one of
+# all of it (that tool was deleted 2 Oct 2026). Not the no-drop knee: that is 69,706 chars, ~17.4k tokens on turn one of
 # every pickup, which would make this tool the bloat it exists to remove. Picked on
 # MARGINAL value instead - requests rescued per 1,000 extra tokens of injection:
 #     12,000 -> 20,000   +1.9k tokens, 63 requests   33 per 1k   <- best
@@ -1610,7 +1610,8 @@ def ledger_tail(transcript_path, labels=None):
     known = set(stems.values())
     attrib = {}
     if mine:
-        # entries older than attribution, recovered once by --attribute. Absent file just
+        # entries older than attribution, recovered once by a since-deleted
+        # command (2 Oct 2026). Absent file just
         # means the recovery was never run: everything then falls to the other group,
         # which is the honest answer rather than a guess.
         try:
@@ -2673,79 +2674,6 @@ def cmd_skills():
         return
     for _s, n, c, shape in cands:
         print("  %-40s %3d runs across %d chats" % (shape[:40], n, c))
-
-
-def cmd_attribute():
-    """Run by hand: python guard.py --attribute [PROJECT-KEY].
-
-    Every chat in a folder appends to ONE ledger. Entries written from 18 Sep 2026 carry
-    the chat id that said them; the 419 before that do not, so a pickup still met a wall
-    of requests belonging to nobody in particular. The words are still sitting in the
-    transcript that said them, so this matches them back and writes the result to a
-    sidecar. It does NOT touch the ledger - "never edited, never summarised, never
-    consumed" is the whole reason that file is trustworthy.
-
-    Identical words in two different chats are left unattributed ON PURPOSE. The words are
-    the only evidence, so they prove nothing, and filing a request under the wrong thread
-    is worse than leaving it unsorted. Reading every transcript takes far too long for a
-    10-second hook, which is why this is a command and not automatic."""
-    a = [x for x in sys.argv[1:] if x != "--attribute"]
-    key = a[0] if a else "".join(c if c.isalnum() else "-" for c in os.getcwd())
-    d = os.path.join(PROJECTS, key)
-    if not os.path.isdir(d):
-        print("no transcripts for project key: " + key)
-        return
-    probe = os.path.join(d, "x.jsonl")
-    lp = ledger_path(probe)
-    if not os.path.exists(lp):
-        print("no ledger yet for project key: " + key)
-        return
-    owner, scanned = {}, 0
-    for p in sorted(glob.glob(os.path.join(d, "*.jsonl"))):
-        sid8 = session_sid8(p)
-        scanned += 1
-        try:
-            msgs, _off = user_messages(p, 0)
-        except Exception:
-            continue
-        for _ts, t in msgs:
-            if ledger_noise(t):
-                continue
-            k = hashlib.sha256(t.strip().encode("utf-8", "replace")).hexdigest()[:16]
-            owner[k] = sid8 if owner.get(k, sid8) == sid8 else ""
-    try:
-        with open(lp, encoding="utf-8", errors="replace") as f:
-            blocks = f.read().split(chr(10) + "### ")[1:]
-    except Exception as e:
-        print("could not read the ledger: " + str(e))
-        return
-    out, already, ambiguous, unknown = {}, 0, 0, 0
-    for b in blocks:
-        if LEDGER_CHAT_RE.search(b.split(chr(10), 1)[0]):
-            already += 1
-            continue
-        sid = owner.get(entry_key(b))
-        if sid:
-            out[entry_key(b)] = sid
-        elif sid == "":
-            ambiguous += 1
-        else:
-            unknown += 1
-    try:
-        with open(attrib_path(probe), "w", encoding="utf-8") as f:
-            json.dump(out, f)
-    except Exception as e:
-        print("could not write the sidecar: " + str(e))
-        return
-    print("ATTRIBUTION RECOVERED for " + key + " - read " + str(scanned) + " transcript(s)")
-    print("=" * 64)
-    print("  ledger entries              : %d" % len(blocks))
-    print("  already carried a chat id   : %d" % already)
-    print("  recovered into the sidecar  : %d" % len(out))
-    print("  same words in two chats     : %d  (left unattributed on purpose)" % ambiguous)
-    print("  no transcript holds them    : %d" % unknown)
-    print("  sidecar                     : " + attrib_path(probe))
-    print("  the ledger itself was not touched. Delete the sidecar to undo this.")
 
 
 # --- the heredoc rule, enforced rather than asked for -----------------------------------
@@ -4837,8 +4765,6 @@ if __name__ == "__main__":
         cmd_pause()
     elif "--skills" in a:
         cmd_skills()
-    elif "--attribute" in a:
-        cmd_attribute()
     elif "--bootstrap" in a:
         cmd_bootstrap()
     elif "--report" in a:
