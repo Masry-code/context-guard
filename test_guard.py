@@ -7766,6 +7766,166 @@ def test_the_keywords_check_has_an_off_switch_and_a_cap():
         rm_tree(home)
 
 
+def write_config(home, obj):
+    """config.json in the throwaway home's state folder. A str is written as given (to test
+    broken files); anything else is dumped as JSON."""
+    state = os.path.join(home, ".claude", "context-guard")
+    os.makedirs(state, exist_ok=True)
+    with open(os.path.join(state, "config.json"), "w", encoding="utf-8") as f:
+        f.write(obj if isinstance(obj, str) else json.dumps(obj))
+
+
+def nag_home(sid="cfgnag"):
+    """A home with one handed-off chat, so the memory nag fires unless switched off."""
+    home = make_home({})
+    write_chat(home, sid, time.time() - 3600)
+    write_note(home, sid)
+    return home
+
+
+def test_config_json_switches_each_part_off():
+    """Task 5: every off-file has a config.json key; the file is NOT created here."""
+    # memory nag
+    home = nag_home()
+    try:
+        write_config(home, {"memory_nag": False})
+        p = run_stop(home, "cfgnag")
+        expect_clean(p, "cfg-nag")
+        check("cfg-nag: config memory_nag=false silences it", blocked(p) == "",
+              repr(blocked(p)[:200]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+    # note head check (the nag is off by file so only the head check can block)
+    home = head_home()
+    try:
+        write_config(home, {"note_head_check": False})
+        p = run_stop(home, "headchat")
+        expect_clean(p, "cfg-head")
+        check("cfg-head: config note_head_check=false silences it", blocked(p) == "",
+              repr(blocked(p)[:200]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+    # ceiling
+    home = make_home({})
+    try:
+        write_config(home, {"ceiling": False})
+        write_big_chat(home, "cfgceil", time.time() - 3600, 400_000)
+        p = run_stop(home, "cfgceil")
+        expect_clean(p, "cfg-ceiling")
+        check("cfg-ceiling: config ceiling=false silences it", blocked(p) == "",
+              repr(blocked(p)[:200]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+    # heredoc guard
+    home = make_home({})
+    try:
+        write_config(home, {"heredoc_guard": False})
+        p = run_bash_hook(home, "cat > f.md <<'MD'\nx\nMD")
+        expect_clean(p, "cfg-heredoc")
+        check("cfg-heredoc: config heredoc_guard=false lets it through", denied(p) == "",
+              repr(denied(p)[:200]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+    # memory hints
+    home = kw_home(HINT_MEMS, lists=HINT_LISTS, manifest=KW_MANIFEST)
+    try:
+        write_config(home, {"memory_hints": False})
+        check("cfg-hints: config memory_hints=false silences the hint",
+              "android-adb" not in context_of(run(home, "cfghint", "why does adb not see my phone")))
+    finally:
+        rm_tree(home)
+    # keywords check
+    home = kw_home({(KEY, "bare-cfg"): mem_text("bare-cfg", "x")})
+    try:
+        md = os.path.join(home, ".claude", "projects", KEY, "memory")
+        write_mem_writes(home, "cfgkw", [os.path.join(md, "bare-cfg.md")])
+        write_config(home, {"keywords_check": False})
+        check("cfg-keywords: config keywords_check=false silences it",
+              blocked(run_stop(home, "cfgkw")) == "")
+    finally:
+        rm_tree(home)
+
+
+def test_config_json_only_literal_false_switches_off():
+    for label, val in (("string no", "no"), ("zero", 0), ("true", True)):
+        home = nag_home()
+        try:
+            write_config(home, {"memory_nag": val})
+            p = run_stop(home, "cfgnag")
+            expect_clean(p, "cfg-literal-" + label)
+            check("cfg-literal: %s leaves the nag on" % label, blocked(p) != "",
+                  (p.stdout or "")[:200])
+        finally:
+            shutil.rmtree(home, ignore_errors=True)
+
+
+def test_a_broken_config_json_switches_nothing_off_and_is_logged():
+    home = nag_home()
+    try:
+        write_config(home, "{not json")
+        p = run_stop(home, "cfgnag")
+        expect_clean(p, "cfg-broken")
+        check("cfg-broken: the nag still fires", blocked(p) != "", (p.stdout or "")[:200])
+        errs = [ln for ln in guard_log(home).splitlines()
+                if "error:" in ln and "config.json" in ln]
+        check("cfg-broken: exactly one error line", len(errs) == 1, repr(errs))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+    home = nag_home()
+    try:
+        p = run_stop(home, "cfgnag")
+        check("cfg-missing: the nag fires with no file", blocked(p) != "")
+        check("cfg-missing: a missing file logs nothing",
+              "config.json" not in guard_log(home), guard_log(home)[-300:])
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+    home = nag_home()
+    try:
+        write_config(home, "[]")
+        check("cfg-list: a JSON list counts as empty", blocked(run_stop(home, "cfgnag")) != "")
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_update_check_obeys_config_json():
+    u = upd_module()
+    s = upd_setup()
+    home = make_home({})
+    calls = []
+    real = u.subprocess.Popen
+
+    def spy(*a, **k):
+        calls.append(a)
+        return real(*a, **k)
+    try:
+        upd_push(s, "b.txt", "second change")
+        u.subprocess.Popen = spy
+        write_config(home, {"update_check": False})
+        check("update-cfg: config update_check=false gives no line",
+              u.check(clone=s["clone"], home=home) == "")
+        check("update-cfg: ...and made no git call", not calls, str(calls))
+    finally:
+        u.subprocess.Popen = real
+        shutil.rmtree(home, ignore_errors=True)
+        rm_tree(s["tmp"])
+
+
+def test_every_switch_is_in_the_readme():
+    with open(os.path.join(HERE_DIR, "README.md"), encoding="utf-8") as f:
+        readme = f.read()
+    home = make_home({})
+    try:
+        sw = kw_json(home, "import json\nprint(json.dumps(guard.SWITCHES))")
+    finally:
+        rm_tree(home)
+    check("readme-switches: six guard switches", isinstance(sw, dict) and len(sw) == 6, str(sw))
+    if not isinstance(sw, dict):
+        return
+    for off_file, key in list(sw.items()) + [("no-update-check", "update_check")]:
+        check("readme-switches: key %s is named" % key, key in readme)
+        check("readme-switches: old file %s is named" % off_file, off_file in readme)
+
+
 def test_the_saving_instructions_ask_for_keywords():
     home = kw_home({}, manifest={"projects": {"droid": {"dir": "D:\\Demo\\Droid",
                                                          "threads": ["droid"], "files": []}}},
@@ -8248,6 +8408,11 @@ if __name__ == "__main__":
               test_update_checks_at_most_once_a_day,
               test_update_offline_is_silent_fast_and_recorded,
               test_update_off_switch_and_no_git_folder_make_no_git_call,
+              test_config_json_switches_each_part_off,
+              test_config_json_only_literal_false_switches_off,
+              test_a_broken_config_json_switches_nothing_off_and_is_logged,
+              test_update_check_obeys_config_json,
+              test_every_switch_is_in_the_readme,
               test_update_a_silent_server_cannot_hang_the_check,
               test_update_offline_keeps_an_earlier_notice,
               test_update_leaves_a_branch_of_their_own_alone,

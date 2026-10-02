@@ -108,6 +108,8 @@ LEDGER_OLDEST_SHARE = 0.2   # of a thread's budget, reserved for its OLDEST entr
 # his standing rule is that anything automated leaves him an override.
 NAG_OFF = "no-memory-nag"
 HEAD_OFF = "no-note-head-check"   # his override for note_head_block
+# One file for all of them: STATE/config.json, e.g. {"memory_nag": false}. See SWITCHES.
+CONFIG = os.path.join(STATE, "config.json")
 # ...and a hard cap on top of stop_hook_active. That flag is something THIS build happens
 # to send; the design must not rest on it. A chat that decides there is genuinely nothing
 # durable to save never changes a memory mtime, so an uncapped nag would block its own Stop
@@ -1323,7 +1325,7 @@ def ceiling_block(d, path):
     so the caller can skip the nag and print exactly one decision."""
     if d.get("stop_hook_active"):
         return False    # Claude Code is ALREADY continuing because this hook blocked
-    if os.path.exists(os.path.join(STATE, CEILING_OFF)):
+    if switched_off(CEILING_OFF):
         return False    # his override - [[automate-it-dont-tell-him]]
     sid = d.get("session_id")
     if not sid:
@@ -1382,7 +1384,7 @@ def memory_nag_text(d, path):
     if d.get("stop_hook_active"):
         return ""          # Claude Code is ALREADY continuing because this hook blocked;
                         # blocking again is a loop nobody can interrupt
-    if os.path.exists(os.path.join(STATE, NAG_OFF)):
+    if switched_off(NAG_OFF):
         return ""
     sid = d.get("session_id")
     if not sid:
@@ -1466,7 +1468,7 @@ def note_head_block(d, path):
     handing over never gets a later Stop - the nag would be lost for exactly these chats."""
     if d.get("stop_hook_active"):
         return False
-    if os.path.exists(os.path.join(STATE, HEAD_OFF)):
+    if switched_off(HEAD_OFF):
         return False
     sid = d.get("session_id")
     if not sid:
@@ -2706,10 +2708,10 @@ def cmd_bash():
     cmd = (d.get("tool_input") or {}).get("command") or ""
     if HEREDOC_OK in cmd:
         return                      # he (or Claude) asked for this one explicitly
-    if os.path.exists(os.path.join(STATE, HEREDOC_OFF)):
-        return
     why = heredoc_offence(cmd)
     if not why:
+        return
+    if switched_off(HEREDOC_OFF):    # checked last: the plain Bash call reads no extra file
         return
     log("heredoc: blocked - " + why)
     print(json.dumps({"hookSpecificOutput": {
@@ -3844,7 +3846,7 @@ def memory_hints(out, d, sid):
 
 
 def _memory_hints(out, d, sid):
-    if not sid or os.path.exists(os.path.join(STATE, HINTS_OFF)):
+    if not sid or switched_off(HINTS_OFF):
         return out
     hso0 = (out or {}).get("hookSpecificOutput")
     if isinstance(hso0, dict) and hso0.get("additionalContext"):
@@ -3902,6 +3904,40 @@ def _memory_hints(out, d, sid):
 
 
 KEYWORDS_OFF = "no-keywords-check"
+
+# Each off-file name -> its key in config.json. A key set to JSON false switches that part
+# off; the old empty files keep working. (update.py reads update_check on its own.)
+SWITCHES = {NAG_OFF: "memory_nag", HEAD_OFF: "note_head_check", CEILING_OFF: "ceiling",
+            HEREDOC_OFF: "heredoc_guard", HINTS_OFF: "memory_hints",
+            KEYWORDS_OFF: "keywords_check"}
+_CONFIG = None                      # config.json read at most once per process
+
+
+def _config():
+    global _CONFIG
+    if _CONFIG is None:
+        _CONFIG = {}
+        try:
+            with open(CONFIG, encoding="utf-8-sig") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                _CONFIG = data
+        except MISSING:
+            pass
+        except Exception as e:
+            swallowed("config.json", e)
+    return _CONFIG
+
+
+def switched_off(off_file):
+    """True when the old empty file STATE/off_file exists, or config.json has this part's
+    key set to JSON false (nothing else counts: "no", 0 and true leave it on). Never raises."""
+    try:
+        if os.path.exists(os.path.join(STATE, off_file)):
+            return True
+        return _config().get(SWITCHES.get(off_file)) is False
+    except Exception:
+        return False
 
 
 def memory_files_written(transcript_path, sid=None):
@@ -3975,7 +4011,7 @@ def keywords_block(d, path):
     this chat wrote into its own memory folder, chat_wrote_memory already keeps the nag
     quiet (it looks at that folder only). Returns True when it blocked, so the caller prints
     exactly one decision."""
-    if d.get("stop_hook_active") or os.path.exists(os.path.join(STATE, KEYWORDS_OFF)):
+    if d.get("stop_hook_active") or switched_off(KEYWORDS_OFF):
         return False
     sid = d.get("session_id")
     if not sid:

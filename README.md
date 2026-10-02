@@ -266,15 +266,25 @@ chat ends.
 
 ### Turning bits off
 
-Create an empty file in `~/.claude/context-guard/`:
+Put the parts you want off in `~/.claude/context-guard/config.json`. A key set to JSON `false`
+switches that part off; anything else (`true`, `"no"`, `0`, a missing key) leaves it on:
 
-* `no-ceiling` — stop the Stop hook ever blocking
-* `no-memory-nag` — stop it checking that memories were written
-* `no-note-head-check` — stop it sending back a handoff note whose head lacks the numbered label, writer or effort line
-* `no-heredoc-guard` — allow heredocs again (or put `# heredoc-ok` in a single command)
-* `no-update-check` — stop the once-a-day look for a newer version
-* `no-memory-hints` — stop the one-line hint about another project's matching memory
-* `no-keywords-check` — stop it sending back a memory saved without a `keywords:` line
+```json
+{"memory_nag": false, "ceiling": false}
+```
+
+* `ceiling` — stop the Stop hook ever blocking
+* `memory_nag` — stop it checking that memories were written
+* `note_head_check` — stop it sending back a handoff note whose head lacks the numbered label, writer or effort line
+* `heredoc_guard` — allow heredocs again (or put `# heredoc-ok` in a single command)
+* `update_check` — stop the once-a-day look for a newer version
+* `memory_hints` — stop the one-line hint about another project's matching memory
+* `keywords_check` — stop it sending back a memory saved without a `keywords:` line
+
+A config.json that is not valid JSON switches nothing off and leaves one error line in the log.
+The older way still works too: an empty file in `~/.claude/context-guard/` named `no-ceiling`,
+`no-memory-nag`, `no-note-head-check`, `no-heredoc-guard`, `no-update-check`, `no-memory-hints`
+or `no-keywords-check`.
 
 Every automatic behaviour has an override. That is deliberate: a check you cannot switch off
 is a check you will eventually disable by deleting the whole tool.

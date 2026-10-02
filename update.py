@@ -5,8 +5,8 @@
 
 Context Guard never updates on its own: check() only looks, and apply() only runs when
 someone asks. check() touches the network at most once a day (a `git fetch` bounded at 5 s)
-and stays silent when offline. Switch it off with an empty
-~/.claude/context-guard/no-update-check.
+and stays silent when offline. Switch it off with {"update_check": false} in
+~/.claude/context-guard/config.json, or an empty ~/.claude/context-guard/no-update-check.
 """
 import datetime
 import json
@@ -120,8 +120,20 @@ def check(clone=None, home=None, now=None):
         return ""
 
 
-def _check(clone, home, now):
+def _switched_off(home):
+    """The empty file no-update-check, or {"update_check": false} in config.json."""
     if os.path.exists(os.path.join(_base(home), "no-update-check")):
+        return True
+    try:
+        with open(os.path.join(_base(home), "config.json"), encoding="utf-8-sig") as f:
+            data = json.load(f)
+        return isinstance(data, dict) and data.get("update_check") is False
+    except Exception:
+        return False
+
+
+def _check(clone, home, now):
+    if _switched_off(home):
         return ""
     if not os.path.exists(os.path.join(clone, ".git")):
         return ""                              # installed from a zip: nothing to fetch
