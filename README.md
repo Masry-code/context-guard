@@ -126,7 +126,7 @@ check.
 | `guard.py --bash` | PreToolUse (Bash) | blocks heredocs, which mangle file content on Windows |
 | `guard.py --ledger` | Stop | appends your own words to a permanent ledger, and past the ceiling refuses to let the chat close. It writes no stub: stubs come from `--session-end` when a chat closes and from `--bootstrap` when one died without that hook |
 | `guard.py --session-end` | SessionEnd | when a chat ends with no note of any kind, leaves the mechanical stub (skipped for a chat under 1.5 MB, or one that already has a note, a stub or a consumed `.used-*` note) |
-| `guard.py --bootstrap` | SessionStart | gives a project directory its own memory list the first time a chat opens there, and stubs other chats of the project that died without SessionEnd (idle 6 to 48 hours); once a day deletes consumed `.used-*` notes older than 30 days (the newest 80 of each project are kept) |
+| `guard.py --bootstrap` | SessionStart | gives a project directory its own memory list the first time a chat opens there, and stubs other chats of the project that died without SessionEnd (idle 6 to 48 hours); once a day deletes consumed `.used-*` notes older than 30 days (the newest 80 of each project, and the newest and highest-numbered note of every thread, are kept) |
 
 Three ideas do the real work.
 
@@ -135,7 +135,8 @@ edited. When a new chat picks up a thread it is handed *your own words, verbatim
 including requests from ten chats ago that were never delivered. Summaries lose exactly
 the detail that makes a request actionable.
 
-Keys and tokens are masked before they reach the log, the ledger or a handoff note (known
+Keys and tokens are masked before they reach the log, the ledger, a checkpoint or the ledger
+part of a pickup (a note body a chat wrote is passed on as written) (known
 key shapes, `user:pass@` in URLs, and the value after a word like `token`, `password` or
 `api_key`). Hex values of 7-64 characters after such a word are kept on purpose, because
 session ids, git shas and digests look exactly the same, and so are values containing a `/`

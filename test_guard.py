@@ -4845,7 +4845,7 @@ def test_mask_secrets_masks_every_known_shape():
 
 
 def test_mask_secrets_leaves_ids_and_ordinary_text_alone():
-    same = ["session 6e3ec0f6-8d32-43e4-aa55-dd261a7467b2 done",
+    same = ["session 3f2a9c1e-7b4d-4e8a-9c6f-0a1b2c3d4e5f done",
             "commit a4cb63e", "commit a4cb63e1f2d3", "commit " + "a4cb63e1f2" * 4,
             "token 0123456789abcdef", "token budget 20000 tokens",
             "<task-notification>", "a task-management-and-scheduling-tool",
