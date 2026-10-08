@@ -101,38 +101,43 @@ def config_path(home=None):
 
 
 def neighbour_plan(home, current):
-    """What to do about config.json's "neighbour_requests" key: None (nothing), "write", or a
-    problem string. An install that already exists keeps today's behaviour (other chats'
-    requests in a pickup) by getting the key set to true BEFORE the new code is copied; a fresh
-    install writes nothing, because the default is off. A config.json that is not a JSON
-    object on an existing install is a problem: there is nothing safe to keep."""
+    """What to do about config.json's "neighbour_requests" key: None (nothing), "write" (set it
+    true), "write-off" (set it false), or a problem string. An install that already exists keeps
+    today's behaviour (other chats' requests in a pickup) by getting the key set to true BEFORE
+    the new code is copied. A fresh install gets it set to false, so that its second run finds
+    the key present instead of mistaking the install for an existing one. A config.json that
+    is not a JSON object on an existing install is a problem: there is nothing safe to keep;
+    on a fresh install it is left alone (the default is off anyway)."""
     existing = (not is_fresh(current)) or os.path.isfile(os.path.join(bin_dir(home),
                                                                       "source.json"))
-    if not existing:
-        return None
+    value = "write" if existing else "write-off"
     p = config_path(home)
     if not os.path.exists(p):
-        return "write"
+        return value
     try:
         with open(p, encoding="utf-8-sig") as f:
             data = json.load(f)
     except (OSError, ValueError) as e:
+        if not existing:
+            return None
         return "%s cannot be read as JSON (%s); fix or move it first" % (p, e)
     if not isinstance(data, dict):
+        if not existing:
+            return None
         return "%s is not a JSON object; fix or move it first" % p
-    return None if NEIGHBOUR_KEY in data else "write"
+    return None if NEIGHBOUR_KEY in data else value
 
 
-def write_config_key(home):
-    """Set "neighbour_requests": true, keeping every other key. config.json.tmp first, then
-    os.replace. 0 on success; on OSError one clean line and 1."""
+def write_config_key(home, value=True):
+    """Set "neighbour_requests" to `value`, keeping every other key. config.json.tmp first,
+    then os.replace. 0 on success; on OSError one clean line and 1."""
     p = config_path(home)
     try:
         obj = {}
         if os.path.exists(p):
             with open(p, encoding="utf-8-sig") as f:
                 obj = json.load(f)
-        obj[NEIGHBOUR_KEY] = True
+        obj[NEIGHBOUR_KEY] = value
         os.makedirs(os.path.dirname(p), exist_ok=True)
         with open(p + ".tmp", "w", encoding="utf-8", newline="\n") as f:
             f.write(json.dumps(obj, indent=2) + "\n")
@@ -348,7 +353,7 @@ def main():
     nplan = None
     if not a.uninstall:
         nplan = neighbour_plan(a.home, current)
-        if nplan and nplan != "write":
+        if nplan and nplan not in ("write", "write-off"):
             print("REFUSING: " + nplan + ". Nothing was copied or changed.")
             return 1
     meta_stale = not a.uninstall and not meta_current(a.home)
@@ -369,7 +374,9 @@ def main():
         print(diff if diff.strip() else "(no textual diff)")
     if a.dry_run:
         if nplan:
-            print('would set "%s": true in %s' % (NEIGHBOUR_KEY, config_path(a.home)))
+            print('would set "%s": %s in %s' % (NEIGHBOUR_KEY,
+                                               "true" if nplan == "write" else "false",
+                                               config_path(a.home)))
         if names:
             print("would copy %d file(s) to %s: %s" % (len(names), b, ", ".join(names)))
         if meta_stale:
@@ -381,10 +388,14 @@ def main():
 
     if nplan:
         # BEFORE the copy: his chats must never run the new code without the key.
-        if write_config_key(a.home):
+        if write_config_key(a.home, nplan == "write"):
             return 1
-        print('kept your current behaviour: "%s": true in %s'
-              % (NEIGHBOUR_KEY, config_path(a.home)))
+        if nplan == "write":
+            print('kept your current behaviour: "%s": true in %s'
+                  % (NEIGHBOUR_KEY, config_path(a.home)))
+        else:
+            print('other chats\' requests stay out of a pickup: "%s": false in %s'
+                  % (NEIGHBOUR_KEY, config_path(a.home)))
     if names or meta_stale:
         if install_copy(a.home, names):
             return 1

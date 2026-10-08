@@ -1091,6 +1091,7 @@ def sweep_stubs(d):
 USED_KEEP_DAYS = 30        # a consumed .used-*.md note is deleted past this age
 USED_PRUNE_MAX = 200       # files deleted per pass
 USED_PRUNE_STAMP = os.path.join(STATE, "used-prune-day")   # plain text YYYY-MM-DD, not .json
+USED_PRUNE_BUDGET = 5      # seconds for the scan, the label reads and the deletions together
 USED_OFF = "no-used-prune"
 
 
@@ -1124,9 +1125,21 @@ def prune_used_notes():
         with open(USED_PRUNE_STAMP, "w", encoding="utf-8") as f:
             f.write(today + "\n")
         cutoff = time.time() - USED_KEEP_DAYS * 86400
+        t0 = time.monotonic()
+
+        def over():
+            return time.monotonic() - t0 >= USED_PRUNE_BUDGET
+
+        def stopped_line(n):
+            log("used-prune: stopped at the %g s budget, %d deleted, rest next day"
+                % (USED_PRUNE_BUDGET, n))
+
         groups = {}
         with os.scandir(handoff_dir()) as it:
             for e in it:
+                if over():
+                    stopped_line(0)
+                    return
                 try:
                     if not e.is_file(follow_symlinks=False):
                         continue
@@ -1137,6 +1150,7 @@ def prune_used_notes():
                 except Exception as ex:
                     swallowed("prune_used_notes", ex, quiet=MISSING)
         doomed, kept = [], 0
+        stopped = False
         for files in groups.values():
             files.sort(reverse=True)               # newest first
             protected = set(n for _m, n, _p in files[:LABEL_SCAN_MAX])
@@ -1148,6 +1162,9 @@ def prune_used_notes():
                 continue
             newest, highest = {}, {}
             for _m, n, p in files:                 # newest first: a tie keeps the newest
+                if over():
+                    stopped = True
+                    break
                 base, num = split_label_number(note_label(p))
                 if not base:
                     continue
@@ -1155,19 +1172,28 @@ def prune_used_notes():
                 newest.setdefault(k, n)
                 if k not in highest or num > highest[k][0]:
                     highest[k] = (num, n)
+            if stopped:                            # its guards are incomplete: delete none
+                break
             keep_names = set(newest.values()) | set(n for _num, n in highest.values())
             kept += len([x for x in todo if x[1] in keep_names])
             doomed += [x for x in todo if x[1] not in keep_names]
         doomed.sort()                              # oldest first
         deleted = 0
         for _m, n, p in doomed[:USED_PRUNE_MAX]:
+            if over():
+                stopped = True
+                break
             try:
                 os.remove(p)
                 deleted += 1
                 log("used-prune: deleted " + n)
             except Exception as ex:
                 log("used-prune: could not delete %s (%s)" % (n, type(ex).__name__))
-        log("used-prune: %d deleted, %d kept as the newest of their project" % (deleted, kept))
+        if stopped:
+            stopped_line(deleted)
+        else:
+            log("used-prune: %d deleted, %d kept as the newest of their project"
+                % (deleted, kept))
     except Exception as e:
         swallowed("prune_used_notes", e)
 

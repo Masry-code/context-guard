@@ -311,7 +311,8 @@ The older way still works too: an empty file in `~/.claude/context-guard/` named
 
 * `neighbour_requests` — a pickup also shows other chats' requests from the same folder. Off unless
   set to JSON `true` (`"yes"`, `1` and `false` are off). An install that existed before this
-  change gets `true` written for it, so nothing changes for it.
+  change gets `true` written for it, so nothing changes for it. A fresh install gets `false`
+  written, so a second run of the installer does not mistake it for an older install.
 
 Every automatic behaviour has an override. That is deliberate: a check you cannot switch off
 is a check you will eventually disable by deleting the whole tool.

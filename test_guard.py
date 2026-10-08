@@ -2541,9 +2541,6 @@ def test_install_is_idempotent():
     try:
         seed_settings(home, {})
         run_install(home)
-        # a second run sees an existing install and would write "neighbour_requests": true;
-        # this test is about hook idempotence, so the key is already decided.
-        neighbours_on(home, False)
         p = run_install(home)
         expect_clean(p, "install-twice")
         check("install-twice: second run changed nothing",
@@ -2854,7 +2851,6 @@ def test_reinstall_refreshes_only_a_changed_copy():
     try:
         seed_settings(home, {})
         expect_clean(run_install_from(src, home), "reinstall/first")
-        neighbours_on(home, False)      # see test_install_is_idempotent
         p = run_install_from(src, home)
         check("reinstall: a second run says Already up to date",
               "Already up to date" in (p.stdout or ""), (p.stdout or "")[-300:])
@@ -7204,7 +7200,22 @@ def test_install_keeps_an_existing_installs_neighbours_on():
         seed_settings(home, {})
         r = run_install(home)
         check("nb-inst-d: fresh install ok", r.returncode == 0, r.stdout + r.stderr)
-        check("nb-inst-d: no config.json created", not os.path.exists(cfg_file(home)))
+        check("nb-inst-d: config.json holds just the key, false",
+              os.path.exists(cfg_file(home)) and json.loads(read_bytes(cfg_file(home)))
+              == {"neighbour_requests": False})
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+    # (d2) fresh install with another key already in config.json: merged, nothing clobbered
+    home = make_home({})
+    try:
+        seed_settings(home, {})
+        os.makedirs(os.path.dirname(cfg_file(home)), exist_ok=True)
+        with open(cfg_file(home), "w", encoding="utf-8") as f:
+            json.dump({"memory_nag": False}, f)
+        run_install(home)
+        check("nb-inst-d2: both keys, the other one kept",
+              json.loads(read_bytes(cfg_file(home)))
+              == {"memory_nag": False, "neighbour_requests": False})
     finally:
         shutil.rmtree(home, ignore_errors=True)
     # (e) broken config.json on an existing install: refuse, change nothing
@@ -9611,6 +9622,129 @@ def test_a_failed_delete_is_logged_and_the_rest_go_on():
         rm_tree(home)
 
 
+def used_budget_home(keys, old_pairs=2):
+    """Throwaway home with, per key, 80 recent notes (the protected newest) and `old_pairs`
+    old threads of two notes each: the older one of each pair is deletable."""
+    home = make_home({})
+    gone = []
+    for k in keys:
+        for i in range(80):
+            used_put(home, "%s.%08d.used-20261007-101010.md" % (k, i), 1)
+        for j in range(old_pairs):
+            lo = "%s.lo%06d.used-20260801-101010.md" % (k, j)
+            hi = "%s.hi%06d.used-20260802-101010.md" % (k, j)
+            used_put(home, lo, 41, "HANDOFF LABEL: T%s%d -1 (1 Aug)\n\nold.\n" % (k[:3], j))
+            used_put(home, hi, 40, "HANDOFF LABEL: T%s%d -2 (2 Aug)\n\nnewer.\n" % (k[:3], j))
+            gone.append(lo)
+    return home, gone
+
+
+def test_the_prune_stops_at_its_time_budget():
+    # (1) a budget that is already spent during the scan: nothing is deleted, one line says so
+    home, gone = used_budget_home(["keyaaa", "keybbb"])
+    try:
+        g = guard_call(home, "guard.USED_PRUNE_BUDGET = 0\nguard.prune_used_notes()\n")
+        check("used-budget-1: the call did not raise", g.returncode == 0, g.stderr[-300:])
+        d = os.path.join(home, ".claude", "handoff")
+        check("used-budget-1: nothing was deleted", all(os.path.exists(os.path.join(d, n))
+                                                         for n in gone))
+        lg = used_log(home)
+        check("used-budget-1: one stop line, 0 deleted",
+              lg.count("used-prune: stopped at the 0 s budget, 0 deleted, rest next day") == 1
+              and "used-prune: deleted " not in lg, lg[-400:])
+        check("used-budget-1: stdout is empty", (g.stdout or "").strip() == "", g.stdout)
+    finally:
+        rm_tree(home)
+    # (2) the budget runs out while the labels of the first project are being read: its
+    # guards are incomplete, so none of its notes - and none of the other project's - go
+    home, gone = used_budget_home(["keyaaa", "keybbb"])
+    try:
+        g = guard_call(home, "real_mono = guard.time.monotonic\n"
+                       "off = [0]\n"
+                       "guard.time.monotonic = lambda: real_mono() + off[0]\n"
+                       "real_label = guard.note_label\n"
+                       "def slow_label(p):\n"
+                       "    off[0] += 100\n"
+                       "    return real_label(p)\n"
+                       "guard.note_label = slow_label\n"
+                       "guard.prune_used_notes()\n")
+        check("used-budget-2: the call did not raise", g.returncode == 0, g.stderr[-300:])
+        d = os.path.join(home, ".claude", "handoff")
+        check("used-budget-2: nothing whose guards were not computed is deleted",
+              all(os.path.exists(os.path.join(d, n)) for n in gone))
+        lg = used_log(home)
+        check("used-budget-2: the stop line, 0 deleted",
+              lg.count("used-prune: stopped at the 5 s budget, 0 deleted, rest next day") == 1,
+              lg[-400:])
+    finally:
+        rm_tree(home)
+    # (3) the budget runs out during the deletions: those done are real, the rest wait
+    home, gone = used_budget_home(["keyaaa", "keybbb"], old_pairs=6)
+    try:
+        g = guard_call(home, "real_mono = guard.time.monotonic\n"
+                       "off = [0]\n"
+                       "guard.time.monotonic = lambda: real_mono() + off[0]\n"
+                       "real_rm = guard.os.remove\n"
+                       "done = [0]\n"
+                       "def rm(p, *a, **k):\n"
+                       "    real_rm(p, *a, **k)\n"
+                       "    done[0] += 1\n"
+                       "    if done[0] == 3:\n"
+                       "        off[0] += 100\n"
+                       "guard.os.remove = rm\n"
+                       "guard.prune_used_notes()\n")
+        check("used-budget-3: the call did not raise", g.returncode == 0, g.stderr[-300:])
+        d = os.path.join(home, ".claude", "handoff")
+        left = [n for n in gone if os.path.exists(os.path.join(d, n))]
+        check("used-budget-3: exactly 3 of the 12 deletable notes are gone, none other",
+              len(gone) == 12 and len(left) == 9, repr((len(gone), len(left))))
+        for k in ("keyaaa", "keybbb"):
+            check("used-budget-3: %s's protected and newest notes are all still there" % k,
+                  all(os.path.exists(os.path.join(d, "%s.%08d.used-20261007-101010.md" % (k, i)))
+                      for i in range(80))
+                  and all(os.path.exists(os.path.join(d, "%s.hi%06d.used-20260802-101010.md"
+                                                       % (k, j))) for j in range(6)))
+        lg = used_log(home)
+        check("used-budget-3: the stop line says 3 deleted",
+              lg.count("used-prune: stopped at the 5 s budget, 3 deleted, rest next day") == 1
+              and lg.count("used-prune: deleted ") == 3, lg[-500:])
+    finally:
+        rm_tree(home)
+
+
+def test_a_fresh_install_then_a_second_install_leaves_neighbours_off():
+    home = make_home({})
+    try:
+        seed_settings(home, {})
+        r = run_install(home)
+        check("nb-fresh: first run ok", r.returncode == 0, r.stdout + r.stderr)
+        check("nb-fresh: it wrote the key as false",
+              read_bytes(cfg_file(home)) == b'{\n  "neighbour_requests": false\n}\n',
+              repr(read_bytes(cfg_file(home)) if os.path.exists(cfg_file(home)) else None))
+        r2 = run_install(home)
+        check("nb-fresh: second run says Already up to date",
+              r2.returncode == 0 and "Already up to date" in r2.stdout, r2.stdout)
+        check("nb-fresh: the key is still false after the second run",
+              json.loads(read_bytes(cfg_file(home))) == {"neighbour_requests": False})
+        for sid8, label in (("alphaaaa", "Alpha -2 (18 Sep)"), ("betabbbb", "Beta -4 (18 Sep)")):
+            with open(os.path.join(home, ".claude", "handoff", KEY + "." + sid8 + ".md"),
+                      "w", encoding="utf-8") as f:
+                f.write("HANDOFF LABEL: " + label + chr(10) * 2 + "# n" + chr(10))
+        lp = os.path.join(home, ".claude", "handoff", KEY + ".requests.md")
+        with open(lp, "w", encoding="utf-8") as f:
+            f.write("# What the user actually asked for - his own words" + chr(10))
+        append_new_entry(home, "2026-09-18 10:00:00", "alphaaaa", "alpha words 0")
+        append_new_entry(home, "2026-09-18 11:00:00", "betabbbb", "beta words 0")
+        p = run(home, "freshchat", "Alpha -2 (18 Sep)")
+        expect_clean(p, "nb-fresh-pickup")
+        ctx = context_of(p)
+        check("nb-fresh: the pickup has no neighbour block and no beta words",
+              "-- OTHER CHATS IN THIS FOLDER" not in ctx and "beta words" not in ctx
+              and "alpha words 0" in ctx, repr(ctx[-400:]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
 if __name__ == "__main__":
     for t in (test_a_folderless_chat_naming_a_saved_thread_is_told_to_move,
               test_a_big_folderless_chat_is_not_told_to_move,
@@ -9939,7 +10073,9 @@ if __name__ == "__main__":
               test_neighbour_requests_are_off_by_default,
               test_neighbour_requests_on_is_todays_output,
               test_an_unattributed_folder_gets_only_the_pointer_when_off,
-              test_install_keeps_an_existing_installs_neighbours_on):
+              test_install_keeps_an_existing_installs_neighbours_on,
+              test_a_fresh_install_then_a_second_install_leaves_neighbours_off,
+              test_the_prune_stops_at_its_time_budget):
         print(t.__name__)
         t()
     print()
