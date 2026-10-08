@@ -92,6 +92,57 @@ def copy_plan(home=None):
     return out
 
 
+NEIGHBOUR_KEY = "neighbour_requests"
+
+
+def config_path(home=None):
+    return os.path.join(home or os.path.expanduser("~"), ".claude", "context-guard",
+                        "config.json")
+
+
+def neighbour_plan(home, current):
+    """What to do about config.json's "neighbour_requests" key: None (nothing), "write", or a
+    problem string. An install that already exists keeps today's behaviour (other chats'
+    requests in a pickup) by getting the key set to true BEFORE the new code is copied; a fresh
+    install writes nothing, because the default is off. A config.json that is not a JSON
+    object on an existing install is a problem: there is nothing safe to keep."""
+    existing = (not is_fresh(current)) or os.path.isfile(os.path.join(bin_dir(home),
+                                                                      "source.json"))
+    if not existing:
+        return None
+    p = config_path(home)
+    if not os.path.exists(p):
+        return "write"
+    try:
+        with open(p, encoding="utf-8-sig") as f:
+            data = json.load(f)
+    except (OSError, ValueError) as e:
+        return "%s cannot be read as JSON (%s); fix or move it first" % (p, e)
+    if not isinstance(data, dict):
+        return "%s is not a JSON object; fix or move it first" % p
+    return None if NEIGHBOUR_KEY in data else "write"
+
+
+def write_config_key(home):
+    """Set "neighbour_requests": true, keeping every other key. config.json.tmp first, then
+    os.replace. 0 on success; on OSError one clean line and 1."""
+    p = config_path(home)
+    try:
+        obj = {}
+        if os.path.exists(p):
+            with open(p, encoding="utf-8-sig") as f:
+                obj = json.load(f)
+        obj[NEIGHBOUR_KEY] = True
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p + ".tmp", "w", encoding="utf-8", newline="\n") as f:
+            f.write(json.dumps(obj, indent=2) + "\n")
+        os.replace(p + ".tmp", p)
+    except (OSError, ValueError) as e:
+        print("Could not write %s (%s). Nothing was changed." % (p, e))
+        return 1
+    return 0
+
+
 def source_meta():
     return json.dumps({"clone": HERE,
                        "files": {n: hashlib.sha256(_read(os.path.join(HERE, n))).hexdigest()
@@ -294,13 +345,19 @@ def main():
             print("REFUSING: " + problem + ". Nothing was copied or changed.")
             return 1
         names = copy_plan(a.home)
+    nplan = None
+    if not a.uninstall:
+        nplan = neighbour_plan(a.home, current)
+        if nplan and nplan != "write":
+            print("REFUSING: " + nplan + ". Nothing was copied or changed.")
+            return 1
     meta_stale = not a.uninstall and not meta_current(a.home)
 
     wanted = build(current, remove=a.uninstall, home=a.home)
     fresh = not a.uninstall and is_fresh(current)
     before, after = dumps(current), dumps(wanted)
     own_bin = a.uninstall and os.path.isfile(os.path.join(b, "source.json"))
-    if before == after and not names and not meta_stale:
+    if before == after and not names and not meta_stale and not nplan:
         print("Already up to date - nothing to change in " + path)
         if a.uninstall:
             return _remove_bin(b, own_bin, a.dry_run)
@@ -311,6 +368,8 @@ def main():
                                             fromfile=path + " (now)", tofile=path + " (after)"))
         print(diff if diff.strip() else "(no textual diff)")
     if a.dry_run:
+        if nplan:
+            print('would set "%s": true in %s' % (NEIGHBOUR_KEY, config_path(a.home)))
         if names:
             print("would copy %d file(s) to %s: %s" % (len(names), b, ", ".join(names)))
         if meta_stale:
@@ -320,6 +379,12 @@ def main():
         print("--dry-run: nothing was written.")
         return 0
 
+    if nplan:
+        # BEFORE the copy: his chats must never run the new code without the key.
+        if write_config_key(a.home):
+            return 1
+        print('kept your current behaviour: "%s": true in %s'
+              % (NEIGHBOUR_KEY, config_path(a.home)))
     if names or meta_stale:
         if install_copy(a.home, names):
             return 1

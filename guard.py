@@ -1815,6 +1815,13 @@ def ledger_tail(transcript_path, labels=None):
         log("ledger: budget dropped %d of %d request(s) for this thread - %d chars "
             "offered, budget %d" % (omitted, len(ours),
                                     sum(len(b) for b in ours), LEDGER_OWN_CHARS))
+    # Other chats' words are opt-in: a stranger's pickup must not hand one chat the words
+    # typed in another. Counted here, after the summon-label and noise filtering, so the
+    # pointer says how many were left out.
+    hidden = 0
+    if not switched_on(NEIGHBOUR_KEY):
+        hidden = len(theirs)
+        theirs = []
     theirs = theirs[-(LEDGER_OTHERS if ours else LEDGER_TAIL):]
     # the neighbours are bounded by size too - 15 entries of 2,000 chars is 30 KB, which
     # on its own would eat most of the injection the note itself needs.
@@ -1845,6 +1852,11 @@ def ledger_tail(transcript_path, labels=None):
             "thread - check it against the note above before adopting any of it. Entries "
             "with no chat id were recorded before attribution existed.")
             + " --" + chr(10) + chr(10) + (chr(10)).join(theirs))
+    elif hidden:
+        out.append(chr(10) + "-- " + str(hidden) + " request(s) from other chats in this "
+                   "folder are not shown (they are in the ledger named above; "
+                   '"neighbour_requests": true in ~/.claude/context-guard/config.json '
+                   "shows them) --")
     return "".join(out)
 
 
@@ -4097,6 +4109,18 @@ def switched_off(off_file):
         if os.path.exists(os.path.join(STATE, off_file)):
             return True
         return _config().get(SWITCHES.get(off_file)) is False
+    except Exception:
+        return False
+
+
+NEIGHBOUR_KEY = "neighbour_requests"
+
+
+def switched_on(key):
+    """True only when config.json has this key set to the JSON literal true ("yes", 1,
+    false and a missing key are all off). The mirror of switched_off. Never raises."""
+    try:
+        return _config().get(key) is True
     except Exception:
         return False
 

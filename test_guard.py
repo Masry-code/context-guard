@@ -1808,6 +1808,14 @@ def write_chat_msgs(home, sid, started, msgs):
     return p
 
 
+def neighbours_on(home, value=True):
+    """config.json with "neighbour_requests" set - the opt-in for the OTHER CHATS block."""
+    d = os.path.join(home, ".claude", "context-guard")
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, "config.json"), "w", encoding="utf-8") as f:
+        json.dump({"neighbour_requests": value}, f)
+
+
 def ledger_body(home):
     lp = os.path.join(home, ".claude", "handoff", KEY + ".requests.md")
     if not os.path.exists(lp):
@@ -1931,6 +1939,7 @@ def test_the_injected_tail_separates_this_thread_from_the_others():
             with open(os.path.join(home, ".claude", "handoff",
                                    KEY + "." + sid[:8] + ".md"), "w", encoding="utf-8") as f:
                 f.write(body)
+        neighbours_on(home)
         p = run(home, "freshchat", "Context Guard -2 (18 Sep)")
         expect_clean(p, "tail-split")
         ctx = context_of(p)
@@ -1959,6 +1968,7 @@ def test_the_tail_still_reads_when_nothing_is_attributed():
                     + chr(10) + "### 2026-09-11 10:00:00" + chr(10)
                     + chr(10) + "something he asked before attribution existed" + chr(10))
         write_transcript(home, "freshchat", 1000)
+        neighbours_on(home)
         p = run(home, "freshchat", "context guard")
         expect_clean(p, "tail-legacy")
         ctx = context_of(p)
@@ -2016,6 +2026,7 @@ def test_older_entries_get_their_chat_back():
         with open(os.path.join(home, ".claude", "handoff",
                                KEY + ".requests.attrib.json"), "w", encoding="utf-8") as f:
             json.dump({g.stdout.strip(): "guardaaa"}, f)
+        neighbours_on(home)
         p = run(home, "freshchat", "Context Guard -2 (18 Sep)")
         expect_clean(p, "recover")
         ctx = context_of(p)
@@ -2070,6 +2081,7 @@ def test_a_quiet_thread_still_gets_its_own_words():
             with open(os.path.join(home, ".claude", "handoff",
                                    KEY + "." + sid[:8] + ".md"), "w", encoding="utf-8") as f:
                 f.write(body)
+        neighbours_on(home)
         p = run(home, "freshchat", "Context Guard -2 (18 Sep)")
         expect_clean(p, "quiet")
         ctx = context_of(p)
@@ -2094,6 +2106,7 @@ def test_an_unattributed_project_still_gets_a_full_tail():
         write_old_ledger(home, [("2026-09-17 10:%02d:00" % i, "old request %d" % i)
                                 for i in range(40)])
         write_transcript(home, "freshchat", 1000)
+        neighbours_on(home)
         p = run(home, "freshchat", "context guard")
         expect_clean(p, "full-tail")
         ctx = context_of(p)
@@ -2528,6 +2541,9 @@ def test_install_is_idempotent():
     try:
         seed_settings(home, {})
         run_install(home)
+        # a second run sees an existing install and would write "neighbour_requests": true;
+        # this test is about hook idempotence, so the key is already decided.
+        neighbours_on(home, False)
         p = run_install(home)
         expect_clean(p, "install-twice")
         check("install-twice: second run changed nothing",
@@ -2838,6 +2854,7 @@ def test_reinstall_refreshes_only_a_changed_copy():
     try:
         seed_settings(home, {})
         expect_clean(run_install_from(src, home), "reinstall/first")
+        neighbours_on(home, False)      # see test_install_is_idempotent
         p = run_install_from(src, home)
         check("reinstall: a second run says Already up to date",
               "Already up to date" in (p.stdout or ""), (p.stdout or "")[-300:])
@@ -6992,6 +7009,7 @@ def test_the_neighbour_share_of_the_tail_is_bounded_too():
         for i in range(40):
             append_new_entry(home, "2026-09-18 11:%02d:00" % i, "harborba",
                              "neighbour request %d: " % i + ("word " * 120))
+        neighbours_on(home)
         p = run(home, "freshchat", "Context Guard -2 (18 Sep)")
         expect_clean(p, "tail-neighbour")
         ctx = context_of(p)
@@ -7013,6 +7031,246 @@ def test_the_neighbour_share_of_the_tail_is_bounded_too():
     finally:
         shutil.rmtree(home, ignore_errors=True)
 
+
+
+def two_thread_home():
+    """Two threads (alpha, beta) with a note each and two ledger entries each."""
+    home = make_home({})
+    for sid8, label in (("alphaaaa", "Alpha -2 (18 Sep)"), ("betabbbb", "Beta -4 (18 Sep)")):
+        with open(os.path.join(home, ".claude", "handoff", KEY + "." + sid8 + ".md"),
+                  "w", encoding="utf-8") as f:
+            f.write("HANDOFF LABEL: " + label + chr(10) * 2 + "# n" + chr(10))
+    lp = os.path.join(home, ".claude", "handoff", KEY + ".requests.md")
+    with open(lp, "w", encoding="utf-8") as f:
+        f.write("# What the user actually asked for - his own words" + chr(10))
+    for i in range(2):
+        append_new_entry(home, "2026-09-18 10:0%d:00" % i, "alphaaaa", "alpha words %d" % i)
+        append_new_entry(home, "2026-09-18 11:0%d:00" % i, "betabbbb", "beta words %d" % i)
+    return home
+
+
+POINTER_TAIL = ("request(s) from other chats in this folder are not shown (they are in the "
+                "ledger named above; \"neighbour_requests\": true in "
+                "~/.claude/context-guard/config.json shows them) --")
+
+
+def test_neighbour_requests_are_off_by_default():
+    """Only a literal JSON true shows other chats' words in a pickup. No config, "yes", 1 and
+    false all leave them out and say how many were left out."""
+    for label, cfg in (("absent", None), ("yes", "yes"), ("one", 1), ("false", False)):
+        home = two_thread_home()
+        try:
+            if cfg is not None:
+                neighbours_on(home, cfg)
+            p = run(home, "freshchat", "Alpha -2 (18 Sep)")
+            expect_clean(p, "nb-off-" + label)
+            ctx = context_of(p)
+            check("nb-off-%s: this thread holds alpha's words" % label,
+                  "THIS THREAD" in ctx and "alpha words 0" in ctx and "alpha words 1" in ctx,
+                  repr(ctx[-400:]))
+            check("nb-off-%s: beta's words are absent" % label,
+                  "beta words" not in ctx, repr(ctx[-400:]))
+            check("nb-off-%s: no OTHER CHATS header" % label,
+                  "-- OTHER CHATS IN THIS FOLDER" not in ctx)
+            check("nb-off-%s: the pointer counts the two left out" % label,
+                  "-- 2 " + POINTER_TAIL in ctx, repr(ctx[-400:]))
+        finally:
+            shutil.rmtree(home, ignore_errors=True)
+
+
+def test_neighbour_requests_on_is_todays_output():
+    """With true the block is the one every pickup got before the key existed. Not compared
+    byte for byte against an older guard.py (that one differs in key masking too): the header,
+    both sides, their order and the absence of the pointer are asserted instead."""
+    home = two_thread_home()
+    try:
+        neighbours_on(home, True)
+        p = run(home, "freshchat", "Alpha -2 (18 Sep)")
+        expect_clean(p, "nb-on")
+        ctx = context_of(p)
+        this_at = ctx.find("-- THIS THREAD")
+        other_at = ctx.find("-- OTHER CHATS IN THIS FOLDER - different work. Do not adopt it "
+                            "as yours; check it against the note above before acting on any "
+                            "of it. --")
+        a1 = ctx.find("alpha words 1")
+        b0 = ctx.find("beta words 0")
+        b1 = ctx.find("beta words 1")
+        check("nb-on: this thread first, then the neighbours",
+              -1 < this_at < a1 < other_at < b0 < b1,
+              "this=%d a1=%d other=%d b0=%d b1=%d" % (this_at, a1, other_at, b0, b1))
+        check("nb-on: no pointer line", "not shown (they are in the ledger" not in ctx)
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_an_unattributed_folder_gets_only_the_pointer_when_off():
+    """No notes, five ledger entries: off gives no entry text and a pointer saying 5; on is
+    the full tail."""
+    for on in (False, True):
+        home = make_home({"%s.oldchatx.md" % KEY: NOTE_CTX})
+        try:
+            write_old_ledger(home, [("2026-09-17 10:%02d:00" % i, "old request %d" % i)
+                                    for i in range(5)])
+            write_transcript(home, "freshchat", 1000)
+            if on:
+                neighbours_on(home, True)
+            p = run(home, "freshchat", "context guard")
+            expect_clean(p, "nb-unattr-%s" % on)
+            ctx = context_of(p)
+            if on:
+                check("nb-unattr-on: the full tail", ctx.count("old request ") == 5
+                      and "-- OTHER CHATS IN THIS FOLDER" in ctx, repr(ctx[-300:]))
+            else:
+                check("nb-unattr-off: no entry text", "old request " not in ctx,
+                      repr(ctx[-300:]))
+                check("nb-unattr-off: the pointer says 5", "-- 5 " + POINTER_TAIL in ctx,
+                      repr(ctx[-300:]))
+                check("nb-unattr-off: no OTHER CHATS header",
+                      "-- OTHER CHATS IN THIS FOLDER" not in ctx)
+        finally:
+            shutil.rmtree(home, ignore_errors=True)
+
+
+def cfg_file(home):
+    return os.path.join(home, ".claude", "context-guard", "config.json")
+
+
+def read_bytes(path):
+    with open(path, "rb") as f:
+        return f.read()
+
+
+def existing_install(home):
+    """A home that already has Context Guard installed, with a bin/ that is out of date and no
+    config.json - the owner's situation."""
+    seed_settings(home, {})
+    r = run_install(home)
+    assert r.returncode == 0, r.stdout + r.stderr
+    if os.path.exists(cfg_file(home)):
+        os.remove(cfg_file(home))
+    gp = os.path.join(home, ".claude", "context-guard", "bin", "guard.py")
+    with open(gp, "ab") as f:
+        f.write(b"# stale" + bytes([10]))
+    return gp
+
+
+def test_install_keeps_an_existing_installs_neighbours_on():
+    # (a) existing install, no config.json
+    home = make_home({})
+    try:
+        gp = existing_install(home)
+        r = run_install(home)
+        check("nb-inst-a: rc 0", r.returncode == 0, r.stdout + r.stderr)
+        check("nb-inst-a: config.json is just the key",
+              os.path.exists(cfg_file(home)) and json.loads(read_bytes(cfg_file(home)))
+              == {"neighbour_requests": True})
+        check("nb-inst-a: said so", 'kept your current behaviour: "neighbour_requests": true'
+              in r.stdout, r.stdout)
+        check("nb-inst-a: written before the copy",
+              os.path.getmtime(cfg_file(home)) <= os.path.getmtime(gp))
+        check("nb-inst-a: LF, indent 2", read_bytes(cfg_file(home))
+              == b'{\n  "neighbour_requests": true\n}\n', repr(read_bytes(cfg_file(home))))
+        r2 = run_install(home)
+        check("nb-inst-a: second run is up to date", "Already up to date" in r2.stdout,
+              r2.stdout)
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+    # (b) existing install with another key
+    home = make_home({})
+    try:
+        existing_install(home)
+        os.makedirs(os.path.dirname(cfg_file(home)), exist_ok=True)
+        with open(cfg_file(home), "w", encoding="utf-8") as f:
+            json.dump({"memory_nag": False}, f)
+        run_install(home)
+        check("nb-inst-b: both keys", json.loads(read_bytes(cfg_file(home)))
+              == {"memory_nag": False, "neighbour_requests": True})
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+    # (c) existing install that already chose false
+    home = make_home({})
+    try:
+        existing_install(home)
+        with open(cfg_file(home), "w", encoding="utf-8") as f:
+            f.write('{"neighbour_requests": false}')
+        run_install(home)
+        check("nb-inst-c: false is never touched",
+              read_bytes(cfg_file(home)) == b'{"neighbour_requests": false}')
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+    # (d) fresh home
+    home = make_home({})
+    try:
+        seed_settings(home, {})
+        r = run_install(home)
+        check("nb-inst-d: fresh install ok", r.returncode == 0, r.stdout + r.stderr)
+        check("nb-inst-d: no config.json created", not os.path.exists(cfg_file(home)))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+    # (e) broken config.json on an existing install: refuse, change nothing
+    for bad in (b"[1]", b"{not json"):
+        home = make_home({})
+        try:
+            gp = existing_install(home)
+            os.makedirs(os.path.dirname(cfg_file(home)), exist_ok=True)
+            with open(cfg_file(home), "wb") as f:
+                f.write(bad)
+            before_g, before_s = read_bytes(gp), read_bytes(settings_file(home))
+            before_src = read_bytes(os.path.join(os.path.dirname(gp), "source.json"))
+            r = run_install(home)
+            check("nb-inst-e %r: rc 1" % bad, r.returncode == 1, r.stdout + r.stderr)
+            check("nb-inst-e %r: REFUSING names the file" % bad,
+                  "REFUSING" in r.stdout and cfg_file(home) in r.stdout
+                  and "fix or move it first" in r.stdout, r.stdout)
+            check("nb-inst-e %r: bin and settings untouched" % bad,
+                  read_bytes(gp) == before_g and read_bytes(settings_file(home)) == before_s
+                  and read_bytes(os.path.join(os.path.dirname(gp), "source.json"))
+                  == before_src)
+            check("nb-inst-e %r: config.json untouched" % bad,
+                  read_bytes(cfg_file(home)) == bad)
+        finally:
+            shutil.rmtree(home, ignore_errors=True)
+    # a fresh install with a broken config.json is not refused
+    home = make_home({})
+    try:
+        seed_settings(home, {})
+        os.makedirs(os.path.dirname(cfg_file(home)), exist_ok=True)
+        with open(cfg_file(home), "wb") as f:
+            f.write(b"[1]")
+        r = run_install(home)
+        check("nb-inst-e: a fresh install is not refused", r.returncode == 0,
+              r.stdout + r.stderr)
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+    # (f) --dry-run
+    home = make_home({})
+    try:
+        existing_install(home)
+        r = run_install(home, "--dry-run")
+        check("nb-inst-f: dry run says what it would set",
+              'would set "neighbour_requests": true in ' + cfg_file(home) in r.stdout,
+              r.stdout)
+        check("nb-inst-f: and creates nothing", not os.path.exists(cfg_file(home)))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+    # (g) --uninstall leaves config.json alone
+    home = make_home({})
+    try:
+        existing_install(home)
+        with open(cfg_file(home), "w", encoding="utf-8") as f:
+            f.write('{"memory_nag": false}')
+        run_install(home, "--uninstall")
+        check("nb-inst-g: uninstall leaves config.json as it was",
+              read_bytes(cfg_file(home)) == b'{"memory_nag": false}')
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+    home = make_home({})
+    try:
+        existing_install(home)
+        run_install(home, "--uninstall")
+        check("nb-inst-g: and creates none", not os.path.exists(cfg_file(home)))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
 
 
 def test_bootstrap_finds_an_index_line_that_moved_to_the_pointer():
@@ -9677,7 +9935,11 @@ if __name__ == "__main__":
               test_the_newest_archives_of_a_project_are_kept_whatever_their_age,
               test_the_newest_note_of_every_thread_is_kept_whatever_its_age,
               test_the_prune_has_an_off_switch,
-              test_a_failed_delete_is_logged_and_the_rest_go_on):
+              test_a_failed_delete_is_logged_and_the_rest_go_on,
+              test_neighbour_requests_are_off_by_default,
+              test_neighbour_requests_on_is_todays_output,
+              test_an_unattributed_folder_gets_only_the_pointer_when_off,
+              test_install_keeps_an_existing_installs_neighbours_on):
         print(t.__name__)
         t()
     print()
