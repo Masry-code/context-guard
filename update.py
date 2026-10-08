@@ -12,6 +12,7 @@ import datetime
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -29,10 +30,57 @@ def _base(home):
     return os.path.join(_home(home), ".claude", "context-guard")
 
 
+# A LOCAL copy of guard.py's key masking (update.py stays independent of guard.py); a test
+# holds SECRET_PATTERNS and GENERIC_SECRET_RE equal to guard's.
+SECRET_PATTERNS = (
+    ("anthropic key", r"sk-ant-[A-Za-z0-9_\-]{20,}"),
+    ("openai key", r"(?<![A-Za-z0-9_\-])sk-(?:proj-|svcacct-)?[A-Za-z0-9_\-]{20,}"),
+    ("stripe key", r"\b[sr]k_(?:live|test)_[A-Za-z0-9]{16,}"),
+    ("github token", r"\bgh[pousr]_[A-Za-z0-9]{30,}"),
+    ("github token", r"\bgithub_pat_[A-Za-z0-9_]{20,}"),
+    ("aws key id", r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"),
+    ("slack token", r"\bxox[abprs]-[A-Za-z0-9\-]{10,}"),
+    ("google key", r"\bAIza[0-9A-Za-z_\-]{35}"),
+    ("groq key", r"\bgsk_[A-Za-z0-9]{20,}"),
+    ("huggingface token", r"\bhf_[A-Za-z0-9]{30,}"),
+    ("bot token", r"\b\d{8,10}:[A-Za-z0-9_\-]{35}\b"),
+    ("jwt", r"\beyJ[A-Za-z0-9_\-]{10,}\.eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}"),
+)
+_SECRET_RES = tuple((k, re.compile(p)) for k, p in SECRET_PATTERNS)
+GENERIC_SECRET_RE = re.compile(
+    r"(?i)(\b(?:api[_-]?key|access[_-]?key|secret|token|password|passwd|pwd|bearer|"
+    r"authorization)\b[\"']?\s*(?:[:=]|\s)\s*[\"']?)([A-Za-z0-9_\-./+=]{16,})")
+_HEX_RE = re.compile(r"[0-9a-fA-F]{7,64}")
+_UUID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+                      r"[0-9a-fA-F]{12}")
+_MASK_FAILED = "[text withheld: masking failed]"
+
+
+def _generic_masked(m):
+    v = m.group(2)
+    if (not re.search(r"[A-Za-z]", v) or not re.search(r"\d", v)
+            or _HEX_RE.fullmatch(v) or _UUID_RE.fullmatch(v)
+            or "/" in v or v.count(".") >= 2):
+        return m.group(0)
+    return m.group(1) + "[masked]"
+
+
+def _mask(text):
+    """Never raises; on failure returns a fixed placeholder, never the raw text."""
+    try:
+        s = text if isinstance(text, str) else str(text)
+        for kind, rx in _SECRET_RES:
+            s = rx.sub("[masked %s]" % kind, s)
+        return GENERIC_SECRET_RE.sub(_generic_masked, s)
+    except Exception:
+        return _MASK_FAILED
+
+
 def _log(home, msg):
     try:
         with open(os.path.join(_home(home), ".claude", "context-audit.log"), "a") as f:
-            print(datetime.datetime.now().isoformat(timespec="seconds"), "update.py:", msg, file=f)
+            print(datetime.datetime.now().isoformat(timespec="seconds"), "update.py:",
+                  _mask(msg), file=f)
     except Exception:
         pass
 

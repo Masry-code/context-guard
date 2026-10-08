@@ -4774,6 +4774,166 @@ def test_the_log_never_keeps_the_words_of_a_prompt():
         shutil.rmtree(home, ignore_errors=True)
 
 
+# ------------------------------------- review row 9: keys and tokens never reach the log or the ledger
+def fake_secrets():
+    """One obviously fake secret per kind, built from parts at runtime so no realistic
+    literal sits in the repo. Returns {kind: fake}."""
+    return {
+        "anthropic key": "sk-" + "ant-" + "Ab1_" * 8,
+        "openai key": "sk-" + "proj-" + "Zy9x" * 8,
+        "stripe key": "sk" + "_live_" + "Q1w2" * 5,
+        "github token": "gh" + "p_" + "a1B2" * 9,
+        "aws key id": "AK" + "IA" + "ABCD1234" * 2,
+        "slack token": "xo" + "xb-" + "1234567890-abcdef",
+        "google key": "AI" + "za" + "Ab1_" * 8 + "Abc",
+        "groq key": "gs" + "k_" + "Ab12" * 6,
+        "huggingface token": "h" + "f_" + "Ab12" * 9,
+        "bot token": "123456789" + ":" + "Ab1_" * 8 + "Abc",
+        "jwt": "ey" + "J" + "hbGciOiJIUzI1NiJ9" + "." + "ey" + "J" + "zdWIiOiIxMjM0NTY3"
+               + "." + "SflKxwRJSMeKKF2QT4",
+    }
+
+
+def mask_via_guard(text):
+    """mask_secrets run in a CHILD process (never this one); returns the masked text."""
+    r = guard_call(make_home_cached(), "sys.stdout.write(guard.mask_secrets(%r))" % text)
+    return r.stdout if r.returncode == 0 else "RC%d %s" % (r.returncode, r.stderr[-300:])
+
+
+_MASK_HOME = []
+
+
+def make_home_cached():
+    if not _MASK_HOME:
+        _MASK_HOME.append(make_home({}))
+    return _MASK_HOME[0]
+
+
+def test_mask_secrets_masks_every_known_shape():
+    for kind, fake in fake_secrets().items():
+        out = mask_via_guard("before %s after" % fake)
+        check("mask: %s is gone and named, the words around it stay" % kind,
+              out == "before [masked %s] after" % kind, repr(out))
+    key = "Zq7x" * 5          # not hex: a hex run is kept on purpose (a sha or a digest)
+    out = mask_via_guard("set api_key=%s now" % key)
+    check("mask: api_key= keeps its word and loses the value",
+          out == "set api_key=[masked] now", repr(out))
+    out = mask_via_guard("Authorization: Bearer %s" % key)
+    check("mask: Bearer keeps its words and loses the value",
+          key not in out and out.startswith("Authorization: Bearer") and "[masked]" in out,
+          repr(out))
+    out = mask_via_guard("password: %s ok" % key)
+    check("mask: password: keeps its word and loses the value",
+          out == "password: [masked] ok", repr(out))
+
+
+def test_mask_secrets_leaves_ids_and_ordinary_text_alone():
+    same = ["session 6e3ec0f6-8d32-43e4-aa55-dd261a7467b2 done",
+            "commit a4cb63e", "commit a4cb63e1f2d3", "commit " + "a4cb63e1f2" * 4,
+            "token 0123456789abcdef", "token budget 20000 tokens",
+            "<task-notification>", "a task-management-and-scheduling-tool",
+            "password reset flow", "token file at C:/x/.config/token.json",
+            "Alpha -3 (2 Oct)", "size: ctx=231000 level=225000 last=0"]
+    for s in same:
+        out = mask_via_guard(s)
+        check("mask-keep: unchanged: %s" % s[:40], out == s, repr(out))
+
+
+def test_a_key_never_reaches_the_log():
+    home = make_home({})
+    try:
+        fake = fake_secrets()["github token"]
+        p = run_checkpoint(home, "keylogaa", "rotated " + fake)
+        log_text = guard_log(home)
+        check("keylog: the checkpoint line has the masked kind and not the key",
+              "[masked github token]" in log_text and fake not in log_text,
+              repr(log_text[-400:]) + repr(p.stderr[-200:]))
+        fake2 = fake_secrets()["groq key"]
+        r = guard_call(home, "guard.swallowed('x', ValueError(%r))" % ("bad " + fake2))
+        log_text = guard_log(home)
+        check("keylog: swallowed() masks a key in the exception message",
+              r.returncode == 0 and "[masked groq key]" in log_text and fake2 not in log_text,
+              repr(log_text[-400:]) + repr(r.stderr[-200:]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_mask_secrets_never_raises_and_never_returns_the_raw_text():
+    home = make_home({})
+    try:
+        fake = fake_secrets()["github token"]
+        r = guard_call(home, "guard._SECRET_RES = None\n"
+                             "sys.stdout.write(guard.mask_secrets(%r))" % ("k " + fake))
+        check("mask-fail: no exception and the raw text is not returned",
+              r.returncode == 0 and fake not in r.stdout and r.stdout, repr(r.stdout) + r.stderr[-200:])
+        r = guard_call(home, "guard.log(object())\nsys.stdout.write('ok')")
+        check("mask-fail: log() of an odd object still returns", r.returncode == 0, r.stderr[-200:])
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_the_ledger_keeps_his_words_but_not_a_key():
+    home = make_home({})
+    try:
+        fake = fake_secrets()["google key"]
+        write_chat_msgs(home, "keyledaa", time.time() - 3600, ["deploy with key %s please" % fake])
+        expect_clean(run_stop(home, "keyledaa"), "keyled/1")
+        body = ledger_body(home)
+        check("keyled: the words stay and the key is masked",
+              "deploy with key [masked google key] please" in body and fake not in body,
+              repr(body[-300:]))
+        expect_clean(run_stop(home, "keyledaa"), "keyled/2")
+        check("keyled: a second Stop appends nothing (dedupe still on the raw text)",
+              ledger_body(home) == body, repr(ledger_body(home)[-300:]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_an_old_key_in_the_ledger_is_masked_on_pickup_and_the_file_is_untouched():
+    home = make_home({})
+    try:
+        fake = fake_secrets()["bot token"]
+        lp = write_thread_ledger(home, {"guardaaa": ["use bot %s for it" % fake]})
+        with open(lp, "rb") as f:
+            before = f.read()
+        write_transcript(home, "freshchat", 1000)
+        note_for(home, "guardaaa", "Context Guard -2 (18 Sep)")
+        p = run(home, "freshchat", "Context Guard -2 (18 Sep)")
+        expect_clean(p, "oldkey")
+        ctx = whole_context(home, p)
+        check("oldkey: the pickup holds the masked kind, not the key",
+              "[masked bot token]" in ctx and fake not in ctx, repr(ctx[-400:]))
+        with open(lp, "rb") as f:
+            after = f.read()
+        check("oldkey: the ledger bytes are identical", before == after)
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_update_masks_with_the_same_patterns():
+    import importlib.util
+    mods = {}
+    for name in ("guard", "update"):
+        spec = importlib.util.spec_from_file_location(
+            "mask_" + name, os.path.join(HERE_DIR, name + ".py"))
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        mods[name] = m
+    g, u = mods["guard"], mods["update"]
+    check("upd-mask: SECRET_PATTERNS equal guard's", u.SECRET_PATTERNS == g.SECRET_PATTERNS)
+    check("upd-mask: GENERIC_SECRET_RE equal guard's",
+          u.GENERIC_SECRET_RE.pattern == g.GENERIC_SECRET_RE.pattern)
+    home = make_home({})
+    try:
+        fake = fake_secrets()["openai key"]
+        u._log(home, "pull failed for " + fake)
+        text = guard_log(home)
+        check("upd-mask: update._log writes the key masked",
+              "[masked openai key]" in text and fake not in text, repr(text[-300:]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
 # ------------------------------------- change 7: the finished chat archives itself
 WRITER_NOTE = ("HANDOFF LABEL: context guard -4 (19 Sep)\n"
                "WRITTEN BY: Context Guard -3 (18 Sep)\n\n"
@@ -9190,7 +9350,14 @@ if __name__ == "__main__":
               test_session_end_skips_a_consumed_note_and_a_tiny_chat,
               test_manifest_cache_and_sort_failures_are_logged_but_missing_files_are_not,
               test_a_reversed_two_word_keyword_is_not_scored_in_strict_mode,
-              test_the_log_never_keeps_the_words_of_a_prompt):
+              test_the_log_never_keeps_the_words_of_a_prompt,
+              test_mask_secrets_masks_every_known_shape,
+              test_mask_secrets_leaves_ids_and_ordinary_text_alone,
+              test_a_key_never_reaches_the_log,
+              test_mask_secrets_never_raises_and_never_returns_the_raw_text,
+              test_the_ledger_keeps_his_words_but_not_a_key,
+              test_an_old_key_in_the_ledger_is_masked_on_pickup_and_the_file_is_untouched,
+              test_update_masks_with_the_same_patterns):
         print(t.__name__)
         t()
     print()

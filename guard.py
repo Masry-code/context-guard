@@ -210,10 +210,62 @@ NOISE = ("<task-notification>", "<ci-monitor-event>", "<summary>", "<system-remi
          "Background command", "Caveat: The messages below were generated")
 
 
+# Keys and tokens never reach the log or the ledger (review row 9, 2 Oct 2026). One
+# function, three writers: log(), the ledger append and the pickup view. Anthropic is listed
+# before openai so an sk-ant- key is named right. update.py keeps a LOCAL copy of this block
+# (it stays independent of guard.py); a test holds the two equal.
+SECRET_PATTERNS = (
+    ("anthropic key", r"sk-ant-[A-Za-z0-9_\-]{20,}"),
+    ("openai key", r"(?<![A-Za-z0-9_\-])sk-(?:proj-|svcacct-)?[A-Za-z0-9_\-]{20,}"),
+    ("stripe key", r"\b[sr]k_(?:live|test)_[A-Za-z0-9]{16,}"),
+    ("github token", r"\bgh[pousr]_[A-Za-z0-9]{30,}"),
+    ("github token", r"\bgithub_pat_[A-Za-z0-9_]{20,}"),
+    ("aws key id", r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"),
+    ("slack token", r"\bxox[abprs]-[A-Za-z0-9\-]{10,}"),
+    ("google key", r"\bAIza[0-9A-Za-z_\-]{35}"),
+    ("groq key", r"\bgsk_[A-Za-z0-9]{20,}"),
+    ("huggingface token", r"\bhf_[A-Za-z0-9]{30,}"),
+    ("bot token", r"\b\d{8,10}:[A-Za-z0-9_\-]{35}\b"),
+    ("jwt", r"\beyJ[A-Za-z0-9_\-]{10,}\.eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}"),
+)
+_SECRET_RES = tuple((k, re.compile(p)) for k, p in SECRET_PATTERNS)
+GENERIC_SECRET_RE = re.compile(
+    r"(?i)(\b(?:api[_-]?key|access[_-]?key|secret|token|password|passwd|pwd|bearer|"
+    r"authorization)\b[\"']?\s*(?:[:=]|\s)\s*[\"']?)([A-Za-z0-9_\-./+=]{16,})")
+_HEX_RE = re.compile(r"[0-9a-fA-F]{7,64}")
+_UUID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+                      r"[0-9a-fA-F]{12}")
+# what a failed mask writes instead: never the raw text
+MASK_FAILED = "[text withheld: masking failed]"
+
+
+def _generic_masked(m):
+    v = m.group(2)
+    if (not re.search(r"[A-Za-z]", v) or not re.search(r"\d", v)
+            or _HEX_RE.fullmatch(v) or _UUID_RE.fullmatch(v)
+            or "/" in v or v.count(".") >= 2):
+        return m.group(0)        # a session id, a sha, a digest, a path, a version
+    return m.group(1) + "[masked]"
+
+
+def mask_secrets(text):
+    """text with every known key shape replaced by [masked <kind>] and the value after
+    api_key / secret / token / password / bearer ... replaced by [masked]. Never raises, and
+    on any failure returns a fixed placeholder - never the unmasked text."""
+    try:
+        s = text if isinstance(text, str) else str(text)
+        for kind, rx in _SECRET_RES:
+            s = rx.sub("[masked %s]" % kind, s)
+        return GENERIC_SECRET_RE.sub(_generic_masked, s)
+    except Exception:
+        return MASK_FAILED
+
+
 def log(msg):
     try:
         with open(LOG, "a") as f:
-            print(datetime.datetime.now().isoformat(timespec="seconds"), msg, file=f)
+            print(datetime.datetime.now().isoformat(timespec="seconds"),
+                  mask_secrets(msg), file=f)
     except Exception:
         pass
 
@@ -1093,7 +1145,7 @@ def append_ledger(path):
                 # from the ten other threads that share this one file
                 f.write(chr(10) + "### " + (ts or "unknown time")
                         + (" - chat " + sid8 if sid8 else "")
-                        + chr(10) + chr(10) + t + chr(10))
+                        + chr(10) + chr(10) + mask_secrets(t) + chr(10))
         _save()
         log("ledger: +" + str(len(fresh)) + " -> " + os.path.basename(lp))
     except Exception as e:
@@ -1640,9 +1692,9 @@ def ledger_tail(transcript_path, labels=None):
         if stem and stem in mine:
             if sid and sid not in mine_ids:
                 mine_ids.append(sid)
-            ours.append("### " + b)
+            ours.append("### " + mask_secrets(b))
         else:
-            theirs.append("### " + b)
+            theirs.append("### " + mask_secrets(b))
     # The resumed thread keeps its own share rather than competing for the last 30 overall.
     # Measured 18 Sep 2026: a "Nova Calc" pickup got 30 entries and NOT ONE was its own,
     # because the QIX and PhotoBox chats had filled the shared ledger while it was quiet -
