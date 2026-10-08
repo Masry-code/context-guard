@@ -951,7 +951,7 @@ def test_handoff_stays_quiet_when_nothing_is_repeated():
 # C:/Users/Sam Rivera/... after shlex split the unquoted space in his own username.
 REAL_NOISE = [
     'N="C:/Users/Sam Rivera/.claude/handoff/D--Claude.fda5cb73.md"; echo "lines: $(wc -l < "$N")"',
-    'cd "D:/Claude/context-guard" && grep -n "^def \|^# ---" guard.py',
+    'cd "D:/Claude/context-guard" && grep -n "^def \\|^# ---" guard.py',
     'ls -la ~/.claude/handoff/ 2>/dev/null | head -50',
     'cat "C:/Users/Sam Rivera/.claude/projects/D--Claude/x/tool-results/'
     'hook-d8588838-163a-4397-97f7-ab17f891b6b6-1-additionalContext.txt"',
@@ -9915,6 +9915,42 @@ def test_the_bash_hook_reads_no_manifest():
         rm_tree(home)
 
 
+def test_the_test_file_compiles_without_warnings():
+    import warnings
+    root = os.path.dirname(os.path.abspath(__file__))
+    for name in ("test_guard.py", "guard.py", "audit.py", "install.py", "update.py"):
+        with open(os.path.join(root, name), "rb") as f:
+            src = f.read()
+        err = ""
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("error")
+                compile(src, name, "exec")
+        except Exception as e:
+            err = "%s: %s" % (type(e).__name__, e)
+        check("compile-clean: %s has no warning" % name, err == "", err)
+
+
+def test_the_ci_workflow_runs_the_in_repo_suite():
+    root = os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(root, ".github", "workflows", "tests.yml")
+    check("ci: the workflow file exists", os.path.isfile(path), path)
+    if not os.path.isfile(path):
+        return
+    with open(path, "rb") as f:
+        raw = f.read()
+    text = raw.decode("utf-8")
+    check("ci: the workflow is LF", b"\r" not in raw, "CR bytes: %d" % raw.count(b"\r"))
+    for needle in ("windows-latest", "macos-latest", "ubuntu-latest",
+                   "actions/checkout@v4", "actions/setup-python@v5", "python-version",
+                   "python3 -W error::SyntaxWarning test_guard.py",
+                   "python -W error::SyntaxWarning test_guard.py",
+                   "contents: read"):
+        check("ci: names %s" % needle, needle in text)
+    for bad in ("secrets.", "suite.py", "Claude Needed Tools"):
+        check("ci: does not contain %s" % bad, bad not in text)
+
+
 if __name__ == "__main__":
     for t in (test_a_folderless_chat_naming_a_saved_thread_is_told_to_move,
               test_a_big_folderless_chat_is_not_told_to_move,
@@ -10249,7 +10285,9 @@ if __name__ == "__main__":
               test_the_source_folder_comes_from_the_manifest,
               test_no_source_folder_is_a_quiet_stranger,
               test_a_stranger_without_a_source_folder,
-              test_the_bash_hook_reads_no_manifest):
+              test_the_bash_hook_reads_no_manifest,
+              test_the_test_file_compiles_without_warnings,
+              test_the_ci_workflow_runs_the_in_repo_suite):
         print(t.__name__)
         t()
     print()
