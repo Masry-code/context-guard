@@ -1066,6 +1066,90 @@ def sweep_stubs(d):
         log("stub: sweep failed: " + str(e))
 
 
+USED_KEEP_DAYS = 30        # a consumed .used-*.md note is deleted past this age
+USED_PRUNE_MAX = 200       # files deleted per pass
+USED_PRUNE_STAMP = os.path.join(STATE, "used-prune-day")   # plain text YYYY-MM-DD, not .json
+USED_OFF = "no-used-prune"
+
+
+def prune_used_notes():
+    """SessionStart, at most once a day. Deletes consumed notes - regular files directly in
+    the handoff folder named *.used-*.md - older than USED_KEEP_DAYS. Nothing else: not a
+    live note, a ledger, a sidecar, <key>.used.md, a sub-folder (overflow/) or a link.
+
+    Two guards keep what other code reads out of the archives:
+      * the newest LABEL_SCAN_MAX notes of each project key are kept whatever their age
+        (all_notes() reads exactly those to attribute ledger entries to threads);
+      * the newest note of every thread label, and the one holding its highest number, is
+        kept whatever its age (label_numbers() reads the number a thread reached from
+        them, and a quiet thread must not restart at -1).
+    The stamp is written FIRST so a crash cannot make every start rescan. Logs file NAMES
+    only. Never raises, never prints."""
+    try:
+        if switched_off(USED_OFF):
+            return
+        import fnmatch
+        today = datetime.date.today().isoformat()
+        try:
+            with open(USED_PRUNE_STAMP, encoding="utf-8") as f:
+                if f.read().strip() == today:
+                    return
+        except MISSING:
+            pass
+        except Exception as e:
+            swallowed("prune_used_notes", e)
+        os.makedirs(STATE, exist_ok=True)
+        with open(USED_PRUNE_STAMP, "w", encoding="utf-8") as f:
+            f.write(today + "\n")
+        cutoff = time.time() - USED_KEEP_DAYS * 86400
+        groups = {}
+        with os.scandir(handoff_dir()) as it:
+            for e in it:
+                try:
+                    if not e.is_file(follow_symlinks=False):
+                        continue
+                    if not e.name.endswith(".md") or e.name.endswith(".requests.md"):
+                        continue
+                    groups.setdefault(e.name.split(".")[0], []).append(
+                        (e.stat(follow_symlinks=False).st_mtime, e.name, e.path))
+                except Exception as ex:
+                    swallowed("prune_used_notes", ex, quiet=MISSING)
+        doomed, kept = [], 0
+        for files in groups.values():
+            files.sort(reverse=True)               # newest first
+            protected = set(n for _m, n, _p in files[:LABEL_SCAN_MAX])
+            old = [x for x in files
+                   if x[0] < cutoff and fnmatch.fnmatch(x[1], "*.used-*.md")]
+            kept += len([x for x in old if x[1] in protected])
+            todo = [x for x in old if x[1] not in protected]
+            if not todo:
+                continue
+            newest, highest = {}, {}
+            for _m, n, p in files:                 # newest first: a tie keeps the newest
+                base, num = split_label_number(note_label(p))
+                if not base:
+                    continue
+                k = base.lower()
+                newest.setdefault(k, n)
+                if k not in highest or num > highest[k][0]:
+                    highest[k] = (num, n)
+            keep_names = set(newest.values()) | set(n for _num, n in highest.values())
+            kept += len([x for x in todo if x[1] in keep_names])
+            doomed += [x for x in todo if x[1] not in keep_names]
+        doomed.sort()                              # oldest first
+        deleted = 0
+        for _m, n, p in doomed[:USED_PRUNE_MAX]:
+            try:
+                os.remove(p)
+                deleted += 1
+                log("used-prune: deleted " + n)
+            except Exception as ex:
+                log("used-prune: could not delete %s (%s)" % (n, type(ex).__name__))
+        log("used-prune: %d deleted, %d kept as the newest of their project" % (deleted, kept))
+    except Exception as e:
+        swallowed("prune_used_notes", e)
+
+
 def append_ledger(path):
     """Appends any of the user's words not already recorded. Mechanical - it cannot be
     lazy, cannot summarise, and cannot forget to do it."""
@@ -3964,7 +4048,7 @@ KEYWORDS_OFF = "no-keywords-check"
 # off; the old empty files keep working. (update.py reads update_check on its own.)
 SWITCHES = {NAG_OFF: "memory_nag", HEAD_OFF: "note_head_check", CEILING_OFF: "ceiling",
             HEREDOC_OFF: "heredoc_guard", HINTS_OFF: "memory_hints",
-            KEYWORDS_OFF: "keywords_check"}
+            KEYWORDS_OFF: "keywords_check", USED_OFF: "used_prune"}
 _CONFIG = None                      # config.json read at most once per process
 
 
@@ -4112,6 +4196,10 @@ def cmd_bootstrap():
     # finally be answerable. Resolution must not be hostage to this session's own cwd.
     resolve_ordering_probe()
     sweep_stubs(d)          # logs only: it must never add a second object or fail the start
+    try:
+        prune_used_notes()  # once a day; logs only, never prints
+    except Exception as e:
+        swallowed("prune_used_notes", e)
     text = "\n\n".join(t for t in (_bootstrap_list(d),
                                    tour_pending_text(d.get("session_id"))) if t)
     if text:

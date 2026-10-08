@@ -8566,7 +8566,7 @@ def test_every_switch_is_in_the_readme():
         sw = kw_json(home, "import json\nprint(json.dumps(guard.SWITCHES))")
     finally:
         rm_tree(home)
-    check("readme-switches: six guard switches", isinstance(sw, dict) and len(sw) == 6, str(sw))
+    check("readme-switches: seven guard switches", isinstance(sw, dict) and len(sw) == 7, str(sw))
     if not isinstance(sw, dict):
         return
     for off_file, key in list(sw.items()) + [("no-update-check", "update_check")]:
@@ -9044,6 +9044,220 @@ def test_a_cross_session_message_gets_no_hint():
         rm_tree(home)
 
 
+# ---------------------------------------------------------------- used-note pruning (Task 3)
+# Every home here is a throwaway: the hooks run under child_env(home), never the real ~.
+def used_put(home, name, days, body="consumed.\n"):
+    """A file in the throwaway handoff folder, `days` old."""
+    p = os.path.join(home, ".claude", "handoff", name)
+    with open(p, "w", encoding="utf-8", newline="") as f:
+        f.write(body)
+    t = time.time() - days * 86400
+    os.utime(p, (t, t))
+    return p
+
+
+def used_snapshot(home):
+    """{name: (bytes or None for a folder, mtime)} of the handoff folder, top level only."""
+    d = os.path.join(home, ".claude", "handoff")
+    out = {}
+    for n in os.listdir(d):
+        p = os.path.join(d, n)
+        body = None
+        if os.path.isfile(p):
+            with open(p, "rb") as f:
+                body = f.read()
+        out[n] = (body, os.path.getmtime(p))
+    return out
+
+
+def used_recent(home, count=80):
+    """`count` 1-day-old consumed notes: they fill the protected newest-80 of KEY."""
+    for i in range(count):
+        used_put(home, "%s.%08d.used-20261007-101010.md" % (KEY, i), 1)
+
+
+def used_log(home):
+    lp = os.path.join(home, ".claude", "context-audit.log")
+    if not os.path.exists(lp):
+        return ""
+    with open(lp, encoding="utf-8", errors="replace") as f:
+        return f.read()
+
+
+def test_old_used_notes_are_deleted_and_nothing_else_is():
+    home = make_home({})
+    try:
+        used_recent(home)
+        gone = [KEY + ".aaaaaaaa.used-20260801-101010.md",
+                KEY + ".bbbbbbbb.used-stale-20260801-101010.md",
+                KEY + ".cccccccc.used-20260801-hand-renamed.md"]
+        for n in gone:
+            used_put(home, n, 40)
+        for n in (KEY + ".dddddddd.md", KEY + ".requests.md", KEY + ".requests.seen.json",
+                  KEY + ".used.md"):
+            used_put(home, n, 40)
+        os.makedirs(os.path.join(home, ".claude", "handoff", "overflow"))
+        used_put(home, "overflow/x.used-20260801-101010.md", 40)
+        dp = os.path.join(home, ".claude", "handoff", KEY + ".used-dir.md")
+        os.makedirs(dp)
+        t = time.time() - 40 * 86400
+        os.utime(dp, (t, t))
+        used_put(home, KEY + ".eeeeeeee.used-20260904-101010.md", 29)
+        before = used_snapshot(home)
+        p = boot(home, CWD, "prune001")
+        expect_clean(p, "used-prune")
+        after = used_snapshot(home)
+        check("used-prune: exactly the three old .used-* files are gone",
+              sorted(set(before) - set(after)) == sorted(gone),
+              repr(sorted(set(before) - set(after))))
+        keep = {n: v for n, v in before.items() if n not in gone}
+        check("used-prune: every other entry has the same bytes and mtime", after == keep,
+              repr(sorted(set(keep) ^ set(after))))
+        check("used-prune: overflow/ is untouched",
+              os.path.exists(os.path.join(home, ".claude", "handoff", "overflow",
+                                          "x.used-20260801-101010.md")))
+        lg = used_log(home)
+        lines = [l for l in lg.splitlines() if "used-prune: deleted " in l]
+        check("used-prune: three 'deleted <basename>' lines, one per file",
+              len(lines) == 3 and all(any(l.endswith("deleted " + n) for l in lines)
+                                      for n in gone), repr(lines))
+        check("used-prune: the log carries no path",
+              not any("used-prune" in l and (home in l or os.sep in l.split("used-prune")[1]
+                                             or "/" in l.split("used-prune")[1])
+                      for l in lg.splitlines()), lg[-400:])
+        out = [l for l in (p.stdout or "").splitlines() if l.strip()]
+        check("used-prune: stdout is empty or one JSON object",
+              len(out) <= 1 and all(json.loads(l) is not None for l in out), repr(out))
+    finally:
+        rm_tree(home)
+
+
+def test_the_prune_runs_once_a_day():
+    home = make_home({})
+    try:
+        used_recent(home)
+        used_put(home, KEY + ".aaaaaaaa.used-20260801-101010.md", 40)
+        expect_clean(boot(home, CWD, "daily001"), "used-daily")
+        later = used_put(home, KEY + ".ffffffff.used-20260801-111111.md", 40)
+        expect_clean(boot(home, CWD, "daily002"), "used-daily2")
+        check("used-daily: a second start the same day deletes nothing", os.path.exists(later))
+        stamp = os.path.join(home, ".claude", "context-guard", "used-prune-day")
+        with open(stamp, encoding="utf-8") as f:
+            held = f.read().strip()
+        check("used-daily: the stamp is a plain YYYY-MM-DD",
+              re.fullmatch(r"\d{4}-\d{2}-\d{2}", held) is not None, repr(held))
+        with open(stamp, "w", encoding="utf-8") as f:
+            f.write("2000-01-01\n")
+        expect_clean(boot(home, CWD, "daily003"), "used-daily3")
+        check("used-daily: with the stamp at an earlier day it runs again",
+              not os.path.exists(later))
+    finally:
+        rm_tree(home)
+
+
+def test_the_newest_archives_of_a_project_are_kept_whatever_their_age():
+    home = make_home({})
+    try:
+        now = time.time()
+        names = []
+        for i in range(85):                   # i = 0 is the oldest
+            thread = "Alpha" if i % 2 == 0 else "Beta"
+            n = "%s.%08d.used-20260801-101010.md" % (KEY, i)
+            p = used_put(home, n, 40, "HANDOFF LABEL: %s -%d (1 Aug)\n\nold.\n"
+                         % (thread, i // 2 + 1))
+            t = now - 40 * 86400 - (85 - i) * 100
+            os.utime(p, (t, t))
+            names.append(n)
+        tp = os.path.join(home, ".claude", "projects", KEY, "zzz.jsonl")
+        probe = ("print(guard.json.dumps([guard.chat_threads(%r), "
+                 "guard.label_numbers(%r)], sort_keys=True))" % (tp, tp))
+        b = guard_call(home, probe)
+        expect_clean(boot(home, CWD, "newest01"), "used-newest")
+        a = guard_call(home, probe)
+        left = sorted(os.listdir(os.path.join(home, ".claude", "handoff")))
+        check("used-newest: the 5 oldest are gone, the 80 newest remain",
+              left == sorted(names[5:]), repr((len(left), left[:3])))
+        check("used-newest: chat_threads and label_numbers answer the same",
+              b.returncode == 0 and b.stdout == a.stdout and b.stdout.strip() != "",
+              repr((b.stdout[:200], a.stdout[:200], b.stderr[-200:])))
+    finally:
+        rm_tree(home)
+
+
+def test_the_newest_note_of_every_thread_is_kept_whatever_its_age():
+    home = make_home({})
+    try:
+        used_recent(home)
+        keep_quiet = used_put(home, KEY + ".11111111.used-20260801-101010.md", 40,
+                              "HANDOFF LABEL: Quiet -4 (1 Aug)\n\nonly note of its thread.\n")
+        old_busy = used_put(home, KEY + ".22222222.used-20260801-101010.md", 40,
+                            "HANDOFF LABEL: Busy -1 (1 Aug)\n\nolder.\n")
+        keep_busy = used_put(home, KEY + ".33333333.used-20260802-101010.md", 39,
+                             "HANDOFF LABEL: Busy -2 (2 Aug)\n\nnewer.\n")
+        tp = os.path.join(home, ".claude", "projects", KEY, "zzz.jsonl")
+        probe = "print(guard.json.dumps(guard.label_numbers(%r), sort_keys=True))" % tp
+        b = guard_call(home, probe)
+        expect_clean(boot(home, CWD, "thread01"), "used-thread")
+        a = guard_call(home, probe)
+        check("used-thread: the only note of a quiet thread survives", os.path.exists(keep_quiet))
+        check("used-thread: the newest note of a busy thread survives", os.path.exists(keep_busy))
+        check("used-thread: its older-numbered note is deleted", not os.path.exists(old_busy))
+        check("used-thread: label_numbers reports the same before and after",
+              b.returncode == 0 and b.stdout == a.stdout and b.stdout.strip() != "",
+              repr((b.stdout[:200], a.stdout[:200], b.stderr[-200:])))
+    finally:
+        rm_tree(home)
+
+
+def test_the_prune_has_an_off_switch():
+    for how in ("config", "file"):
+        home = make_home({})
+        try:
+            used_recent(home)
+            old = used_put(home, KEY + ".aaaaaaaa.used-20260801-101010.md", 40)
+            state = os.path.join(home, ".claude", "context-guard")
+            os.makedirs(state, exist_ok=True)
+            if how == "config":
+                with open(os.path.join(state, "config.json"), "w", encoding="utf-8") as f:
+                    f.write('{"used_prune": false}')
+            else:
+                with open(os.path.join(state, "no-used-prune"), "w", encoding="utf-8") as f:
+                    f.write("")
+            expect_clean(boot(home, CWD, "off00001"), "used-off-" + how)
+            check("used-off-%s: nothing is deleted" % how, os.path.exists(old))
+            check("used-off-%s: no stamp is written" % how,
+                  not os.path.exists(os.path.join(state, "used-prune-day")))
+        finally:
+            rm_tree(home)
+
+
+def test_a_failed_delete_is_logged_and_the_rest_go_on():
+    home = make_home({})
+    try:
+        used_recent(home)
+        bad = KEY + ".aaaaaaaa.used-20260801-101010.md"
+        good = KEY + ".bbbbbbbb.used-20260801-101010.md"
+        used_put(home, bad, 41)
+        used_put(home, good, 40)
+        g = guard_call(home, "real = guard.os.remove\n"
+                       "def fake(p, *a, **k):\n"
+                       "    if guard.os.path.basename(p) == %r:\n"
+                       "        raise PermissionError('locked')\n"
+                       "    return real(p, *a, **k)\n"
+                       "guard.os.remove = fake\n"
+                       "guard.prune_used_notes()\n" % bad)
+        check("used-fail: the call did not raise", g.returncode == 0, g.stderr[-300:])
+        lg = used_log(home)
+        check("used-fail: the log names the file and the exception type",
+              "used-prune: could not delete %s (PermissionError)" % bad in lg, lg[-400:])
+        d = os.path.join(home, ".claude", "handoff")
+        check("used-fail: the file that failed is still there", os.path.exists(os.path.join(d, bad)))
+        check("used-fail: the other old file is deleted",
+              not os.path.exists(os.path.join(d, good)))
+    finally:
+        rm_tree(home)
+
+
 if __name__ == "__main__":
     for t in (test_a_folderless_chat_naming_a_saved_thread_is_told_to_move,
               test_a_big_folderless_chat_is_not_told_to_move,
@@ -9357,7 +9571,13 @@ if __name__ == "__main__":
               test_mask_secrets_never_raises_and_never_returns_the_raw_text,
               test_the_ledger_keeps_his_words_but_not_a_key,
               test_an_old_key_in_the_ledger_is_masked_on_pickup_and_the_file_is_untouched,
-              test_update_masks_with_the_same_patterns):
+              test_update_masks_with_the_same_patterns,
+              test_old_used_notes_are_deleted_and_nothing_else_is,
+              test_the_prune_runs_once_a_day,
+              test_the_newest_archives_of_a_project_are_kept_whatever_their_age,
+              test_the_newest_note_of_every_thread_is_kept_whatever_its_age,
+              test_the_prune_has_an_off_switch,
+              test_a_failed_delete_is_logged_and_the_rest_go_on):
         print(t.__name__)
         t()
     print()

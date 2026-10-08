@@ -122,7 +122,7 @@ check.
 | `guard.py --bash` | PreToolUse (Bash) | blocks heredocs, which mangle file content on Windows |
 | `guard.py --ledger` | Stop | appends your own words to a permanent ledger, and past the ceiling refuses to let the chat close. It writes no stub: stubs come from `--session-end` when a chat closes and from `--bootstrap` when one died without that hook |
 | `guard.py --session-end` | SessionEnd | when a chat ends with no note of any kind, leaves the mechanical stub (skipped for a chat under 1.5 MB, or one that already has a note, a stub or a consumed `.used-*` note) |
-| `guard.py --bootstrap` | SessionStart | gives a project directory its own memory list the first time a chat opens there, and stubs other chats of the project that died without SessionEnd (idle 6 to 48 hours) |
+| `guard.py --bootstrap` | SessionStart | gives a project directory its own memory list the first time a chat opens there, and stubs other chats of the project that died without SessionEnd (idle 6 to 48 hours); once a day deletes consumed `.used-*` notes older than 30 days (the newest 80 of each project are kept) |
 
 Three ideas do the real work.
 
@@ -294,11 +294,12 @@ switches that part off; anything else (`true`, `"no"`, `0`, a missing key) leave
 * `update_check` — stop the once-a-day look for a newer version
 * `memory_hints` — stop the one-line hint about another project's matching memory
 * `keywords_check` — stop it sending back a memory saved without a `keywords:` line
+* `used_prune` — stop the once-a-day deletion of consumed `.used-*` notes older than 30 days
 
 A config.json that is not valid JSON switches nothing off and leaves one error line in the log.
 The older way still works too: an empty file in `~/.claude/context-guard/` named `no-ceiling`,
-`no-memory-nag`, `no-note-head-check`, `no-heredoc-guard`, `no-update-check`, `no-memory-hints`
-or `no-keywords-check`.
+`no-memory-nag`, `no-note-head-check`, `no-heredoc-guard`, `no-update-check`, `no-memory-hints`,
+`no-keywords-check` or `no-used-prune`.
 
 Every automatic behaviour has an override. That is deliberate: a check you cannot switch off
 is a check you will eventually disable by deleting the whole tool.
