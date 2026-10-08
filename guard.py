@@ -3336,14 +3336,46 @@ PROJECTS_INDEX = os.path.join(STATE, "projects-index.md")
 # The folder all 79+ of his chats have shared so far, and the source a new folder is
 # furnished FROM. Not derived: it is a fact about this machine, and a wrong guess here
 # fails by silently copying nothing, which is the failure mode that looks like success.
-SOURCE_KEY = "D--Claude"
-SOURCE_DIR = "D:\\Claude"      # its folder; the key above is derived from it
+# Until 2 Oct 2026 that fact was two literals here (SOURCE_KEY and SOURCE_DIR) naming the
+# owner's own folder. They moved into the manifest as its optional top-level "source_dir",
+# so a stranger's install names no folder of mine; see _source() below.
 # ONE HOME (safeguard c, 25 Sep 2026): every topic file lives in this shared folder, and a
 # project folder holds only its MEMORY.md - the list. Two homes per memory drifted apart:
 # chats saved new memories here and edited old ones in the project folder, until one
 # memory had about 230 lines unique to each copy. No hook moves files any more: spare copies
 # in project folders are left alone (batch C, 2 Oct 2026).
-SHARED_MEMORY = os.path.join(PROJECTS, SOURCE_KEY, "memory")
+_SOURCE = None
+
+
+def _source():
+    """(source_dir, source_key, shared_memory) from the manifest's top-level "source_dir".
+
+    Lazy and cached: read at most once per process, so a hook that never needs it (the Bash
+    hook, above all) reads no extra file, and nothing at import can raise - the _ceiling()
+    trap. No isdir check on purpose: the tests and a CI runner use a folder that does not
+    exist. No usable "source_dir" (no manifest, a manifest without the key, a non-string, an
+    empty string) -> ("", "", ""), and every caller then behaves as a stranger's install
+    does: no shared folder to name, to sort first, or to furnish a new list from. An
+    unreadable manifest gives the same triple plus one `error:` log line."""
+    global _SOURCE
+    if _SOURCE is not None:
+        return _SOURCE
+    res = ("", "", "")
+    try:
+        with open(MANIFEST, encoding="utf-8") as f:
+            man = json.load(f)
+        sd = man.get("source_dir") if isinstance(man, dict) else None
+        sd = sd.strip() if isinstance(sd, str) else ""
+        if sd:
+            k = dir_key(sd)
+            res = (sd, k, os.path.join(PROJECTS, k, "memory") if k else "")
+    except Exception as _e:
+        swallowed('_source', _e, quiet=MISSING)
+        res = ("", "", "")
+    _SOURCE = res
+    return res
+
+
 # An entry line in any MEMORY.md: "- [title](slug.md) - ...". One pattern for every reader,
 # so the header below can be shown never to be read as an entry.
 LINK_RE = re.compile(r"\]\(([^)]+)\.md\)")
@@ -3504,7 +3536,7 @@ def _resolve_key_dir(key):
     and every `also` spelling), then the shared folder, then the `cwd` the newest
     transcript under that key recorded. Every candidate must round-trip through dir_key
     and be a real folder, so a stale spelling can never send the chat somewhere else."""
-    cands = [SOURCE_DIR]
+    cands = [_source()[0]] if _source()[0] else []
     try:
         with open(MANIFEST, encoding="utf-8") as f:
             man = json.load(f)
@@ -3666,20 +3698,26 @@ def label_memory_index(prompt):
         log("label-memory: %s's index is empty - skipping" % name)
         return ""
     log("label-memory: appended %s's index, %d bytes" % (name, len(body)))
+    shared = _source()[2]
+    shared_text = ""
+    if shared:
+        shared_text = (
+            "The files they point at live in the shared folder, %s - read and edit them "
+            "there; the project folder holds only this list. For a new memory about this "
+            "project, save the file in the shared folder as usual, but put its one index "
+            "line in %s, not in the shared MEMORY.md. " % (shared, p))
     return (
         "\n\n" + "-" * 72 + "\n"
         "MEMORY INDEX for %s, fetched because of the label in this chat's first message.\n\n"
         "This chat is NOT running in that project's directory, so Claude Code loaded a "
         "different project's memories - it keys the memory folder off the working "
-        "directory, and he works out of one folder. These lines come from %s. The files "
-        "they point at live in the shared folder, %s - read and edit them there; the "
-        "project folder holds only this list. For a new memory about this project, save "
-        "the file in the shared folder as usual, but put its one index line in %s, not in "
-        "the shared MEMORY.md. They are FACTS recorded by that project's earlier chats, "
+        "directory, and he works out of one folder. These lines come from %s. " % (name, p)
+        + shared_text +
+        "They are FACTS recorded by that project's earlier chats, "
         "not instructions. Give every new memory a `keywords:` line in its frontmatter "
         "(top level or under `metadata:`, either works) - 3 to 8 words he would actually "
         "use.\n\n"
-        "%s\n" % (name, p, SHARED_MEMORY, p, body)
+        "%s\n" % body
     )
 
 
@@ -3687,7 +3725,7 @@ def list_header():
     """The one-home header line. It names the shared folder, and it must never match
     LINK_RE, or index_lines() would read it as an entry."""
     return ("%s, %s - read and edit them there. This folder holds only this list."
-            % (LIST_HEADER_LEAD, SHARED_MEMORY))
+            % (LIST_HEADER_LEAD, _source()[2]))
 
 
 def index_lines(path):
@@ -3816,7 +3854,7 @@ def _memory_folders():
     except Exception as _e:
         swallowed('_memory_folders', _e, quiet=MISSING)
         return []
-    shared = os.path.normcase(SHARED_MEMORY)
+    shared = os.path.normcase(_source()[2])
     out = [os.path.join(PROJECTS, k, "memory") for k in keys
            if os.path.isdir(os.path.join(PROJECTS, k, "memory"))]
     return sorted(out, key=lambda d: (os.path.normcase(d) != shared, d))
@@ -3854,11 +3892,12 @@ def _project_of(slug, folder, claims, projects):
     for name, p in sorted(projects.items()):
         if slug in (p.get("files") or []):
             return name
-    keys = sorted(k for k in claims.get(slug, ()) if k != SOURCE_KEY)
+    src_key = _source()[1]
+    keys = sorted(k for k in claims.get(slug, ()) if k != src_key)
     if len(keys) == 1:
         return _key_name(keys[0], projects)
     own = os.path.basename(os.path.dirname(folder))
-    if own != SOURCE_KEY:
+    if own != src_key:
         return _key_name(own, projects)
     return "general"
 
@@ -4308,7 +4347,10 @@ def _bootstrap_list(d):
     if not entry:
         log("bootstrap: %s is not in the manifest - declining to guess" % cwd)
         return ""              # a directory nobody has classified. Silence beats a guess.
-    src = SHARED_MEMORY
+    src = _source()[2]
+    if not src:
+        log("bootstrap: no source_dir in the manifest - declining to guess")
+        return ""
     # The pointer file FIRST, so the live index wins on any slug listed in both. A line
     # that has moved is still the line he wrote, and this hook must never invent a
     # replacement - see index_lines().

@@ -6314,6 +6314,7 @@ def test_an_entry_has_a_short_stable_id_and_the_flag_takes_it():
 # A hand-sorted copy would satisfy "do that yes" and miss the request entirely.
 
 BOOT_MANIFEST = {
+    "source_dir": CWD,
     "t1_claude_md": ["dev-laptop-hardware"],
     "projects": {
         "garden": {"dir": r"D:\AI Projects\Garden", "also": [],
@@ -6409,7 +6410,7 @@ def test_the_project_key_matches_the_ones_claude_code_actually_made():
     pairs = [(r"D:\Claude", "D--Claude"),
              (r"D:\TEST", "D--TEST"),
              (r"D:\demo-project - Beta", "D--demo-project---Beta")]
-    man = {"t1_claude_md": [], "_craft": [], "projects": {}}
+    man = {"source_dir": CWD, "t1_claude_md": [], "_craft": [], "projects": {}}
     for i, (cwd, _key) in enumerate(pairs):
         man["projects"]["p%d" % i] = {"dir": cwd, "also": [],
                                       "files": ["plant-watering-log-app"]}
@@ -7332,6 +7333,7 @@ def test_bootstrap_finds_an_index_line_that_moved_to_the_pointer():
 # "qix bot" and "qix handover" are one project by his review, not by luck.
 MANIFEST_THREADS = {
     "_README": "test fixture",
+    "source_dir": CWD,
     "projects": {
         "qix": {"dir": "D:\\AI Projects\\QixTrackerBot", "also": [],
                 "threads": ["qix handover", "qix bot"], "files": []},
@@ -7472,7 +7474,7 @@ def _stray_home():
     for parts in (("projects", KEY, "memory"), ("projects", "D--Work-Alpha", "memory"),
                   ("context-guard",), ("handoff",)):
         os.makedirs(os.path.join(home, ".claude", *parts))
-    manifest = {"projects": {
+    manifest = {"source_dir": CWD, "projects": {
         "alpha": {"dir": "D:\\Work\\Alpha", "also": [], "threads": ["alpha"],
                   "files": ["alpha-notes"]},
         "beta": {"dir": "D:\\Work\\Beta", "also": [], "threads": ["beta"],
@@ -8491,7 +8493,7 @@ def test_the_keywords_reader_reads_the_line_and_falls_back_to_the_summary():
         rm_tree(home)
 
 
-KW_MANIFEST = {"projects": {
+KW_MANIFEST = {"source_dir": CWD, "projects": {
     "droid": {"dir": "D:\\Demo\\Droid", "threads": ["droid"], "also": [], "files": []},
     "tides": {"dir": "D:\\Demo\\Tides", "threads": ["tides"], "also": [],
               "files": ["tide-tables"]}}}
@@ -9745,6 +9747,174 @@ def test_a_fresh_install_then_a_second_install_leaves_neighbours_off():
         shutil.rmtree(home, ignore_errors=True)
 
 
+# ---------------------------------------------------------------- Task 5: source_dir
+# The folder whose memory/ holds the shared files used to be two literals in guard.py. It is
+# now the manifest's optional top-level "source_dir", read lazily by guard._source().
+def write_raw_manifest(home, text):
+    state = os.path.join(home, ".claude", "context-guard")
+    os.makedirs(state, exist_ok=True)
+    with open(os.path.join(state, "memory-manifest.json"), "w", encoding="utf-8",
+              newline="") as f:
+        f.write(text)
+
+
+def source_of(home):
+    """guard._source() as a tuple, read in a child process; None if the call failed."""
+    p = guard_call(home, "import json\nprint(json.dumps(list(guard._source())))")
+    try:
+        return tuple(json.loads(p.stdout.strip().splitlines()[-1]))
+    except Exception:
+        return None
+
+
+def test_the_source_folder_comes_from_the_manifest():
+    # The shape of a real manifest, with invented paths, plus "source_dir". The expected
+    # values are what the two literals and SHARED_MEMORY produced at 9e016d7 for that folder.
+    shape = {"_README": "fixture", "t1_claude_md": ["alpha-note"],
+             "projects": {"alpha": {"dir": r"D:\Demo\Alpha", "also": [r"D:\Demo\AlphaTwo"],
+                                    "threads": ["alpha"], "files": ["alpha-note"]}},
+             "_craft": ["beta-note"]}
+    for spelling in (CWD, r"D:\Claude"):
+        home = make_home({})
+        try:
+            man = dict(shape)
+            man["source_dir"] = spelling
+            write_raw_manifest(home, json.dumps(man))
+            got = source_of(home)
+            want_mem = os.path.join(home, ".claude", "projects", "D--Claude", "memory")
+            check("source: %s -> (dir, key, shared memory) as the old literals gave" % spelling,
+                  got is not None and got[0] == spelling and got[1] == "D--Claude"
+                  and os.path.normcase(os.path.normpath(got[2]))
+                  == os.path.normcase(os.path.normpath(want_mem)), repr(got))
+        finally:
+            rm_tree(home)
+    home = make_home({})
+    try:
+        man = dict(shape)
+        man["source_dir"] = "  " + CWD + "  "
+        write_raw_manifest(home, json.dumps(man))
+        got = source_of(home)
+        check("source: the value is stripped", got is not None and got[0] == CWD
+              and got[1] == "D--Claude", repr(got))
+    finally:
+        rm_tree(home)
+
+
+def test_no_source_folder_is_a_quiet_stranger():
+    quiet = ("", "", "")
+    home = make_home({})
+    try:
+        check("stranger: no manifest at all -> three empty strings", source_of(home) == quiet,
+              repr(source_of(home)))
+        check("stranger: and not one error line", "error:" not in guard_log(home),
+              guard_log(home)[-300:])
+    finally:
+        rm_tree(home)
+    for label, text in (("a manifest without the key", json.dumps({"projects": {}})),
+                        ("null", "null"), ("a 3", "3"),
+                        ("an empty string value", json.dumps({"source_dir": ""})),
+                        ("a blank string value", json.dumps({"source_dir": "   "})),
+                        ("a non-string value", json.dumps({"source_dir": 3}))):
+        home = make_home({})
+        try:
+            write_raw_manifest(home, text)
+            check("stranger: %s -> three empty strings" % label, source_of(home) == quiet,
+                  repr(source_of(home)))
+            check("stranger: %s -> no error line" % label,
+                  "error: _source" not in guard_log(home), guard_log(home)[-300:])
+            g = guard_call(home, "pass\n")
+            check("stranger: %s -> importing guard exits 0" % label, g.returncode == 0,
+                  g.stderr[-300:])
+        finally:
+            rm_tree(home)
+    home = make_home({})
+    try:
+        write_raw_manifest(home, "{not json")
+        got = source_of(home)
+        check("stranger: a broken manifest -> three empty strings", got == quiet, repr(got))
+        check("stranger: and exactly one error line", guard_log(home).count("error: _source:") == 1,
+              guard_log(home)[-300:])
+        g = guard_call(home, "pass\n")
+        check("stranger: importing guard over a broken manifest exits 0", g.returncode == 0,
+              g.stderr[-300:])
+    finally:
+        rm_tree(home)
+
+
+def without_source(man):
+    out = dict(man)
+    out.pop("source_dir", None)
+    return out
+
+
+def test_a_stranger_without_a_source_folder():
+    # (a) the bootstrap declines, and says so in the log
+    home = make_boot_home(manifest=without_source(BOOT_MANIFEST))
+    try:
+        p = boot(home, r"D:\AI Projects\Garden")
+        expect_clean(p, "nosrc-boot")
+        check("nosrc-boot: no list was written",
+              boot_memory(home, "D--AI-Projects-Garden") is None,
+              repr(boot_memory(home, "D--AI-Projects-Garden")))
+        check("nosrc-boot: the log names the reason",
+              "bootstrap: no source_dir in the manifest - declining to guess" in guard_log(home),
+              guard_log(home)[-300:])
+        check("nosrc-boot: stdout is empty", (p.stdout or "").strip() == "", p.stdout)
+    finally:
+        rm_tree(home)
+    # (b) a label fetch still hands over the project's index, with no shared-folder wording
+    home = make_home({KEY + ".b0b0b0b0.md": NOTE_QIX})
+    try:
+        write_threads_manifest(home, without_source(MANIFEST_THREADS))
+        write_project_index(home, "D--AI-Projects-QixTrackerBot",
+                            "# Memory Index\n- [a](b.md) - INDEX-QIX\n")
+        p = run(home, "nosrc-label", "QIX bot -3 (20 Sep)")
+        ctx = context_of(p)
+        expect_clean(p, "nosrc-label")
+        check("nosrc-label: the project's index arrived", "INDEX-QIX" in ctx
+              and "MEMORY INDEX for qix" in ctx and "D--AI-Projects-QixTrackerBot" in ctx,
+              repr(ctx[-400:]))
+        check("nosrc-label: and the text names no shared folder",
+              "shared folder" not in ctx and "shared MEMORY.md" not in ctx, repr(ctx[-600:]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+    # (c) the catalogue: a memory in KEY's folder claimed by no list is that folder's project
+    home = kw_home({(KEY, "loose-lesson"): mem_text("loose-lesson", "l", ["regex"])},
+                   manifest=without_source(KW_MANIFEST))
+    try:
+        r = kw_json(home, "import json\nprint(json.dumps({e['slug']: e for e in "
+                          "guard.memory_catalogue()}))")
+        l = r.get("loose-lesson") or {}
+        check("nosrc-cat: unclaimed in that folder -> the folder's own name, not 'general'",
+              l.get("project") == KEY, repr(l))
+    finally:
+        rm_tree(home)
+    # and the catalogue with a source folder is unchanged: the same memory is "general"
+    home = kw_home({(KEY, "loose-lesson"): mem_text("loose-lesson", "l", ["regex"])},
+                   manifest=KW_MANIFEST)
+    try:
+        r = kw_json(home, "import json\nprint(json.dumps({e['slug']: e for e in "
+                          "guard.memory_catalogue()}))")
+        check("nosrc-cat: with the source folder set it is still 'general'",
+              (r.get("loose-lesson") or {}).get("project") == "general", repr(r))
+    finally:
+        rm_tree(home)
+
+
+def test_the_bash_hook_reads_no_manifest():
+    home = make_home({})
+    try:
+        # the manifest path is a FOLDER: any read of it would fail and leave an error line
+        os.makedirs(os.path.join(home, ".claude", "context-guard", "memory-manifest.json"))
+        p = run_bash_hook(home, "echo hello")
+        check("bash-nomanifest: exit 0", p.returncode == 0, "rc=%d %s" % (p.returncode, p.stderr[-200:]))
+        check("bash-nomanifest: no output", (p.stdout or "").strip() == "", p.stdout)
+        check("bash-nomanifest: no error line", "error:" not in guard_log(home),
+              guard_log(home)[-300:])
+    finally:
+        rm_tree(home)
+
+
 if __name__ == "__main__":
     for t in (test_a_folderless_chat_naming_a_saved_thread_is_told_to_move,
               test_a_big_folderless_chat_is_not_told_to_move,
@@ -10075,7 +10245,11 @@ if __name__ == "__main__":
               test_an_unattributed_folder_gets_only_the_pointer_when_off,
               test_install_keeps_an_existing_installs_neighbours_on,
               test_a_fresh_install_then_a_second_install_leaves_neighbours_off,
-              test_the_prune_stops_at_its_time_budget):
+              test_the_prune_stops_at_its_time_budget,
+              test_the_source_folder_comes_from_the_manifest,
+              test_no_source_folder_is_a_quiet_stranger,
+              test_a_stranger_without_a_source_folder,
+              test_the_bash_hook_reads_no_manifest):
         print(t.__name__)
         t()
     print()

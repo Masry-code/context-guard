@@ -85,6 +85,9 @@ else is a bug in the tooling, not advice. Map each thread label to a project in
 ```
 
 and the turn a note is picked up, that project's own `MEMORY.md` rides along with it.
+An optional top-level `"source_dir": "D:\\Projects\\Shared"` names the folder whose `memory/`
+holds the shared files; without it, the new-folder bootstrap and the shared-folder wording
+stay off.
 Labels are matched whole and lowercased, never as a prefix — two labels may name one
 project, and a label in no list fetches nothing and says nothing. **Review the lists
 before they run: a wrong line hands you another project's memories.** A project with no
