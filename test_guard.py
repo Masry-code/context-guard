@@ -4746,6 +4746,34 @@ def test_a_reversed_two_word_keyword_is_not_scored_in_strict_mode():
         rm_tree(home)
 
 
+def test_the_log_never_keeps_the_words_of_a_prompt():
+    """Review row 9: the size line kept the first 60 characters of EVERY prompt. The length
+    stays (it proves the build hands the hook the prompt); the words must never reach the
+    log, while the ledger - which is meant to hold them - still does."""
+    marker = "zebra quartz marmalade 41"
+    home = make_home({})
+    try:
+        write_chat_msgs(home, "nowordsaa", time.time() - 3600, [marker])
+        expect_clean(run(home, "nowordsaa", marker), "nowords/size")
+        expect_clean(run_stop(home, "nowordsaa"), "nowords/stop")
+        expect_clean(run_session_end(home, "nowordsaa"), "nowords/end")
+        expect_clean(boot(home, CWD, "nowordsaa"), "nowords/boot")
+        log_text = guard_log(home)
+        lines = [ln for ln in log_text.splitlines() if "size: prompt=" in ln]
+        check("nowords: the size line keeps the length and nothing after it",
+              len(lines) == 1 and lines[0].endswith("prompt=%d chars" % len(marker)),
+              repr(lines))
+        check("nowords: the words of the prompt are nowhere in the log",
+              marker not in log_text and "zebra" not in log_text, repr(log_text[-400:]))
+        check("nowords: the ledger DOES hold the words (it is meant to)",
+              marker in ledger_body(home), repr(ledger_body(home)[-200:]))
+        expect_clean(run(home, "nowordsaa", "afk"), "nowords/afk")
+        check("nowords: CONTROL - a fixed away phrase is still logged",
+              "away: armed by 'afk'" in guard_log(home), repr(guard_log(home)[-300:]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
 # ------------------------------------- change 7: the finished chat archives itself
 WRITER_NOTE = ("HANDOFF LABEL: context guard -4 (19 Sep)\n"
                "WRITTEN BY: Context Guard -3 (18 Sep)\n\n"
@@ -9161,7 +9189,8 @@ if __name__ == "__main__":
               test_the_sweep_writes_a_stub_only_for_a_chat_idle_under_48_hours,
               test_session_end_skips_a_consumed_note_and_a_tiny_chat,
               test_manifest_cache_and_sort_failures_are_logged_but_missing_files_are_not,
-              test_a_reversed_two_word_keyword_is_not_scored_in_strict_mode):
+              test_a_reversed_two_word_keyword_is_not_scored_in_strict_mode,
+              test_the_log_never_keeps_the_words_of_a_prompt):
         print(t.__name__)
         t()
     print()

@@ -2845,9 +2845,11 @@ def _size_check(d, sid):
         log("size: no transcript on disk yet (new chat) - using " + path)
     ctx = live_context(path)
     st = load_state(sid)
-    # does this build actually hand the hook the user's message? the label picker needs it
-    log("size: prompt=%d chars %r" % (len(d.get("prompt") or ""),
-                                      (d.get("prompt") or "")[:60]))
+    # does this build actually hand the hook the user's message? the label picker needs it.
+    # Only the LENGTH is logged: it proves the prompt arrives. The first 60 characters of
+    # every prompt used to be kept here; dropped 2 Oct 2026 (review row 9) - the log must
+    # never hold the words a person typed.
+    log("size: prompt=%d chars" % len(d.get("prompt") or ""))
     if not os.path.exists(path):
         own_bytes = 0                     # nothing written yet = brand new
     else:
