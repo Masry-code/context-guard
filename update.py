@@ -45,11 +45,13 @@ SECRET_PATTERNS = (
     ("huggingface token", r"\bhf_[A-Za-z0-9]{30,}"),
     ("bot token", r"\b\d{8,10}:[A-Za-z0-9_\-]{35}\b"),
     ("jwt", r"\beyJ[A-Za-z0-9_\-]{10,}\.eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}"),
+    ("url login", r"(?<=://)[^\s/:@]+:[^\s/@]+(?=@)"),
 )
 _SECRET_RES = tuple((k, re.compile(p)) for k, p in SECRET_PATTERNS)
 GENERIC_SECRET_RE = re.compile(
-    r"(?i)(\b(?:api[_-]?key|access[_-]?key|secret|token|password|passwd|pwd|bearer|"
-    r"authorization)\b[\"']?\s*(?:[:=]|\s)\s*[\"']?)([A-Za-z0-9_\-./+=]{16,})")
+    r"(?i)((?<![A-Za-z0-9])(?:api[_-]?key|access[_-]?key|secret|token|password|passwd|pwd|"
+    r"bearer|authorization[\"']?(?:\s*[:=]\s*|\s+)basic|authorization)(?![A-Za-z0-9])"
+    r"[\"']?(?:\s*[:=]\s*|\s+)[\"']?)([A-Za-z0-9_\-./+=]{16,})")
 _HEX_RE = re.compile(r"[0-9a-fA-F]{7,64}")
 _UUID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
                       r"[0-9a-fA-F]{12}")

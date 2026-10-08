@@ -131,6 +131,12 @@ edited. When a new chat picks up a thread it is handed *your own words, verbatim
 including requests from ten chats ago that were never delivered. Summaries lose exactly
 the detail that makes a request actionable.
 
+Keys and tokens are masked before they reach the log, the ledger or a handoff note (known
+key shapes, `user:pass@` in URLs, and the value after a word like `token`, `password` or
+`api_key`). Hex values of 7-64 characters after such a word are kept on purpose, because
+session ids, git shas and digests look exactly the same, and so are values containing a `/`
+and values under 16 characters. A hex-only secret therefore slips through.
+
 **The ceiling.** Warnings alone do not retire a chat; one chat here ran 524 turns straight
 through repeated warnings. So past a hard ceiling the Stop hook simply refuses to let the
 chat close until the note is on disk. It checks the **file**, not a claim — an assistant

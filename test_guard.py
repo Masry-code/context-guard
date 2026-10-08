@@ -4934,6 +4934,101 @@ def test_update_masks_with_the_same_patterns():
         shutil.rmtree(home, ignore_errors=True)
 
 
+# ------------------------------------- T2 review fixes (items 1-6)
+def test_t2fix_generic_mask_is_linear_on_whitespace():
+    home = make_home({})
+    try:
+        code = ("import time\n"
+                "res = []\n"
+                "for pad in (' ', chr(10)):\n"
+                "    s = 'token' + pad * 20000\n"
+                "    t0 = time.time(); out = guard.mask_secrets(s); dt = time.time() - t0\n"
+                "    res.append(str(out == s and dt < 1.0) + ' %.2f' % dt)\n"
+                "sys.stdout.write(' | '.join(res))")
+        r = guard_call(home, code)
+        check("t2fix-1: token + 20,000 spaces / newlines is fast and unchanged",
+              r.returncode == 0 and r.stdout.count("True") == 2, r.stdout + r.stderr[-200:])
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+    v = "Zq7x" * 6
+    for s, want in (("token = %s" % v, "token = [masked]"), ("token %s" % v, "token [masked]"),
+                    ("secret:%s" % v, "secret:[masked]")):
+        out = mask_via_guard(s)
+        check("t2fix-1: still masked: %s" % s[:12], out == want, repr(out))
+
+
+def test_t2fix_env_var_names_are_masked_and_basic_auth_too():
+    v = "Zq7x" * 6
+    for name in ("GITHUB_TOKEN=", "OPENAI_API_KEY=", "client_secret=", "access_token=",
+                 "DB_PASSWORD=", "db_password: "):
+        out = mask_via_guard("set %s%s now" % (name, v))
+        check("t2fix-2: %s masked" % name.strip(),
+              v not in out and out == "set %s[masked] now" % name, repr(out))
+    out = mask_via_guard("Authorization: Basic %s" % ("dXNlcjpwYXNzd29yZDEyMzQ1Njc4"))
+    check("t2fix-2: Authorization: Basic value masked",
+          "dXNlcjpw" not in out and out.startswith("Authorization: Basic"), repr(out))
+    out = mask_via_guard("tokens budget and password-reset flows")
+    check("t2fix-2: tokens / password-reset prose unchanged",
+          out == "tokens budget and password-reset flows", repr(out))
+
+
+def test_t2fix_a_failed_mask_never_drops_the_ledger_entry():
+    home = make_home({})
+    try:
+        fake = fake_secrets()["google key"]
+        p = write_chat_msgs(home, "maskfailaa", time.time() - 3600,
+                            ["deploy with key %s and the note" % fake])
+        # raises on the first call (the ledger's), then behaves, so the one swallowed line
+        # the fallback logs can be seen
+        code = ("calls = []\n"
+                "def boom(t):\n"
+                "    calls.append(1)\n"
+                "    if len(calls) == 1:\n        raise RuntimeError('mask broke')\n"
+                "    return str(t)\n"
+                "guard.mask_secrets = boom\n"
+                "guard.append_ledger(%r)\n" % p)
+        r = guard_call(home, code)
+        body = ledger_body(home)
+        check("t2fix-3: the entry is recorded with long runs masked, never raw, never the placeholder",
+              r.returncode == 0 and "deploy with key [masked long token] and the note" in body
+              and fake not in body and "masking failed" not in body,
+              repr(body[-300:]) + r.stderr[-200:])
+        check("t2fix-3: one swallowed line in the log",
+              "mask" in guard_log(home).lower(), repr(guard_log(home)[-300:]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_t2fix_a_checkpoint_is_masked_in_the_file_and_the_stub():
+    home = make_home({})
+    try:
+        fake = fake_secrets()["github token"]
+        p = run_checkpoint(home, "ckmaskaa", "rotated " + fake + " done")
+        with open(checkpoint_file(home, "ckmaskaa"), encoding="utf-8") as f:
+            body = f.read()
+        check("t2fix-4: no raw key in the checkpoint file or on screen",
+              fake not in body and "[masked github token]" in body and fake not in p.stdout,
+              repr(body) + repr(p.stdout))
+        r = guard_call(home, "sys.stdout.write(str(guard.last_checkpoint('ckmaskaa')))")
+        check("t2fix-4: nothing a stub would copy holds the raw key",
+              r.returncode == 0 and fake not in r.stdout and "[masked github token]" in r.stdout,
+              r.stdout + r.stderr[-200:])
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_t2fix_url_credentials_are_masked():
+    pw = "hunter" + "2x"
+    out = mask_via_guard("clone https://alice:%s@git.example.com/r.git now" % pw)
+    check("t2fix-5: user:pass@ masked, host and path stay",
+          pw not in out and "alice" not in out
+          and out == "clone https://[masked url login]@git.example.com/r.git now", repr(out))
+    for s in ("see https://host.example.com/path?x=1 ok", "mail bob@example.com please",
+              "port https://host.example.com:8080/a@b ok"):
+        out = mask_via_guard(s)
+        check("t2fix-5: unchanged: %s" % s[:30], out == s, repr(out))
+
+
 # ------------------------------------- change 7: the finished chat archives itself
 WRITER_NOTE = ("HANDOFF LABEL: context guard -4 (19 Sep)\n"
                "WRITTEN BY: Context Guard -3 (18 Sep)\n\n"
@@ -9572,6 +9667,11 @@ if __name__ == "__main__":
               test_the_ledger_keeps_his_words_but_not_a_key,
               test_an_old_key_in_the_ledger_is_masked_on_pickup_and_the_file_is_untouched,
               test_update_masks_with_the_same_patterns,
+              test_t2fix_generic_mask_is_linear_on_whitespace,
+              test_t2fix_env_var_names_are_masked_and_basic_auth_too,
+              test_t2fix_a_failed_mask_never_drops_the_ledger_entry,
+              test_t2fix_a_checkpoint_is_masked_in_the_file_and_the_stub,
+              test_t2fix_url_credentials_are_masked,
               test_old_used_notes_are_deleted_and_nothing_else_is,
               test_the_prune_runs_once_a_day,
               test_the_newest_archives_of_a_project_are_kept_whatever_their_age,

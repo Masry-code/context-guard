@@ -227,11 +227,13 @@ SECRET_PATTERNS = (
     ("huggingface token", r"\bhf_[A-Za-z0-9]{30,}"),
     ("bot token", r"\b\d{8,10}:[A-Za-z0-9_\-]{35}\b"),
     ("jwt", r"\beyJ[A-Za-z0-9_\-]{10,}\.eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}"),
+    ("url login", r"(?<=://)[^\s/:@]+:[^\s/@]+(?=@)"),
 )
 _SECRET_RES = tuple((k, re.compile(p)) for k, p in SECRET_PATTERNS)
 GENERIC_SECRET_RE = re.compile(
-    r"(?i)(\b(?:api[_-]?key|access[_-]?key|secret|token|password|passwd|pwd|bearer|"
-    r"authorization)\b[\"']?\s*(?:[:=]|\s)\s*[\"']?)([A-Za-z0-9_\-./+=]{16,})")
+    r"(?i)((?<![A-Za-z0-9])(?:api[_-]?key|access[_-]?key|secret|token|password|passwd|pwd|"
+    r"bearer|authorization[\"']?(?:\s*[:=]\s*|\s+)basic|authorization)(?![A-Za-z0-9])"
+    r"[\"']?(?:\s*[:=]\s*|\s+)[\"']?)([A-Za-z0-9_\-./+=]{16,})")
 _HEX_RE = re.compile(r"[0-9a-fA-F]{7,64}")
 _UUID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
                       r"[0-9a-fA-F]{12}")
@@ -257,6 +259,24 @@ def mask_secrets(text):
         for kind, rx in _SECRET_RES:
             s = rx.sub("[masked %s]" % kind, s)
         return GENERIC_SECRET_RE.sub(_generic_masked, s)
+    except Exception:
+        return MASK_FAILED
+
+
+def mask_for_ledger(text):
+    """mask_secrets for the ledger. If masking fails, the placeholder must NOT be recorded:
+    the dedupe hash is saved, so his request would be dropped for good. Fall back to masking
+    every long token-like run and keep the other words. Never raises, never returns raw text."""
+    try:
+        m = mask_secrets(text)
+    except Exception as e:
+        swallowed("mask_for_ledger", e)
+        m = MASK_FAILED
+    if m != MASK_FAILED or text == MASK_FAILED:
+        return m
+    swallowed("mask_for_ledger", ValueError("masking failed; long runs masked instead"))
+    try:
+        return re.sub(r"[A-Za-z0-9_\-./+=]{20,}", "[masked long token]", str(text))
     except Exception:
         return MASK_FAILED
 
@@ -328,6 +348,7 @@ def add_checkpoint(sid, text, ctx):
     """One finished milestone. Recorded with the CONTEXT SIZE it was reached at, not a
     turn number: "how long ago" is the only interesting question about a checkpoint, and
     context is the number that maps to what it cost."""
+    text = mask_secrets(text)       # one place: the file, the echo and any stub all get it masked
     line = "\t".join([datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
                       str(int(ctx)), " ".join(str(text).split())])
     with open(checkpoint_path(sid), "a", encoding="utf-8") as f:
@@ -392,6 +413,7 @@ def cmd_checkpoint():
         return
     path = find_transcript(sid, None)
     ctx = live_context(path) if path else 0
+    text = mask_secrets(text)       # the echo below must not repeat a raw key
     add_checkpoint(sid, text, ctx)
     log("checkpoint at %d: %s" % (ctx, text))
     print("checkpoint recorded at %dk: %s" % (round(ctx / 1000), text))
@@ -1229,7 +1251,7 @@ def append_ledger(path):
                 # from the ten other threads that share this one file
                 f.write(chr(10) + "### " + (ts or "unknown time")
                         + (" - chat " + sid8 if sid8 else "")
-                        + chr(10) + chr(10) + mask_secrets(t) + chr(10))
+                        + chr(10) + chr(10) + mask_for_ledger(t) + chr(10))
         _save()
         log("ledger: +" + str(len(fresh)) + " -> " + os.path.basename(lp))
     except Exception as e:
