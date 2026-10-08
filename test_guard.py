@@ -9845,6 +9845,142 @@ def test_no_source_folder_is_a_quiet_stranger():
         rm_tree(home)
 
 
+def test_fixd_trailing_separators_give_one_source_key():
+    # Fix D1: "D:\Claude\" and "D:/Claude/" are the same folder as "D:\Claude".
+    base = None
+    for spelling in (r"D:\Claude", "D:\\Claude\\", "D:/Claude/", "  D:/Claude//  ",
+                     "D:\\Claude\\/"):
+        home = make_home({})
+        try:
+            write_raw_manifest(home, json.dumps({"source_dir": spelling}))
+            got = source_of(home)
+            if base is None:
+                base = got
+            check("fixd1: %r -> key D--Claude" % spelling,
+                  got is not None and got[1] == "D--Claude", repr(got))
+            check("fixd1: %r -> the same shared path as the plain spelling" % spelling,
+                  got is not None and base is not None
+                  and got[2].endswith(os.path.join("D--Claude", "memory"))
+                  and got[0].rstrip("\\/") == got[0], repr((got, base)))
+        finally:
+            rm_tree(home)
+    # A drive root stays a root: "D:\" and "D:/" give dir_key("D:\") = "D--", never "D-".
+    for spelling in ("D:\\", "D:/", "D:"):
+        home = make_home({})
+        try:
+            write_raw_manifest(home, json.dumps({"source_dir": spelling}))
+            got = source_of(home)
+            check("fixd1: drive root %r -> key D--, root kept" % spelling,
+                  got is not None and got[0] == "D:\\" and got[1] == "D--", repr(got))
+        finally:
+            rm_tree(home)
+
+
+def test_fixd_install_warns_when_the_manifest_has_no_source_dir():
+    note = 'memory-manifest.json has no "source_dir"'
+    for args in ((), ("--dry-run",)):
+        for label, text, want in (("no source_dir", json.dumps({"projects": {}}), True),
+                                  ("empty source_dir", json.dumps({"source_dir": " "}), True),
+                                  ("with source_dir", json.dumps({"source_dir": "D:/Demo"}),
+                                   False),
+                                  ("no manifest", None, False)):
+            home = make_home({})
+            try:
+                existing_install(home)
+                if text is not None:
+                    write_raw_manifest(home, text)
+                r = run_install(home, *args)
+                n = r.stdout.count(note)
+                check("fixd2: existing install, %s %s -> %s" % (label, args,
+                      "one warning" if want else "no warning"),
+                      n == (1 if want else 0), r.stdout + r.stderr)
+                if want and not args:
+                    check("fixd2: the warning comes before the copy",
+                          r.stdout.index(note) < r.stdout.index("refreshed:"), r.stdout)
+                    check("fixd2: the manifest is untouched", read_bytes(
+                        os.path.join(home, ".claude", "context-guard", "memory-manifest.json"))
+                        == text.encode("utf-8"))
+            finally:
+                rm_tree(home)
+    # a fresh install is not "an existing install": no warning even with a bare manifest
+    home = make_home({})
+    try:
+        seed_settings(home, {})
+        write_raw_manifest(home, json.dumps({"projects": {}}))
+        r = run_install(home)
+        check("fixd2: a fresh install does not warn", note not in r.stdout, r.stdout)
+    finally:
+        rm_tree(home)
+
+
+def test_fixd_a_failed_config_write_removes_its_tmp():
+    inst = inst_module()
+    home = make_home({})
+    real = os.replace
+    try:
+        os.makedirs(os.path.dirname(cfg_file(home)), exist_ok=True)
+
+        def boom(a, b):
+            raise OSError("simulated")
+        os.replace = boom
+        try:
+            rc = inst.write_config_key(home, True)
+        finally:
+            os.replace = real
+        check("fixd3: a failed replace reports 1", rc == 1, repr(rc))
+        check("fixd3: and leaves no config.json.tmp", not os.path.exists(cfg_file(home) + ".tmp"),
+              repr(os.listdir(os.path.dirname(cfg_file(home)))))
+        check("fixd3: and no config.json", not os.path.exists(cfg_file(home)))
+    finally:
+        os.replace = real
+        rm_tree(home)
+
+
+def test_fixd_update_shows_the_installers_stdout_when_it_fails():
+    u = upd_module()
+    clone = throwaway_dir("fixd4-")
+    with open(os.path.join(clone, "install.py"), "w", encoding="utf-8", newline="\n") as f:
+        f.write("import sys\nprint('REFUSING: settings.json is not valid JSON')\n"
+                "print('Fix or move that file first')\nsys.exit(2)\n")
+    said = []
+    rc = u._after_update(clone, throwaway_dir("fixd4home-"), said.append)
+    text = "\n".join(said)
+    check("fixd4: still returns the child's code", rc == 2, repr(rc))
+    check("fixd4: the problem line carries the child's stdout, not an empty tail",
+          any(s.startswith("The hook merge reported a problem:")
+              and "REFUSING: settings.json is not valid JSON" in s for s in said), repr(said))
+    # stderr wins when there is some
+    clone2 = throwaway_dir("fixd4b-")
+    with open(os.path.join(clone2, "install.py"), "w", encoding="utf-8", newline="\n") as f:
+        f.write("import sys\nprint('out line')\nsys.stderr.write('err line')\nsys.exit(3)\n")
+    said2 = []
+    u._after_update(clone2, throwaway_dir("fixd4home-"), said2.append)
+    check("fixd4: stderr is shown when there is some",
+          any(s.endswith("reported a problem: err line") for s in said2), repr(said2))
+
+
+def test_fixd_loading_audit_writes_no_bytecode():
+    tmp = throwaway_dir("fixd5-")
+    for n in ("guard.py", "audit.py"):
+        shutil.copy(os.path.join(HERE_DIR, n), os.path.join(tmp, n))
+    home = make_home({})
+    try:
+        env = child_env(home)
+        env.pop("PYTHONDONTWRITEBYTECODE", None)
+        code = ("import sys; sys.path.insert(0, %r); import guard; "
+                "m = guard.load_audit(); print(m is not None, sys.dont_write_bytecode)" % tmp)
+        p = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                           env=env)
+        cache = os.path.join(tmp, "__pycache__")
+        left = [n for n in (os.listdir(cache) if os.path.isdir(cache) else [])
+                if n.startswith("audit")]
+        check("fixd5: audit loaded, and the flag is back as it was", p.stdout.split() ==
+              ["True", "False"], p.stdout + p.stderr)
+        check("fixd5: no audit .pyc was written", not left, repr(left))
+    finally:
+        rm_tree(home)
+
+
 def without_source(man):
     out = dict(man)
     out.pop("source_dir", None)
@@ -10345,6 +10481,11 @@ if __name__ == "__main__":
               test_the_prune_stops_at_its_time_budget,
               test_the_source_folder_comes_from_the_manifest,
               test_no_source_folder_is_a_quiet_stranger,
+              test_fixd_trailing_separators_give_one_source_key,
+              test_fixd_install_warns_when_the_manifest_has_no_source_dir,
+              test_fixd_a_failed_config_write_removes_its_tmp,
+              test_fixd_update_shows_the_installers_stdout_when_it_fails,
+              test_fixd_loading_audit_writes_no_bytecode,
               test_a_stranger_without_a_source_folder,
               test_the_bash_hook_reads_no_manifest,
               test_the_test_file_compiles_without_warnings,

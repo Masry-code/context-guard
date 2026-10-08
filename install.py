@@ -143,9 +143,36 @@ def write_config_key(home, value=True):
             f.write(json.dumps(obj, indent=2) + "\n")
         os.replace(p + ".tmp", p)
     except (OSError, ValueError) as e:
+        try:
+            os.remove(p + ".tmp")
+        except OSError:
+            pass
         print("Could not write %s (%s). Nothing was changed." % (p, e))
         return 1
     return 0
+
+
+def warn_no_source_dir(home, current):
+    """On an EXISTING install whose memory-manifest.json has no usable "source_dir", say so once
+    before anything is copied. Never refuses and never edits the manifest. No manifest, or a
+    fresh install, prints nothing."""
+    existing = (not is_fresh(current)) or os.path.isfile(os.path.join(bin_dir(home),
+                                                                      "source.json"))
+    if not existing:
+        return
+    p = os.path.join(os.path.dirname(config_path(home)), "memory-manifest.json")
+    if not os.path.isfile(p):
+        return
+    try:
+        with open(p, encoding="utf-8-sig") as f:
+            man = json.load(f)
+        sd = man.get("source_dir") if isinstance(man, dict) else None
+        ok = isinstance(sd, str) and bool(sd.strip())
+    except (OSError, ValueError):
+        ok = False
+    if not ok:
+        print('note: memory-manifest.json has no "source_dir" - shared-folder features stay '
+              'off until you add it')
 
 
 def source_meta():
@@ -356,6 +383,8 @@ def main():
         if nplan and nplan not in ("write", "write-off"):
             print("REFUSING: " + nplan + ". Nothing was copied or changed.")
             return 1
+    if not a.uninstall:
+        warn_no_source_dir(a.home, current)
     meta_stale = not a.uninstall and not meta_current(a.home)
 
     wanted = build(current, remove=a.uninstall, home=a.home)

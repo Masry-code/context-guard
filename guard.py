@@ -1012,17 +1012,21 @@ WEEKLY_BUDGET_S = 6
 def load_audit():
     """audit.py sits beside this file and is loaded by path (the same pattern audit.update_line
     uses for update.py). Any failure just means no number; it must never break a hook."""
+    prior = sys.dont_write_bytecode
     try:
         import importlib.util
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "audit.py")
         if not os.path.exists(path):
             return None
+        sys.dont_write_bytecode = True      # no __pycache__ beside the installed copy
         spec = importlib.util.spec_from_file_location("cg_audit", path)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         return mod
     except Exception:
         return None
+    finally:
+        sys.dont_write_bytecode = prior
 
 
 STUB_SWEEP_MIN_AGE = 6 * 3600       # idle at least this long: the chat is surely over
@@ -3367,6 +3371,10 @@ def _source():
         sd = man.get("source_dir") if isinstance(man, dict) else None
         sd = sd.strip() if isinstance(sd, str) else ""
         if sd:
+            # One folder, one key: a trailing separator (either kind) is not part of the name.
+            # A drive root keeps its separator: "D:" would key as D-, a root keys as D--.
+            t = sd.rstrip("\\/")
+            sd = t if t and not re.fullmatch(r"[A-Za-z]:", t) else (t + "\\" if t else sd)
             k = dir_key(sd)
             res = (sd, k, os.path.join(PROJECTS, k, "memory") if k else "")
     except Exception as _e:

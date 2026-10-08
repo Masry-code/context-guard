@@ -397,7 +397,11 @@ def _after_update(clone, home, say):
         if out:
             say(out)
         if r.returncode != 0:
-            say("The hook merge reported a problem: " + (r.stderr or "").strip())
+            why = (r.stderr or "").strip()
+            if not why:
+                # install.py prints its REFUSING lines on stdout; show the last few.
+                why = "\n".join(out.splitlines()[-4:])
+            say("The hook merge reported a problem: " + why)
             return r.returncode
     except Exception as e:
         say("Could not re-run install.py: %r. Run it yourself: python install.py" % (e,))
