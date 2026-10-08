@@ -192,7 +192,11 @@ def waiting(home):
                   if f.endswith(".md") and ".used" not in f and not f.endswith(".requests.md"))
 
 
+CHECKS_RUN = [0]
+
+
 def check(name, cond, detail=""):
+    CHECKS_RUN[0] += 1
     print(("  PASS  " if cond else "  FAIL  ") + name + ("" if cond else "  <- " + detail))
     if not cond:
         FAILED.append(name)
@@ -9951,6 +9955,63 @@ def test_the_ci_workflow_runs_the_in_repo_suite():
         check("ci: does not contain %s" % bad, bad not in text)
 
 
+def _readme_text():
+    with open(os.path.join(HERE_DIR, "README.md"), encoding="utf-8") as f:
+        return f.read()
+
+
+def _desktop_only_section(readme):
+    """README text from the '### Desktop app only' heading to the next heading, or ''."""
+    m = re.search(r"^### Desktop app only[ \t]*\n(.*?)(?=^#{1,6} |\Z)", readme, re.S | re.M)
+    return m.group(1) if m else ""
+
+
+def test_the_readme_names_every_desktop_only_tool():
+    with open(GUARD, encoding="utf-8") as f:
+        src = f.read()
+    tools = set(re.findall(r"mcp__ccd_[a-z]+(?:_[a-z]+)*?__([a-z_]+)", src))
+    tools |= set(re.findall(r"\bset_session_[a-z_]+", src))
+    section = _desktop_only_section(_readme_text())
+    check("desktop-only: the README has a '### Desktop app only' section", section != "")
+    check("desktop-only: guard.py names desktop tools", len(tools) >= 8, repr(sorted(tools)))
+    for tool in sorted(tools):
+        check("desktop-only: the README section names %s" % tool, tool in section)
+
+
+def test_the_tour_and_the_readme_agree_on_desktop_only():
+    with open(os.path.join(HERE_DIR, "tour.md"), encoding="utf-8") as f:
+        tour = f.read()
+    item1 = re.search(r"^1\. .*?(?=^2\. )", tour, re.S | re.M)
+    item1 = item1.group(0) if item1 else ""
+    check("desktop-only: tour item 1 says (desktop app)", "(desktop app)" in item1, item1[:200])
+    section = _desktop_only_section(_readme_text()).lower()
+    check("desktop-only: the README section mentions the archive", "archive" in section)
+    check("desktop-only: the README section mentions the sidebar group", "sidebar" in section)
+
+
+def test_the_hooks_badge_counts_install_hooks():
+    readme = _readme_text()
+    n = len(inst_module().HOOKS)
+    check("badge: hooks-%d- is in the README" % n, ("badge/hooks-%d-" % n) in readme)
+    check("badge: alt '%d hooks' is in the README" % n, ('alt="%d hooks"' % n) in readme)
+
+
+def readme_checks_badge_agrees(total):
+    """The checks badge is a floor: both README mentions equal, N <= total < N * 1.25."""
+    readme = _readme_text()
+    badge = re.findall(r"badge/checks-(\d+)%2B", readme)
+    prose = re.findall(r"\*\*(\d+)\+ checks", readme)
+    check("checks-badge: exactly one badge and one Tests-section figure",
+          len(badge) == 1 and len(prose) == 1, repr((badge, prose)))
+    if len(badge) != 1 or len(prose) != 1:
+        return
+    n = int(badge[0])
+    check("checks-badge: badge and Tests section agree", int(prose[0]) == n, repr((badge, prose)))
+    check("checks-badge: alt text says the same figure", ('alt="%d+ checks' % n) in readme)
+    check("checks-badge: never claims more than ran (%d <= %d)" % (n, total), n <= total)
+    check("checks-badge: not stale (%d < %d * 1.25)" % (total, n), total < n * 1.25)
+
+
 if __name__ == "__main__":
     for t in (test_a_folderless_chat_naming_a_saved_thread_is_told_to_move,
               test_a_big_folderless_chat_is_not_told_to_move,
@@ -10287,10 +10348,14 @@ if __name__ == "__main__":
               test_a_stranger_without_a_source_folder,
               test_the_bash_hook_reads_no_manifest,
               test_the_test_file_compiles_without_warnings,
-              test_the_ci_workflow_runs_the_in_repo_suite):
+              test_the_ci_workflow_runs_the_in_repo_suite,
+              test_the_readme_names_every_desktop_only_tool,
+              test_the_tour_and_the_readme_agree_on_desktop_only,
+              test_the_hooks_badge_counts_install_hooks):
         print(t.__name__)
         t()
     print()
+    readme_checks_badge_agrees(CHECKS_RUN[0])
     if FAILED:
         print("FAILED %d check(s): %s" % (len(FAILED), "; ".join(FAILED)))
         sys.exit(1)

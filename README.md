@@ -6,10 +6,11 @@
 </p>
 
 <p align="center">
-  <img alt="1279 checks passing" src="https://img.shields.io/badge/checks-1279%20passing-2a78d6">
+  <img alt="Tests" src="https://github.com/Masry-code/context-guard/actions/workflows/tests.yml/badge.svg">
+  <img alt="1900+ checks" src="https://img.shields.io/badge/checks-1900%2B-2a78d6">
   <img alt="Python 3.8+" src="https://img.shields.io/badge/python-3.8%2B-2a78d6">
   <img alt="No dependencies" src="https://img.shields.io/badge/dependencies-none-1baf7a">
-  <img alt="Five hooks" src="https://img.shields.io/badge/hooks-5-eda100">
+  <img alt="6 hooks" src="https://img.shields.io/badge/hooks-6-eda100">
   <img alt="MIT license" src="https://img.shields.io/badge/license-MIT-e87ba4">
 </p>
 
@@ -237,7 +238,8 @@ you summon one specifically, and the others stay waiting.
 
 The label comes in a copy box, so it is one click to copy. Once the new chat has picked
 the note up, it tells the old chat it has started; the old chat sets the new chat's effort
-from the note and then archives itself, so your sidebar keeps one live chat per thread.
+from the note and then archives itself (desktop app), so your sidebar keeps one live chat per
+thread (desktop app).
 
 A note written without the three head lines (label with its number, who wrote it, the next
 chat's effort) is sent back once to add them, so the new chat can number itself and archive
@@ -245,6 +247,24 @@ the old one.
 
 Opened a chat without choosing a folder? Type the label anyway: the chat asks to move
 itself into the thread's folder (one approval), and your next message loads the thread.
+
+### Desktop app only
+
+These steps need the Claude desktop app's session tools (`mcp__ccd_*`). In the terminal those
+tools do not exist, so these steps cannot happen there:
+
+* the old chat archives itself: `archive_session` (after `list_sessions` and `get_session`
+  find it, and `set_remote_control` switches its remote control off first when needed)
+* the new chat renames itself with the numbered label: `set_session_title`
+* the next chat's effort is set from the note: `set_session_effort`
+* the old chat is told it was picked up: `send_message`
+* the new chat lands in the same sidebar group as the old one: `move_sessions`
+* a folderless chat moves into the thread's folder: `change_directory`
+
+`clear_session` is only ever named to forbid it, because it was measured as inert.
+
+Everything else works in the terminal too: the size warnings, the notes, the ledger, the
+ceiling, stubs, away mode, pause, audit and updates.
 
 ### Away mode
 
@@ -328,7 +348,7 @@ is a check you will eventually disable by deleting the whole tool.
 python test_guard.py
 ```
 
-**1279 checks, no test framework required.** They run against a throwaway home directory, so
+**1900+ checks, no test framework required.** They run against a throwaway home directory, so
 they cannot touch your real notes — which is worth stating plainly, because until
 18 Sep 2026 that was only true on Windows. On macOS and Linux `expanduser("~")` falls back to
 the passwd database when `HOME` is missing, so the suite would have written into the real
@@ -348,8 +368,8 @@ the passwd database when `HOME` is missing, so the suite would have written into
   reports success and the chat carries straight on.
 * It does not send anything anywhere. Every file it writes is under your own `~/.claude/`.
 * It cannot resume a chat *for* you. You still type the label.
-* It has only ever been run on Windows. The cross-platform defect above is fixed and tested
-  both ways, but never executed on a real macOS or Linux machine — reports welcome.
+* CI runs the suite on Windows, macOS and Linux on every push, but the hooks have been used
+  daily on Windows only, and macOS support is not finished — reports welcome.
 
 ---
 

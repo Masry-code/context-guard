@@ -11,7 +11,7 @@ The list (title, then one short line each):
 
 1. Hand a chat over - when a chat gets expensive you get a label in a copy box. Copy it, open
    a new chat, paste it: the new chat picks up exactly where you were, and the old chat
-   archives itself and the new one lands in the same sidebar group.
+   archives itself and the new one lands in the same sidebar group (desktop app).
 2. Away mode - type afk when you leave the desk (on your phone it will stop asking you to
    open new chats) and back when you return.
 3. Pause it for one chat - for a long job you want to keep in one chat.
