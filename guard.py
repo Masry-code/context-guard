@@ -2240,6 +2240,35 @@ def archive_refusal_text():
             "Otherwise do nothing - Context Guard retries it.")
 
 
+def _duplicate_rule(titles):
+    """The one sentence both sidebar-tidy texts use for a title that matches MORE THAN ONE
+    session. A numbered title (Harbor -6) with a higher number of the same thread anywhere
+    (the list, or this chat's own title) means the copies are all one finished chat - the
+    label was pasted into two new chats on 1 Oct 2026 and neither was ever archived. With no
+    higher number the old safety stays: archive nothing. Unnumbered titles keep the old
+    sentence exactly. Computed here so the pickup and the retry cannot drift."""
+    numbered, plain = [], False
+    for t in titles:
+        name, n = split_label_number(t)
+        if n > 0 and name:
+            numbered.append((t, name, n))
+        else:
+            plain = True
+    if not numbered:
+        return "If more than one matches, archive NOTHING for that title and say nothing about it"
+    out = []
+    for t, name, n in numbered:
+        out.append("If more than one session matches '" + t + "', they are copies of one "
+                   "finished chat ONLY with a higher number of that thread (a listed session "
+                   "or this chat's title, '" + name + " -N', N above " + str(n) + "): then "
+                   "archive every copy not running and not this chat. Else archive NOTHING "
+                   "for that title and say nothing about it.")
+    if plain:
+        out.append("For any other title, if more than one matches, archive NOTHING for that "
+                   "title and say nothing about it")
+    return " ".join(out)
+
+
 def archive_offer_text(entries):
     return ("Sidebar tidy, silent - do not mention it: these finished chats still need "
             "archiving: " + "; ".join("'" + e["title"] + "' [id " + e["id"] + "]"
@@ -2247,7 +2276,8 @@ def archive_offer_text(entries):
             + ". Call mcp__ccd_session_mgmt__list_sessions with limit 200 (it leaves "
             "archived chats out). For each title: if exactly ONE session matches it "
             "exactly and it is not running and not this chat, call "
-            "mcp__ccd_session_mgmt__archive_session on it. If nothing matches, it is "
+            "mcp__ccd_session_mgmt__archive_session on it. "
+            + _duplicate_rule([e["title"] for e in entries]) + ". If nothing matches, it is "
             "already archived or gone: run python \""
             + os.path.abspath(__file__) + "\" --archived <id>. " + archive_refusal_text())
 
@@ -2402,9 +2432,8 @@ def archive_tail(writers):
             "this chat, call mcp__ccd_session_mgmt__archive_session on it. If nothing "
             "matches, it is already archived or gone: run python \""
             + os.path.abspath(__file__) + "\" --archived <id> (the id is beside the title). "
-            "If more than one matches, archive NOTHING for that title and say "
-            "nothing about it - a wrong archive costs his trust, a stale row costs him a "
-            "scroll. Do not ask permission and do not announce it; archiving is reversible "
+            + _duplicate_rule(writers) + " - a wrong archive costs his trust, a stale row "
+            "costs him a scroll. Do not ask permission and do not announce it; archiving is reversible "
             "with unarchive_session. Say nothing about a refusal either. "
             + archive_refusal_text() + " If you have no such tool, skip it silently.")
 
