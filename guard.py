@@ -2256,13 +2256,12 @@ def _duplicate_rule(titles):
             plain = True
     if not numbered:
         return "If more than one matches, archive NOTHING for that title and say nothing about it"
-    out = []
-    for t, name, n in numbered:
-        out.append("If more than one session matches '" + t + "', they are copies of one "
-                   "finished chat ONLY with a higher number of that thread (a listed session "
-                   "or this chat's title, '" + name + " -N', N above " + str(n) + "): then "
-                   "archive every copy not running and not this chat. Else archive NOTHING "
-                   "for that title and say nothing about it.")
+    out = ["If more than one session matches a title, they are copies of one finished chat "
+           "ONLY when a higher number of that thread exists (a listed session or this chat's "
+           "title): " + "; ".join("'" + name + " -N' with N above " + str(n)
+                                  for t, name, n in numbered)
+           + ". Then archive every copy not running and not this chat. Else archive "
+           "NOTHING for that title and say nothing about it."]
     if plain:
         out.append("For any other title, if more than one matches, archive NOTHING for that "
                    "title and say nothing about it")

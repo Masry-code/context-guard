@@ -5696,8 +5696,8 @@ def test_one_instruction_covers_every_due_title_and_stays_short():
               and "--archived \"" not in ctx and GUARD in ctx, repr(ctx[:900]))
         check("pa-one: it says the live list leaves archived chats out",
               "leaves archived chats out" in ctx, repr(ctx[:900]))
-        check("pa-one: it is short (under 230 words, two duplicate clauses included)",
-              len(ctx.split()) < 230,
+        check("pa-one: it is short (under 168 words, one shared duplicate clause included)",
+              len(ctx.split()) < 168,
               str(len(ctx.split())))
     finally:
         shutil.rmtree(home, ignore_errors=True)
@@ -6124,11 +6124,11 @@ def test_duplicate_copies_of_a_finished_numbered_chat_are_archived_once_the_thre
         p = run(home, "pa-dup1", "harbor")
         expect_clean(p, "pa-dup")
         ctx = pa_ctx(p)
-        i = ctx.find("more than one session matches '" + PA_TITLE + "'")
-        check("pa-dup: the clause is there, naming the exact title", i >= 0, repr(ctx[:2600]))
+        i = ctx.find("more than one session matches a title")
+        check("pa-dup: the shared clause is there", i >= 0, repr(ctx[:2600]))
         clause = ctx[i:i + 700]
         check("pa-dup: it names the thread and the number",
-              "'Harbor -N'" in clause and "above 6" in clause, repr(clause))
+              "'Harbor -N' with N above 6" in clause, repr(clause))
         check("pa-dup: a higher number lets every copy go",
               "higher number" in clause and "every copy" in clause
               and "not running" in clause and "not this chat" in clause, repr(clause))
@@ -6153,7 +6153,7 @@ def test_duplicate_copies_of_a_finished_numbered_chat_are_archived_once_the_thre
         expect_clean(p, "pa-dup/odd")
         ctx = pa_ctx(p)
         check("pa-dup: an awkward title does not crash and names its number",
-              "above 3" in ctx and "archive NOTHING for that title" in ctx, repr(ctx[:2600]))
+              "with N above 3" in ctx and "archive NOTHING for that title" in ctx, repr(ctx[:2600]))
     finally:
         shutil.rmtree(home, ignore_errors=True)
     home = make_home({KEY + ".aaaa1111.md": pa_note(PA_TITLE, "harbor", "body-HARBOR"),
@@ -6163,10 +6163,10 @@ def test_duplicate_copies_of_a_finished_numbered_chat_are_archived_once_the_thre
         p = run(home, "pa-dup4", "harbor")
         expect_clean(p, "pa-dup/two")
         ctx = pa_ctx(p)
-        check("pa-dup: two numbered writers each get their own clause",
-              "more than one session matches '" + PA_TITLE + "'" in ctx
-              and "more than one session matches 'Nova Calc -2 (29 Sep)'" in ctx
-              and "'Nova Calc -N'" in ctx and "above 2" in ctx, repr(ctx[:3000]))
+        check("pa-dup: two numbered writers share one clause and each gets its own number",
+              ctx.count("more than one session matches a title") == 1
+              and "'Harbor -N' with N above 6" in ctx
+              and "'Nova Calc -N' with N above 2" in ctx, repr(ctx[:3000]))
     finally:
         shutil.rmtree(home, ignore_errors=True)
     home = make_home({})
@@ -6176,8 +6176,8 @@ def test_duplicate_copies_of_a_finished_numbered_chat_are_archived_once_the_thre
         expect_clean(p, "pa-dup/offer")
         ctx = pa_ctx(p)
         check("pa-dup: the retry offer carries the same clause",
-              "more than one session matches '" + PA_TITLE + "'" in ctx
-              and "above 6" in ctx and "every copy" in ctx
+              "more than one session matches a title" in ctx
+              and "'Harbor -N' with N above 6" in ctx and "every copy" in ctx
               and "archive NOTHING for that title" in ctx, repr(ctx[:1500]))
     finally:
         shutil.rmtree(home, ignore_errors=True)
