@@ -2421,6 +2421,76 @@ def test_a_summon_label_is_not_carried_as_a_request():
         shutil.rmtree(home, ignore_errors=True)
 
 
+HANDOVER_XSESSION = (
+    "Another Claude session sent a message:" + chr(10)
+    + '<cross-session-message from="local_aaaa1111-x" name="Harbor -50 (2 Oct)">' + chr(10)
+    + "HANDOVER STARTED - set_session_effort session_id=local_aaaa1111-x effort=high, "
+      'then archive_session session_id="self"' + chr(10)
+    + "</cross-session-message>" + chr(10) + chr(10)
+    + "This came from another Claude session - not typed by your user, but very likely "
+      "working on their behalf.")
+RELAY_XSESSION = (
+    "Another Claude session sent a message:" + chr(10)
+    + '<cross-session-message from="local_bbbb2222-x" name="Harbor -51 (2 Oct)">' + chr(10)
+    + "The user typed this request in the Harbor chat, but it belongs to Nova. His words, "
+      "verbatim:" + chr(10) + chr(10) + '"RELAYED-REQUEST-KEEP-ME make it sleek"' + chr(10)
+    + "</cross-session-message>")
+
+
+def test_text_he_never_typed_is_not_carried_as_his_words():
+    """9 Oct 2026: ~9.5k of 22k chars in a pickup's own-words block were Context Guard's
+    own Stop-hook reminders and machine HANDOVER STARTED lines. A relay of one of his real
+    requests from another chat is kept."""
+    home = make_home({})
+    try:
+        lp = os.path.join(home, ".claude", "handoff", KEY + ".requests.md")
+        ctx = pickup(home, ["REAL-REQUEST-ONE do the thing",
+                            "Stop hook feedback:" + chr(10) + "STOPHOOK-BODY-TEXT nothing saved",
+                            HANDOVER_XSESSION,
+                            RELAY_XSESSION,
+                            "[Subagent hand-back] SUBAGENT-REPORT-TEXT done",
+                            "<agent-message from=\"x\">AGENT-MSG-TEXT</agent-message>",
+                            "REAL-REQUEST-TWO and another"])
+        sec = this_thread_section(ctx)
+        with open(lp, "r", encoding="utf-8") as f:
+            ledger = f.read()
+        check("notmine: the real requests are carried",
+              "REAL-REQUEST-ONE" in sec and "REAL-REQUEST-TWO" in sec, repr(sec[:500]))
+        check("notmine: a relay of one of his requests is kept",
+              "RELAYED-REQUEST-KEEP-ME" in sec, repr(sec[:800]))
+        check("notmine: the Stop-hook text is not carried", "STOPHOOK-BODY-TEXT" not in sec)
+        check("notmine: the HANDOVER STARTED line is not carried",
+              "HANDOVER STARTED" not in sec and "Harbor -50" not in sec, repr(sec[:800]))
+        check("notmine: a subagent report is not carried",
+              "SUBAGENT-REPORT-TEXT" not in sec and "AGENT-MSG-TEXT" not in sec)
+        check("notmine: the ledger file still holds all of it",
+              "STOPHOOK-BODY-TEXT" in ledger and "HANDOVER STARTED" in ledger
+              and "SUBAGENT-REPORT-TEXT" in ledger and "AGENT-MSG-TEXT" in ledger)
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_text_he_never_typed_does_not_count_as_left_out():
+    """The "N more requests are not shown" number counts real requests only."""
+    home = make_home({})
+    try:
+        bodies = ["bulk request %03d %s" % (i, "y" * 600) for i in range(200)]
+        noise = ["Stop hook feedback:" + chr(10) + "x" * 600 for _i in range(50)]
+        plain = this_thread_section(pickup(home, bodies))
+        shutil.rmtree(home, ignore_errors=True)
+        home = make_home({})
+        mixed = this_thread_section(pickup(home, bodies + noise))
+
+        def left_out(s):
+            m = re.search(r"\[\.\.\. (\d+) more requests", s)
+            return int(m.group(1)) if m else None
+        check("notmine-count: the left-out number is unchanged by skipped entries",
+              left_out(plain) is not None and left_out(plain) == left_out(mixed),
+              "%r vs %r" % (left_out(plain), left_out(mixed)))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
 def test_old_noise_in_the_ledger_is_not_carried_into_a_pickup():
     """The APPEND path has dropped [Image: ...] and interruption markers since the filter
     was written - but 12 of them are already sitting in his real ledger from before it
@@ -10340,6 +10410,8 @@ if __name__ == "__main__":
               test_a_thread_whose_history_fits_inherits_all_of_it,
               test_a_long_thread_is_told_what_was_left_out,
               test_a_long_thread_keeps_its_oldest_requests,
+              test_text_he_never_typed_is_not_carried_as_his_words,
+              test_text_he_never_typed_does_not_count_as_left_out,
               test_a_summon_label_is_not_carried_as_a_request,
               test_old_noise_in_the_ledger_is_not_carried_into_a_pickup,
               test_the_thread_budget_is_characters_not_entries,

@@ -1765,6 +1765,23 @@ def fit_budget(blocks, budget, oldest_share=0.0):
     return head, tail, len(blocks) - len(head) - len(tail)
 
 
+def _not_his_words(body):
+    """True for a ledger entry that is machine text, not something the user typed.
+
+    Measured 9 Oct 2026: ~9.5k of ~22k chars in one pickup's own-words block were Context
+    Guard's own Stop-hook reminders and the machine "HANDOVER STARTED" lines wrapped in the
+    app's cross-session boilerplate. Only the pickup view skips them; the ledger file keeps
+    the full append-only history.
+
+    Other cross-session messages are deliberately KEPT: a relay such as "<name> typed this
+    request in the X chat, but it belongs to Y. His words, verbatim: ..." is how one of his
+    requests reaches another chat, and dropping it would lose that request."""
+    b = (body or "").lstrip()
+    if b.startswith(("Stop hook feedback:", "[Subagent hand-back]", "<agent-message")):
+        return True
+    return "<cross-session-message" in b and "HANDOVER STARTED - set_session_effort" in b
+
+
 def ledger_tail(transcript_path, labels=None):
     """The most recent things the user asked for, to hand a fresh chat alongside the note.
 
@@ -1823,7 +1840,7 @@ def ledger_tail(transcript_path, labels=None):
         # append-only and is never rewritten. They cost nothing today (all six threads
         # view zero noise chars) but the oldest slice reaches backwards by design, so
         # "not today" is not "not ever".
-        if is_summon_label(body, known) or ledger_noise(body):
+        if is_summon_label(body, known) or ledger_noise(body) or _not_his_words(body):
             continue
         if stem and stem in mine:
             if sid and sid not in mine_ids:
