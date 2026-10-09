@@ -176,8 +176,23 @@ AWAY_OFF = ("back", "im back", "i m back", "afk off", "away off", "afk done",
 # chat, so this lives in that chat's own state and dies with it. It silences only the two
 # things that tell a chat to hand off - the size warning and the ceiling. The Stop hook
 # still records his words and still writes the auto-stub, and the memory nag stays armed,
-# because the memories were the part he asked to keep.
+# because the memories were the part he asked to keep. The one thing a pause does NOT
+# silence is the move-on gate at the ceiling (move_on_gate): a paused chat that reaches the
+# ceiling is still told to move on, because a chat that never moves is what costs the most.
 PAUSE_KEY = "paused"
+# THE MOVE-ON GATE, chosen by him 9 Oct 2026 after measuring that 29% of main-chat tokens
+# since 11 Sep went on turns above the 225k line: the Stop-hook ceiling gives up after
+# CEILING_MAX blocks, a paused chat skips it, and a chat resumed weeks later re-reads its whole
+# history (one 40-day chat cost 102M). ONE gate on UserPromptSubmit; it never blocks the
+# prompt, it tells the model to answer short and name the way out.
+GATE_IDLE_DAYS = 30            # his word: "month" - idle this long AND past the first tier
+GATE_OPEN_KEY = "gate_open_to"  # state: he said "here anyway" - quiet until ctx reaches this
+GATE_OPEN_PHRASE = "here anyway"
+# A relay or a system message is not HIS prompt. HANDOVER STARTED is the important one: a
+# finished chat must still be able to archive itself.
+GATE_EXEMPT = ("HANDOVER STARTED", "<cross-session-message", "<agent-message",
+               "<task-notification")
+GATE_EXEMPT_START = "[SYSTEM NOTIFICATION"
 # The skill-candidate scan. A repeat inside ONE chat is somebody iterating; the same shape turning up
 # in several chats is a workflow being re-derived from scratch every time, which is the
 # thing a skill actually fixes. Ranked by runs x distinct chats, his rule from 17 Sep 2026.
@@ -449,7 +464,8 @@ def cmd_pause():
                      "why": why}
     save_state(sid, st)
     log("pause: paused %s - %s" % (sid, why))
-    print("paused: no handoff warnings and no ceiling for chat %s; memory saving stays on. "
+    print("paused: no handoff warnings and no Stop-hook ceiling for chat %s; memory saving "
+          "stays on. The move-on gate still applies at the ceiling. "
           "Undo: guard.py --resume %s" % (sid[:8], sid))
 
 
@@ -3117,6 +3133,126 @@ def cmd_size():
         print(json.dumps(out))
 
 
+def gate_last_ts(path):
+    """When the last transcript record before this prompt was written (epoch seconds, UTC).
+
+    The hook fires BEFORE the app records the prompt, so the last record in the file is the
+    last thing that happened in the chat. Falls back to the file's mtime when no record in the
+    tail carries a timestamp; None only when even that cannot be read."""
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as f:
+            f.seek(max(0, size - 400_000))
+            chunk = f.read().decode("utf-8", "replace")
+        for line in reversed(chunk.splitlines()):
+            try:
+                rec = json.loads(line)
+                ts = rec.get("timestamp") if isinstance(rec, dict) else None
+                if isinstance(ts, str) and ts:
+                    return calendar.timegm(time.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S"))
+            except Exception:
+                continue
+    except Exception as _e:
+        swallowed("gate_last_ts", _e, quiet=MISSING)
+    try:
+        return os.path.getmtime(path)
+    except Exception as _e:
+        swallowed("gate_last_ts", _e, quiet=MISSING)
+        return None
+
+
+def gate_text(sid, path, ctx, reason, idle_days):
+    """What the model is told when the gate fires. Two shapes: a real handoff note already
+    exists (just say so and name its label), or it does not (write it first)."""
+    kx = str(round(ctx / 1000))
+    idle = (" It also sat idle for " + str(idle_days) + " days before this message."
+            if reason == "idle" else "")
+    note = handoff_path(path, sid)
+    have = real_note(note)
+    label = note_label(note) if have else ""
+    today = datetime.datetime.now().strftime("%d %b").lstrip("0")
+    head = ("MOVE-ON GATE. This chat is at about " + kx + "k tokens and every reply re-reads "
+            "all of it." + idle + " He chose this gate himself (9 Oct 2026): past this point "
+            "a chat moves on instead of carrying on. ")
+    reply = (
+        "DO NOT do the work in his message this turn - not even part of it. Reply in at most "
+        "three short, plain lines: (1) this chat is at about " + kx + "k and every reply "
+        "re-reads all of it" + (" (and it sat idle " + str(idle_days) + " days)"
+                                if reason == "idle" else "") + "; (2) he should open a new "
+        "chat in this folder and type the label below; (3) saying \"" + GATE_OPEN_PHRASE
+        + "\" carries on in this chat instead. The label goes ALONE, in inline code, as the "
+        "LAST line of that reply - nothing after it, not a table, not a sign-off. This is a "
+        "handover reply, so that is the one reply allowed to end on a label. ")
+    tail = ("Then end your turn. If a message later arrives starting HANDOVER STARTED, do "
+            "exactly what it says: mcp__ccd_session_mgmt__set_session_effort on the id and "
+            "level given, then mcp__ccd_session_mgmt__archive_session with session_id 'self', "
+            "with no reply to him in between. " + PATH_RULE + BACKGROUND_RULE)
+    if have:
+        return (head + reply + "The label to quote, exactly as the note's first line gives it: "
+                + (("`" + label + "`") if label else "(read the HANDOFF LABEL line at the top of "
+                   "the note " + note + " and quote that)") + ". The note is already written, "
+                "so do not write another. " + tail)
+    return (
+        head + "There is NO handoff note for this chat yet, so write it FIRST, before any reply. "
+        "Save what this chat learned to memory (read " + os.path.join(memory_dir(path), "MEMORY.md")
+        + " first and EDIT the file that already covers the subject; add a new file only when "
+        "nothing does). Then READ the required structure at " + TEMPLATE + " and WRITE the "
+        "handoff note to " + note + " filling in EVERY numbered section. Record the message he "
+        "just typed this turn, in his own words, as still open - it was NOT done. THE FIRST LINE "
+        "must be exactly 'HANDOFF LABEL: <name> -N (" + today + ")' - two or three words naming "
+        "the THREAD, then its running number and today's date. " + label_number_hint(path)
+        + "THE SECOND LINE must be exactly 'WRITTEN BY: <this chat's own title as it reads in his "
+        "sidebar>' (or '(untitled)' if you never set one), and THE THIRD LINE exactly 'NEXT CHAT "
+        "EFFORT: <low|medium|high|xhigh|max> - <one short reason>'. Do NOT call "
+        "mcp__ccd_session_mgmt__clear_session. Once the note is on disk: " + reply
+        + "The label is the one you wrote on the note's first line, exactly, number and date "
+        "included. Before you reply, switch THIS chat's phone link off: call "
+        "mcp__ccd_session_mgmt__set_remote_control with session_id 'self' and enabled false "
+        "(skip silently if you have no such tool). " + tail)
+
+
+def move_on_gate(d, sid, path, ctx, st):
+    """The move-on gate. RETURNS the hook's json object when it fires, else None.
+
+    Fires only on HIS prompt, at the console, with the ceiling switch on, and either at or
+    past the ceiling (a paused chat too - it runs before _size_check's paused return) or past
+    the first tier after GATE_IDLE_DAYS idle. 'here anyway' opens it for REWARN_STEP more."""
+    try:
+        prompt = d.get("prompt") or ""
+        if any(m in prompt for m in GATE_EXEMPT) or prompt.lstrip().startswith(GATE_EXEMPT_START):
+            return None
+        if not sid or is_away() or switched_off(CEILING_OFF):
+            return None
+        if not os.path.exists(path):
+            return None             # a brand-new chat has nothing to move on from
+        idle_days = 0
+        if ctx >= CEILING:
+            reason = "ceiling"
+        elif ctx >= LEVELS[0][0]:
+            last = gate_last_ts(path)
+            idle_days = int((time.time() - last) // 86400) if last else 0
+            if idle_days < GATE_IDLE_DAYS:
+                return None
+            reason = "idle"
+        else:
+            return None
+        open_to = st.get(GATE_OPEN_KEY)
+        if isinstance(open_to, int) and not isinstance(open_to, bool) and ctx < open_to:
+            return None
+        if GATE_OPEN_PHRASE in normalised_prompt(prompt):
+            st[GATE_OPEN_KEY] = ctx + REWARN_STEP
+            save_state(sid, st)
+            log("gate: opened to %d (he said '%s')" % (ctx + REWARN_STEP, GATE_OPEN_PHRASE))
+            return None
+        log("gate: fired (%s) at ctx=%d" % (reason, ctx))
+        return {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit",
+                                       "additionalContext": gate_text(sid, path, ctx, reason,
+                                                                      idle_days)}}
+    except Exception as _e:
+        swallowed("move_on_gate", _e)
+        return None
+
+
 def _size_check(d, sid):
     """The size check proper. RETURNS the hook's json object, or None when it has nothing
     to say. It deliberately does not print: a caller with its own line to add - coming back
@@ -3201,6 +3337,11 @@ def _size_check(d, sid):
     elif waiting_notes(path):
         log("size: note left for a fresher chat (ctx=%d, own=%.1fMB, took=%s)"
             % (ctx, own_bytes / 1e6, st.get("took_handoff")))
+    # The move-on gate runs BEFORE the paused return on purpose: a paused chat at the
+    # ceiling is the case it exists for. When it fires it speaks alone this turn.
+    gate = move_on_gate(d, sid, path, ctx, st)
+    if gate:
+        return gate
     paused = st.get(PAUSE_KEY)
     if paused:
         # He paused THIS chat (PAUSE_KEY). Everything below is telling - the away indicator

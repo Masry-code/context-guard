@@ -3382,6 +3382,208 @@ def test_away_silences_the_visible_nag_but_still_orders_the_save():
         shutil.rmtree(home, ignore_errors=True)
 
 
+# ---------------------------------------------------------------------------
+# THE MOVE-ON GATE, chosen by him 9 Oct 2026. Measured since 11 Sep: 29% of main-chat tokens
+# went on turns above the 225k line, because chats do not move - the Stop-hook ceiling gives
+# up after three blocks, a paused chat skips it, and an old chat resumed weeks later re-reads
+# all its history. One gate on the UserPromptSubmit hook: it does not block the prompt, it
+# tells the model to answer short and name the way out. Every test drives the real hook.
+GATE_TAG = "MOVE-ON GATE"
+GATE_CEIL = guard_constant("CEILING_CAP")     # no settings.json in a throwaway home
+GATE_DAY = 86400
+
+
+def gate_chat(home, sid, ctx, idle_days=0.0, stamped=True):
+    """A chat of `ctx` tokens whose LAST record was written `idle_days` ago."""
+    p = os.path.join(home, ".claude", "projects", KEY, sid + ".jsonl")
+    last = time.time() - idle_days * GATE_DAY
+    def stamp(t):
+        return {"timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))} if stamped else {}
+    first = {"type": "user", "message": {"role": "user", "content": "build the thing"}}
+    first.update(stamp(last - 3600))
+    usage = {"message": {"usage": {"cache_read_input_tokens": ctx,
+                                   "cache_creation_input_tokens": 0}}}
+    usage.update(stamp(last))
+    with open(p, "w", encoding="utf-8") as f:
+        f.write(json.dumps(first) + chr(10))
+        f.write(json.dumps(usage) + chr(10))
+    return p
+
+
+def gate_text(proc):
+    return context_of(proc)
+
+
+def test_the_move_on_gate_fires_at_the_ceiling_and_not_below():
+    home = make_home({})
+    try:
+        gate_chat(home, "gateceil1", GATE_CEIL)
+        p = run(home, "gateceil1", "carry on with the build")
+        expect_clean(p, "gate-ceiling")
+        check("gate-ceiling: fires at the ceiling", GATE_TAG in gate_text(p), repr(gate_text(p)[:200]))
+        check("gate-ceiling: prints exactly one json object", one_json(p), repr((p.stdout or "")[:200]))
+        check("gate-ceiling: the normal warning is skipped this turn",
+              "THIS CHAT IS NOW" not in gate_text(p), repr(gate_text(p)[:200]))
+        check("gate-ceiling: it tells the model not to do the work",
+              "do not do the work" in gate_text(p).lower(), repr(gate_text(p)[:400]))
+        check("gate-ceiling: it names the phrase that carries on",
+              "here anyway" in gate_text(p).lower(), repr(gate_text(p)[:400]))
+        gate_chat(home, "gateceil2", GATE_CEIL - 1)
+        q = run(home, "gateceil2", "carry on with the build")
+        expect_clean(q, "gate-below")
+        check("gate-below: one token under the ceiling does not fire",
+              GATE_TAG not in gate_text(q), repr(gate_text(q)[:200]))
+        check("gate-below: the normal warning still shows",
+              "THIS CHAT IS NOW" in gate_text(q), repr(gate_text(q)[:200]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_the_move_on_gate_reaches_a_paused_chat_only_at_the_ceiling():
+    home = make_home({})
+    try:
+        seed_state(home, "gatepause1", paused={"since": "2026-10-01T10:00:00", "why": "books"})
+        gate_chat(home, "gatepause1", GATE_CEIL + 5000)
+        p = run(home, "gatepause1", "carry on with the books")
+        expect_clean(p, "gate-paused")
+        check("gate-paused: a paused chat at the ceiling still gets the gate",
+              GATE_TAG in gate_text(p), repr((p.stdout or "")[:200]))
+        seed_state(home, "gatepause2", paused={"since": "2026-10-01T10:00:00", "why": "books"})
+        gate_chat(home, "gatepause2", 250_000)
+        q = run(home, "gatepause2", "carry on with the books")
+        expect_clean(q, "gate-paused-below")
+        check("gate-paused-below: under the ceiling it stays silent as before",
+              (q.stdout or "").strip() == "", repr((q.stdout or "")[:200]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_the_move_on_gate_fires_on_a_chat_idle_for_a_month():
+    home = make_home({})
+    try:
+        gate_chat(home, "gateidle1", 230_000, idle_days=31)
+        p = run(home, "gateidle1", "where were we")
+        expect_clean(p, "gate-idle")
+        check("gate-idle: 230k and 31 days idle fires", GATE_TAG in gate_text(p), repr(gate_text(p)[:200]))
+        check("gate-idle: the text says how long it sat idle",
+              "31 days" in gate_text(p), repr(gate_text(p)[:600]))
+        gate_chat(home, "gateidle2", 230_000, idle_days=29)
+        q = run(home, "gateidle2", "where were we")
+        check("gate-idle: 29 days idle does not", GATE_TAG not in gate_text(q), repr(gate_text(q)[:200]))
+        gate_chat(home, "gateidle3", 200_000, idle_days=31)
+        r = run(home, "gateidle3", "where were we")
+        check("gate-idle: 31 days idle but only 200k does not",
+              GATE_TAG not in gate_text(r), repr(gate_text(r)[:200]))
+        # a transcript with no timestamps at all is dated by its file
+        pth = gate_chat(home, "gateidle4", 230_000, stamped=False)
+        old = time.time() - 40 * GATE_DAY
+        os.utime(pth, (old, old))
+        s = run(home, "gateidle4", "where were we")
+        check("gate-idle: no timestamps - the file's mtime is the idle clock",
+              GATE_TAG in gate_text(s), repr(gate_text(s)[:200]))
+        # a brand-new chat (no transcript yet) never fires
+        t = run(home, "gatefresh1", "hello")
+        check("gate-idle: a chat with no transcript yet never fires",
+              GATE_TAG not in gate_text(t), repr(gate_text(t)[:200]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_the_move_on_gate_names_the_label_or_the_note_to_write():
+    home = make_home({})
+    try:
+        gate_chat(home, "gatenote1", GATE_CEIL)
+        write_note(home, "gatenote1")
+        p = run(home, "gatenote1", "carry on")
+        check("gate-note: a note exists - its label is in the text",
+              "context guard -3 (1 Oct)" in gate_text(p), repr(gate_text(p)[:600]))
+        check("gate-note: the label goes alone in inline code on the last line",
+              "`context guard -3 (1 Oct)`" in gate_text(p)
+              and "inline code" in gate_text(p) and "LAST line" in gate_text(p),
+              repr(gate_text(p)[-400:]))
+        check("gate-note: it does not order a second note",
+              "WRITE a handoff note" not in gate_text(p), repr(gate_text(p)[:300]))
+        gate_chat(home, "nonotegt2", GATE_CEIL)     # sid[:8] differs, so no note of its own
+        q = run(home, "nonotegt2", "carry on")
+        txt = gate_text(q).replace(chr(92), "/")
+        check("gate-nonote: no note - the text carries the note path",
+              KEY + ".nonotegt" in txt, repr(txt[:400]))
+        check("gate-nonote: and says to write it first", "first" in txt.lower()
+              and "handoff note" in txt.lower(), repr(txt[:400]))
+        check("gate-nonote: his message is recorded in it as still open",
+              "still open" in txt.lower(), repr(txt[:600]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_here_anyway_opens_the_gate_for_the_next_forty_k():
+    home = make_home({})
+    try:
+        gate_chat(home, "gateopen1", GATE_CEIL)
+        p = run(home, "gateopen1", "Here Anyway - just finish the build")
+        expect_clean(p, "gate-open")
+        check("gate-open: no gate text on the turn he said it", GATE_TAG not in gate_text(p),
+              repr(gate_text(p)[:200]))
+        check("gate-open: gate_open_to saved as ctx + 40k",
+              read_state(home, "gateopen1").get("gate_open_to") == GATE_CEIL + 40_000,
+              repr(read_state(home, "gateopen1")))
+        gate_chat(home, "gateopen1", GATE_CEIL + 10_000)
+        q = run(home, "gateopen1", "carry on")
+        check("gate-open: ten k later it is still silent", GATE_TAG not in gate_text(q),
+              repr(gate_text(q)[:200]))
+        gate_chat(home, "gateopen1", GATE_CEIL + 40_000)
+        r = run(home, "gateopen1", "carry on")
+        check("gate-open: forty k later it fires again", GATE_TAG in gate_text(r),
+              repr(gate_text(r)[:200]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_the_move_on_gate_stays_off_while_away_or_switched_off():
+    home = make_home({})
+    try:
+        arm_away(home)
+        gate_chat(home, "gateaway1", GATE_CEIL + 5000)
+        p = run(home, "gateaway1", "carry on")
+        expect_clean(p, "gate-away")
+        check("gate-away: away mode never fires it", GATE_TAG not in gate_text(p),
+              repr(gate_text(p)[:200]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+    home = make_home({})
+    try:
+        d = os.path.join(home, ".claude", "context-guard")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "no-ceiling"), "w", encoding="utf-8") as f:
+            f.write("")
+        gate_chat(home, "gateoff1", GATE_CEIL + 5000)
+        p = run(home, "gateoff1", "carry on")
+        expect_clean(p, "gate-off")
+        check("gate-off: the no-ceiling switch turns it off too", GATE_TAG not in gate_text(p),
+              repr(gate_text(p)[:200]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_the_move_on_gate_ignores_relays_and_the_handover():
+    home = make_home({})
+    try:
+        for i, prompt in enumerate((
+                "HANDOVER STARTED - set effort and archive yourself",
+                "<cross-session-message from=x>hi</cross-session-message>",
+                "<agent-message from=x>hi</agent-message>",
+                "<task-notification><id>1</id></task-notification>",
+                "[SYSTEM NOTIFICATION - a job finished]")):
+            sid = "gaterelay%d" % i
+            gate_chat(home, sid, GATE_CEIL + 5000)
+            p = run(home, sid, prompt)
+            expect_clean(p, "gate-relay%d" % i)
+            check("gate-relay%d: never fires on %r" % (i, prompt[:24]),
+                  GATE_TAG not in gate_text(p), repr(gate_text(p)[:200]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
 def test_the_ceiling_still_saves_while_away():
     """Past the ceiling the note matters MORE while he is away, not less - he is not there
     to rescue the chat. It must still refuse to close; it just must not end with advice he
@@ -10809,6 +11011,13 @@ if __name__ == "__main__":
               test_saying_back_disarms_away,
               test_back_is_ignored_when_he_was_never_away,
               test_away_silences_the_visible_nag_but_still_orders_the_save,
+              test_the_move_on_gate_fires_at_the_ceiling_and_not_below,
+              test_the_move_on_gate_reaches_a_paused_chat_only_at_the_ceiling,
+              test_the_move_on_gate_fires_on_a_chat_idle_for_a_month,
+              test_the_move_on_gate_names_the_label_or_the_note_to_write,
+              test_here_anyway_opens_the_gate_for_the_next_forty_k,
+              test_the_move_on_gate_stays_off_while_away_or_switched_off,
+              test_the_move_on_gate_ignores_relays_and_the_handover,
               test_the_ceiling_still_saves_while_away,
               test_a_chat_that_never_reaches_the_ceiling_still_leaves_a_stub,
               test_the_stub_never_overwrites_a_real_note,
