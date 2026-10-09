@@ -2366,8 +2366,10 @@ def _archive_locked(out, d, sid):
             name, num = split_label_number(e["title"])
             if name and num > 0 and not e["confirmed"]:
                 # A numbered title may have several sidebar copies: one success does not
-                # prove the others are gone, so it gets one more offer on the normal schedule.
+                # prove the others are gone, so it gets one more offer - a full retry gap
+                # from NOW: a copy refused seconds ago would most likely be refused again.
                 e["confirmed"] = 1
+                e["last_offered"] = now
                 log("archive: '%s' archived once - one more offer for any copy left"
                     % e["title"])
             else:

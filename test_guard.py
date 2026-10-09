@@ -6178,7 +6178,18 @@ def test_a_numbered_title_gets_one_more_offer_after_its_first_success():
         got = pa_read(home) or []
         check("e4a: the first success keeps a numbered entry, marked confirmed",
               [(x.get("title"), x.get("confirmed")) for x in got] == [(PA_TITLE, 1)], repr(got))
-        check("e4a: and it is offered again on the normal schedule",
+        # A copy refused seconds ago is likely refused again: the extra offer waits a full
+        # retry gap from the success, not from an offer that may never have happened.
+        check("e4a: not offered again in the prompt that saw the success",
+              "'" + PA_TITLE + "'" not in pa_ctx(p) and got and got[0].get("offers") == 0
+              and time.time() - got[0].get("last_offered", 0) < 120,
+              repr((pa_ctx(p)[:200], got)))
+        every = guard_constant("ARCHIVE_EVERY")
+        got[0]["last_offered"] = time.time() - every - 60
+        pa_write(home, got)
+        p = run(home, "e4a-a2", "carry on")
+        got = pa_read(home) or []
+        check("e4a: and offered again once the retry gap has passed",
               "'" + PA_TITLE + "'" in pa_ctx(p) and got and got[0].get("offers") == 1,
               repr(pa_ctx(p)[:200]))
         pa_append(tp, pa_success_line(PA_TITLE))
