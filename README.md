@@ -153,7 +153,8 @@ so a chat could still sail past the ceiling. One more check runs on every messag
 at the ceiling (paused chats included), or past the first warning level once a chat has sat
 idle for 30 days, it does not block you. It tells Claude to skip the work, say in a few plain
 lines that the chat is expensive, and give you the label to type in a new chat. Say "here
-anyway" and it carries on in that chat for another 40k. It stays off while you are away,
+anyway" and it carries on in that chat for another 40k (the Stop-hook ceiling may still ask
+that chat to write its note, up to three times, if none exists). It stays off while you are away,
 and the `no-ceiling` switch turns it off too.
 
 **The stub.** A ceiling only helps chats that reach it, and most never do — one chat here

@@ -3147,7 +3147,13 @@ def gate_last_ts(path):
         for line in reversed(chunk.splitlines()):
             try:
                 rec = json.loads(line)
-                ts = rec.get("timestamp") if isinstance(rec, dict) else None
+                # Only an assistant or system record can be older than this prompt. The app
+                # writes a queue-operation record and then the user record for the prompt being
+                # typed, both stamped now, BEFORE this hook runs - reading those made every
+                # chat look active a few milliseconds ago and killed the idle path.
+                if not isinstance(rec, dict) or rec.get("type") not in ("assistant", "system"):
+                    continue
+                ts = rec.get("timestamp")
                 if isinstance(ts, str) and ts:
                     return calendar.timegm(time.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S"))
             except Exception:
@@ -3176,12 +3182,12 @@ def gate_text(sid, path, ctx, reason, idle_days):
             "a chat moves on instead of carrying on. ")
     reply = (
         "DO NOT do the work in his message this turn - not even part of it. Reply in at most "
-        "three short, plain lines: (1) this chat is at about " + kx + "k and every reply "
+        "two short, plain lines: (1) this chat is at about " + kx + "k and every reply "
         "re-reads all of it" + (" (and it sat idle " + str(idle_days) + " days)"
                                 if reason == "idle" else "") + "; (2) he should open a new "
-        "chat in this folder and type the label below; (3) saying \"" + GATE_OPEN_PHRASE
+        "chat in this folder and type the label below, and that saying \"" + GATE_OPEN_PHRASE
         + "\" carries on in this chat instead. The label goes ALONE, in inline code, as the "
-        "LAST line of that reply - nothing after it, not a table, not a sign-off. This is a "
+        "LAST line of that reply (two short lines, then the label alone) - nothing after it, not a table, not a sign-off. This is a "
         "handover reply, so that is the one reply allowed to end on a label. ")
     tail = ("Then end your turn. If a message later arrives starting HANDOVER STARTED, do "
             "exactly what it says: mcp__ccd_session_mgmt__set_session_effort on the id and "
@@ -3206,9 +3212,8 @@ def gate_text(sid, path, ctx, reason, idle_days):
         "EFFORT: <low|medium|high|xhigh|max> - <one short reason>'. Do NOT call "
         "mcp__ccd_session_mgmt__clear_session. Once the note is on disk: " + reply
         + "The label is the one you wrote on the note's first line, exactly, number and date "
-        "included. Before you reply, switch THIS chat's phone link off: call "
-        "mcp__ccd_session_mgmt__set_remote_control with session_id 'self' and enabled false "
-        "(skip silently if you have no such tool). " + tail)
+        "included. A chat that carries on keeps its phone link, so leave remote control alone. "
+        + tail)
 
 
 def move_on_gate(d, sid, path, ctx, st):
@@ -3221,10 +3226,23 @@ def move_on_gate(d, sid, path, ctx, st):
         prompt = d.get("prompt") or ""
         if any(m in prompt for m in GATE_EXEMPT) or prompt.lstrip().startswith(GATE_EXEMPT_START):
             return None
+        # ...and whatever the rest of this tool already treats as not typed by him
+        if ledger_noise(prompt) or any(m in prompt for m in NOISE + HINT_SKIP):
+            return None
         if not sid or is_away() or switched_off(CEILING_OFF):
             return None
         if not os.path.exists(path):
             return None             # a brand-new chat has nothing to move on from
+        opened = st.get(GATE_OPEN_KEY)
+        if (isinstance(opened, int) and not isinstance(opened, bool)
+                and ctx <= opened - REWARN_STEP - COMPACTION_DROP):
+            # It was opened at (opened - REWARN_STEP) and the chat has since shrunk by more than a
+            # compaction's worth, so the history was summarised: forget the opening, or a
+            # compacted chat that climbs back to the ceiling would never be gated again.
+            st.pop(GATE_OPEN_KEY, None)
+            save_state(sid, st)
+            log("gate: ctx=%d fell far below where it was opened (%d) - compacted, closed again"
+                % (ctx, opened - REWARN_STEP))
         idle_days = 0
         if ctx >= CEILING:
             reason = "ceiling"
@@ -3243,7 +3261,10 @@ def move_on_gate(d, sid, path, ctx, st):
             st[GATE_OPEN_KEY] = ctx + REWARN_STEP
             save_state(sid, st)
             log("gate: opened to %d (he said '%s')" % (ctx + REWARN_STEP, GATE_OPEN_PHRASE))
-            return None
+            return {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit",
+                                           "additionalContext": (
+                "He chose to carry on in this chat - do the work from his previous message "
+                "(and this one) normally; do not mention the gate.")}}
         log("gate: fired (%s) at ctx=%d" % (reason, ctx))
         return {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit",
                                        "additionalContext": gate_text(sid, path, ctx, reason,

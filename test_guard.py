@@ -3393,20 +3393,29 @@ GATE_CEIL = guard_constant("CEILING_CAP")     # no settings.json in a throwaway 
 GATE_DAY = 86400
 
 
-def gate_chat(home, sid, ctx, idle_days=0.0, stamped=True):
-    """A chat of `ctx` tokens whose LAST record was written `idle_days` ago."""
+def gate_chat(home, sid, ctx, idle_days=0.0, stamped=True, fresh_tail=False):
+    """A chat of `ctx` tokens whose last ASSISTANT record was written `idle_days` ago.
+    fresh_tail appends what the app writes for the prompt being typed right now - a
+    queue-operation line, then the user record - both stamped NOW, before the hook runs."""
     p = os.path.join(home, ".claude", "projects", KEY, sid + ".jsonl")
     last = time.time() - idle_days * GATE_DAY
     def stamp(t):
         return {"timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))} if stamped else {}
     first = {"type": "user", "message": {"role": "user", "content": "build the thing"}}
     first.update(stamp(last - 3600))
-    usage = {"message": {"usage": {"cache_read_input_tokens": ctx,
+    usage = {"type": "assistant",
+             "message": {"usage": {"cache_read_input_tokens": ctx,
                                    "cache_creation_input_tokens": 0}}}
     usage.update(stamp(last))
     with open(p, "w", encoding="utf-8") as f:
         f.write(json.dumps(first) + chr(10))
         f.write(json.dumps(usage) + chr(10))
+        if fresh_tail:
+            now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            f.write(json.dumps({"type": "queue-operation", "operation": "enqueue",
+                                "timestamp": now}) + chr(10))
+            f.write(json.dumps({"type": "user", "timestamp": now,
+                                "message": {"role": "user", "content": "where were we"}}) + chr(10))
     return p
 
 
@@ -3485,6 +3494,86 @@ def test_the_move_on_gate_fires_on_a_chat_idle_for_a_month():
         t = run(home, "gatefresh1", "hello")
         check("gate-idle: a chat with no transcript yet never fires",
               GATE_TAG not in gate_text(t), repr(gate_text(t)[:200]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_the_idle_clock_ignores_the_prompt_being_typed_right_now():
+    """The app writes a queue-operation record, then the user record, BEFORE the hook runs,
+    both stamped now. The idle clock must read the last assistant/system record instead."""
+    home = make_home({})
+    try:
+        gate_chat(home, "idlefresh1", 300_000, idle_days=40, fresh_tail=True)
+        p = run(home, "idlefresh1", "where were we")
+        expect_clean(p, "gate-idle-tail")
+        check("gate-idle-tail: a 40-day-old chat with a fresh queue line and user record fires",
+              GATE_TAG in gate_text(p), repr(gate_text(p)[:200]))
+        gate_chat(home, "idlefresh2", 300_000, idle_days=2, fresh_tail=True)
+        q = run(home, "idlefresh2", "where were we")
+        check("gate-idle-tail: a chat that was active two days ago does not",
+              GATE_TAG not in gate_text(q), repr(gate_text(q)[:200]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_the_move_on_gate_ignores_machine_messages():
+    home = make_home({})
+    try:
+        for i, prompt in enumerate((
+                "[Subagent hand-back] the review is done",
+                "<ci-monitor-event>build 12 passed</ci-monitor-event>",
+                'Background command "tests" completed (exit code 0)',
+                "[Request interrupted by user]",
+                "Stop hook feedback: write the note")):
+            sid = "gatemach%d" % i
+            gate_chat(home, sid, GATE_CEIL + 5000)
+            p = run(home, sid, prompt)
+            expect_clean(p, "gate-machine%d" % i)
+            check("gate-machine%d: never fires on %r" % (i, prompt[:24]),
+                  GATE_TAG not in gate_text(p), repr(gate_text(p)[:200]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_here_anyway_forgets_after_a_compaction():
+    home = make_home({})
+    try:
+        seed_state(home, "gatecomp1", gate_open_to=GATE_CEIL + 40_000)
+        gate_chat(home, "gatecomp1", 120_000)     # compacted: far below where it was opened
+        p = run(home, "gatecomp1", "carry on")
+        expect_clean(p, "gate-compact")
+        check("gate-compact: the opening is forgotten once the chat has shrunk",
+              "gate_open_to" not in read_state(home, "gatecomp1"), repr(read_state(home, "gatecomp1")))
+        gate_chat(home, "gatecomp1", GATE_CEIL + 1000)
+        q = run(home, "gatecomp1", "carry on")
+        check("gate-compact: climbing back to the ceiling gates it again",
+              GATE_TAG in gate_text(q), repr(gate_text(q)[:200]))
+        # a small wobble is NOT a compaction
+        seed_state(home, "gatewob01", gate_open_to=GATE_CEIL + 40_000)
+        gate_chat(home, "gatewob01", GATE_CEIL + 20_000)
+        r = run(home, "gatewob01", "carry on")
+        check("gate-compact: growth inside the opened window keeps it open",
+              read_state(home, "gatewob01").get("gate_open_to") == GATE_CEIL + 40_000
+              and GATE_TAG not in gate_text(r), repr(read_state(home, "gatewob01")))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_the_gate_texts_agree_on_remote_control_and_the_carry_on_turn():
+    home = make_home({})
+    try:
+        gate_chat(home, "gatetext1", GATE_CEIL)
+        p = run(home, "gatetext1", "carry on")
+        check("gate-text: the no-note text does not switch the phone link off",
+              "set_remote_control" not in gate_text(p), repr(gate_text(p)[:300]))
+        check("gate-text: at most two short lines, then the label alone",
+              "at most two short" in gate_text(p), repr(gate_text(p)[:600]))
+        gate_chat(home, "gatetext2", GATE_CEIL)
+        q = run(home, "gatetext2", "here anyway")
+        expect_clean(q, "gate-carry")
+        check("gate-carry: the carry-on turn tells the model to do the work, in one object",
+              "do the work from his previous message" in gate_text(q) and one_json(q)
+              and GATE_TAG not in gate_text(q), repr((q.stdout or "")[:300]))
     finally:
         shutil.rmtree(home, ignore_errors=True)
 
@@ -11015,6 +11104,10 @@ if __name__ == "__main__":
               test_the_move_on_gate_reaches_a_paused_chat_only_at_the_ceiling,
               test_the_move_on_gate_fires_on_a_chat_idle_for_a_month,
               test_the_move_on_gate_names_the_label_or_the_note_to_write,
+              test_the_idle_clock_ignores_the_prompt_being_typed_right_now,
+              test_the_move_on_gate_ignores_machine_messages,
+              test_here_anyway_forgets_after_a_compaction,
+              test_the_gate_texts_agree_on_remote_control_and_the_carry_on_turn,
               test_here_anyway_opens_the_gate_for_the_next_forty_k,
               test_the_move_on_gate_stays_off_while_away_or_switched_off,
               test_the_move_on_gate_ignores_relays_and_the_handover,
