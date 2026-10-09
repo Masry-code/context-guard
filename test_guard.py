@@ -5766,9 +5766,9 @@ def test_one_instruction_covers_every_due_title_and_stays_short():
               and "--archived \"" not in ctx and GUARD in ctx, repr(ctx[:900]))
         check("pa-one: it says the live list leaves archived chats out",
               "leaves archived chats out" in ctx, repr(ctx[:900]))
-        check("pa-one: it is short (under 168 words, one shared duplicate clause included)",
-              len(ctx.split()) < 168,
-              str(len(ctx.split())))
+        words = len(ctx.replace(GUARD, "G").split())   # the guard path may hold a space
+        check("pa-one: it is short (under 179 words, one shared duplicate clause included)",
+              words < 179, str(words))
     finally:
         shutil.rmtree(home, ignore_errors=True)
 
@@ -6204,6 +6204,11 @@ def test_duplicate_copies_of_a_finished_numbered_chat_are_archived_once_the_thre
               and "not running" in clause and "not this chat" in clause, repr(clause))
         check("pa-dup: without one it still archives NOTHING for that title",
               "archive NOTHING for that title" in clause, repr(clause))
+        check("pa-dup: the clause says the date is optional and a number counts for its "
+              "own thread only",
+              "date suffix optional" in clause and "only for its own thread" in clause,
+              repr(clause))
+        check("pa-dup: numbered pickup has no double period", ".." not in ctx, repr(ctx[:2600]))
     finally:
         shutil.rmtree(home, ignore_errors=True)
     home = make_home({KEY + ".aaaa1111.md": pa_note("Harbor notes")})
@@ -6215,6 +6220,34 @@ def test_duplicate_copies_of_a_finished_numbered_chat_are_archived_once_the_thre
               "higher number" not in ctx and "every copy" not in ctx, repr(ctx[:2600]))
         check("pa-dup: and keeps the old sentence",
               "If more than one matches, archive NOTHING for that title" in ctx, repr(ctx[:2600]))
+        check("pa-dup: unnumbered pickup has no double period", ".." not in ctx,
+              repr(ctx[:2600]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+    home = make_home({KEY + ".aaaa1111.md": pa_note("Harbor -0 (1 Oct)")})
+    try:
+        p = run(home, "pa-dup2z", "harbor")
+        expect_clean(p, "pa-dup/zero")
+        ctx = pa_ctx(p)
+        check("pa-dup: a '-0' title counts as unnumbered: old sentence, no clause",
+              "higher number" not in ctx and "every copy" not in ctx
+              and "If more than one matches, archive NOTHING for that title" in ctx,
+              repr(ctx[:2600]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+    home = make_home({KEY + ".aaaa1111.md": pa_note(PA_TITLE, "harbor", "body-HARBOR"),
+                      KEY + ".bbbb2222.md": pa_note("Harbor notes", "harbor", "body-NOTES")})
+    try:
+        p = run(home, "pa-dup2m", "harbor")
+        expect_clean(p, "pa-dup/mixed")
+        ctx = pa_ctx(p)
+        j = ctx.find("more than one session matches a title")
+        tail = ctx[j:j + 900]
+        check("pa-dup: mixed writers get the clause, then the plain sentence for the other",
+              j >= 0 and "'Harbor -N' with N above 6" in tail
+              and "about it. For any other title, if more than one matches, archive NOTHING "
+              "for that title and say nothing about it - a wrong archive" in tail, repr(tail))
+        check("pa-dup: mixed pickup has no double period", ".." not in ctx, repr(ctx[:2600]))
     finally:
         shutil.rmtree(home, ignore_errors=True)
     home = make_home({KEY + ".aaaa1111.md": pa_note(PA_ODD, "nova calc", "body-NOVA")})
@@ -6224,6 +6257,8 @@ def test_duplicate_copies_of_a_finished_numbered_chat_are_archived_once_the_thre
         ctx = pa_ctx(p)
         check("pa-dup: an awkward title does not crash and names its number",
               "with N above 3" in ctx and "archive NOTHING for that title" in ctx, repr(ctx[:2600]))
+        check("pa-dup: the awkward title's thread NAME is in its clause",
+              "'Nova's \"Calc\" (2) -N' with N above 3" in ctx, repr(ctx[:2600]))
     finally:
         shutil.rmtree(home, ignore_errors=True)
     home = make_home({KEY + ".aaaa1111.md": pa_note(PA_TITLE, "harbor", "body-HARBOR"),
@@ -6249,8 +6284,21 @@ def test_duplicate_copies_of_a_finished_numbered_chat_are_archived_once_the_thre
               "more than one session matches a title" in ctx
               and "'Harbor -N' with N above 6" in ctx and "every copy" in ctx
               and "archive NOTHING for that title" in ctx, repr(ctx[:1500]))
+        check("pa-dup: numbered offer has no double period and joins cleanly",
+              ".." not in ctx and "about it. If nothing matches" in ctx, repr(ctx[:1500]))
     finally:
         shutil.rmtree(home, ignore_errors=True)
+    for label, titles in (("plain", ["Harbor notes"]), ("mixed", [PA_TITLE, "Harbor notes"])):
+        home = make_home({})
+        try:
+            pa_write(home, [pa_entry(t, age=500) for t in titles])
+            p = run(home, "pa-dup6" + label, "carry on")
+            expect_clean(p, "pa-dup/offer-" + label)
+            ctx = pa_ctx(p)
+            check("pa-dup: " + label + " offer has no double period and joins cleanly",
+                  ".." not in ctx and "about it. If nothing matches" in ctx, repr(ctx[:1800]))
+        finally:
+            shutil.rmtree(home, ignore_errors=True)
 
 
 def test_a_pickup_or_menu_turn_gets_no_offer_and_nothing_is_stamped():

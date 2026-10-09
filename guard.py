@@ -2275,14 +2275,14 @@ def _duplicate_rule(titles):
         return "If more than one matches, archive NOTHING for that title and say nothing about it"
     out = ["If more than one session matches a title, they are copies of one finished chat "
            "ONLY when a higher number of that thread exists (a listed session or this chat's "
-           "title): " + "; ".join("'" + name + " -N' with N above " + str(n)
-                                  for t, name, n in numbered)
+           "title, date suffix optional; each number counts only for its own thread): "
+           + "; ".join("'" + name + " -N' with N above " + str(n) for t, name, n in numbered)
            + ". Then archive every copy not running and not this chat. Else archive "
-           "NOTHING for that title and say nothing about it."]
+           "NOTHING for that title and say nothing about it"]
     if plain:
         out.append("For any other title, if more than one matches, archive NOTHING for that "
                    "title and say nothing about it")
-    return " ".join(out)
+    return ". ".join(out)      # never ends in a period: both callers add their own join
 
 
 def archive_offer_text(entries):
