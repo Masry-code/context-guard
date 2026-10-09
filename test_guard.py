@@ -5350,11 +5350,11 @@ def pa_write(home, entries):
         json.dump(entries, f)
 
 
-def pa_entry(title, age=0, offers=0, since_offer=None, watch=None):
+def pa_entry(title, age=0, offers=0, since_offer=None, watch=None, confirmed=0):
     now = time.time()
     return {"title": title, "added": now - age, "offers": offers,
             "last_offered": (now - since_offer) if since_offer is not None else 0,
-            "watch": watch or []}
+            "watch": watch or [], "confirmed": confirmed}
 
 
 def pa_id(title):
@@ -5900,7 +5900,7 @@ def test_success_is_read_from_the_transcript_and_only_from_the_stored_offset():
         tp = os.path.join(home, ".claude", "projects", KEY, "pa8-watched.jsonl")
         pa_append(tp, "an ordinary line\n")
         off = os.path.getsize(tp)
-        pa_write(home, [pa_entry(PA_TITLE, age=500, watch=[[tp, off]]),
+        pa_write(home, [pa_entry(PA_TITLE, age=500, watch=[[tp, off]], confirmed=1),
                         pa_entry("Nova Calc -3 (1 Oct)", age=500, watch=[[tp, off]])])
         pa_append(tp, pa_success_line(PA_TITLE))            # AFTER it, JSON-escaped
         p = run(home, "pa8-b", "carry on")
@@ -5917,7 +5917,7 @@ def test_success_is_read_from_the_transcript_and_only_from_the_stored_offset():
     try:
         tp = os.path.join(home, ".claude", "projects", KEY, "pa8-plain.jsonl")
         pa_append(tp, "x\n")
-        pa_write(home, [pa_entry(PA_TITLE, age=500, watch=[[tp, 2]])])
+        pa_write(home, [pa_entry(PA_TITLE, age=500, watch=[[tp, 2]], confirmed=1)])
         pa_append(tp, pa_success_line(PA_TITLE, as_list=True))     # content as text blocks
         p = run(home, "pa8-c", "carry on")
         check("pa-ok: a tool_result whose content is a list of text blocks counts",
@@ -5962,7 +5962,7 @@ def test_only_a_genuine_tool_result_clears_an_entry():
     try:
         tp = os.path.join(home, ".claude", "projects", KEY, "pa8k-watched.jsonl")
         pa_append(tp, "x\n")
-        pa_write(home, [pa_entry(PA_TITLE, age=500, watch=[[tp, 2]])])
+        pa_write(home, [pa_entry(PA_TITLE, age=500, watch=[[tp, 2]], confirmed=1)])
         pa_append(tp, "this is not json but says " + pa_text(PA_TITLE) + "\n")
         run(home, "pa8k-b", "carry on")
         check("pa-strict: a line that is not JSON does not clear it either",
@@ -6002,7 +6002,7 @@ def test_a_success_line_split_across_two_runs_is_still_found():
         tp = os.path.join(home, ".claude", "projects", KEY, "pa8s-watched.jsonl")
         pa_append(tp, "first\n")
         off = os.path.getsize(tp)
-        pa_write(home, [pa_entry(PA_TITLE, age=500, watch=[[tp, off]])])
+        pa_write(home, [pa_entry(PA_TITLE, age=500, watch=[[tp, off]], confirmed=1)])
         line = pa_success_line(PA_TITLE)
         half = len(line) // 2
         with open(tp, "ab") as f:
@@ -6050,7 +6050,7 @@ def test_the_offset_moves_forward_and_a_run_reads_at_most_the_cap():
         with open(tp, "wb") as f:
             f.write(b"a" * (cap + 1000) + b"\n")
         pa_append(tp, pa_success_line(PA_TITLE))               # beyond the first 8 MB
-        pa_write(home, [pa_entry(PA_TITLE, age=30, watch=[[tp, 0]])])
+        pa_write(home, [pa_entry(PA_TITLE, age=30, watch=[[tp, 0]], confirmed=1)])
         run(home, "pa9-a", "carry on")
         e = (pa_read(home) or [{}])[0]
         check("pa-cap-read: one run moved the offset by no more than the cap",
@@ -6072,6 +6072,7 @@ def test_an_awkward_title_round_trips_through_pickup_offer_success_and_the_flag(
         check("pa-odd: the pickup stored the title byte for byte",
               [e.get("title") for e in got] == [PA_ODD], repr(got))
         got[0]["added"] = time.time() - 500
+        got[0]["confirmed"] = 1
         pa_write(home, got)
         p = run(home, "pa10-b", "carry on")
         expect_clean(p, "pa-odd/offer")
@@ -6161,6 +6162,92 @@ def test_the_cap_drops_an_entry_and_tells_him_exactly_once():
 
 def pa_ctx_of(obj):
     return (obj.get("hookSpecificOutput") or {}).get("additionalContext", "") or ""
+
+
+def test_a_numbered_title_gets_one_more_offer_after_its_first_success():
+    """A numbered title may have two sidebar copies; one archiving must not end the offers."""
+    home = make_home({})
+    try:
+        tp = os.path.join(home, ".claude", "projects", KEY, "e4a-watched.jsonl")
+        pa_append(tp, "x\n")
+        e = pa_entry(PA_TITLE, age=500, watch=[[tp, 2]])
+        pa_write(home, [e])
+        pa_append(tp, pa_success_line(PA_TITLE))
+        p = run(home, "e4a-a", "carry on")
+        expect_clean(p, "e4a/first")
+        got = pa_read(home) or []
+        check("e4a: the first success keeps a numbered entry, marked confirmed",
+              [(x.get("title"), x.get("confirmed")) for x in got] == [(PA_TITLE, 1)], repr(got))
+        check("e4a: and it is offered again on the normal schedule",
+              "'" + PA_TITLE + "'" in pa_ctx(p) and got and got[0].get("offers") == 1,
+              repr(pa_ctx(p)[:200]))
+        pa_append(tp, pa_success_line(PA_TITLE))
+        run(home, "e4a-b", "carry on")
+        check("e4a: a second success drops it", not pa_read(home), repr(pa_read(home)))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+    home = make_home({})
+    try:
+        e = pa_entry(PA_TITLE, age=500)
+        e["confirmed"] = 1
+        pa_write(home, [e])
+        p = subprocess.run([sys.executable, GUARD, "--archived", PA_TITLE],
+                           capture_output=True, text=True, env=child_env(home))
+        expect_clean(p, "e4a/flag")
+        check("e4a: --archived removes a confirmed entry", not pa_read(home), repr(pa_read(home)))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+    day = guard_constant("ARCHIVE_MAX_AGE")
+    n = guard_constant("ARCHIVE_MAX_OFFERS")
+    for label, ent in (("age", pa_entry(PA_TITLE, age=day + 60, offers=2, since_offer=9000)),
+                       ("offers", pa_entry(PA_TITLE, age=5000, offers=int(n), since_offer=9000))):
+        home = make_home({})
+        try:
+            ent["confirmed"] = 1
+            pa_write(home, [ent])
+            p = run(home, "e4a-c", "carry on")
+            expect_clean(p, "e4a/giveup-" + label)
+            check("e4a/%s: a confirmed entry that gives up is dropped" % label,
+                  not pa_read(home), repr(pa_read(home)))
+            check("e4a/%s: and says nothing - the chat WAS archived once" % label,
+                  "could not archive" not in (p.stdout or ""), repr((p.stdout or "")[:300]))
+        finally:
+            shutil.rmtree(home, ignore_errors=True)
+    home = make_home({})
+    try:
+        tp = os.path.join(home, ".claude", "projects", KEY, "e4a-plain.jsonl")
+        pa_append(tp, "x\n")
+        pa_write(home, [pa_entry("Harbor notes", age=500, watch=[[tp, 2]])])
+        pa_append(tp, pa_success_line("Harbor notes"))
+        p = run(home, "e4a-d", "carry on")
+        expect_clean(p, "e4a/plain")
+        check("e4a: an unnumbered title is gone after one success", not pa_read(home),
+              repr(pa_read(home)))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+    for raw, want in ((True, 1), ("x", 0), (None, 0), (7, 1), (-3, 0), ([1], 0)):
+        home = make_home({})
+        try:
+            e = pa_entry(PA_TITLE, age=500)
+            if raw is not None:
+                e["confirmed"] = raw
+            else:
+                e.pop("confirmed", None)
+            pa_write(home, [e])
+            p = run(home, "e4a-e", "carry on")           # an offer is due, so the list is saved
+            expect_clean(p, "e4a/load-" + repr(raw))
+            got = pa_read(home) or [{}]
+            check("e4a: confirmed %r loads as %d" % (raw, want),
+                  got[0].get("confirmed") == want, repr(got))
+        finally:
+            shutil.rmtree(home, ignore_errors=True)
+    home = make_home({KEY + ".aaaa1111.md": pa_note(PA_TITLE)})
+    try:
+        run(home, "e4a-f", "harbor")
+        got = pa_read(home) or [{}]
+        check("e4a: a new entry starts unconfirmed", got[0].get("confirmed") == 0, repr(got))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
 
 
 def test_a_corrupt_pending_list_neither_crashes_nor_breaks_the_output():
@@ -10650,6 +10737,7 @@ if __name__ == "__main__":
               test_the_report_lists_the_chats_waiting_to_be_archived,
               test_the_pickup_asks_for_the_archive_right_after_the_rename,
               test_duplicate_copies_of_a_finished_numbered_chat_are_archived_once_the_thread_moved_on,
+              test_a_numbered_title_gets_one_more_offer_after_its_first_success,
               test_a_pickup_or_menu_turn_gets_no_offer_and_nothing_is_stamped,
               test_a_held_lock_skips_the_step_cleanly_and_a_stale_one_is_taken_over,
               test_hooks_running_at_once_lose_no_pickup,

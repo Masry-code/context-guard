@@ -2128,7 +2128,9 @@ def archive_load():
         out.append({"title": e["title"], "id": archive_id(e["title"]),
                     "added": _num(e.get("added")),
                     "offers": int(_num(e.get("offers"))),
-                    "last_offered": _num(e.get("last_offered")), "watch": watch})
+                    "last_offered": _num(e.get("last_offered")), "watch": watch,
+                    "confirmed": 1 if (e.get("confirmed") is True
+                                       or int(_num(e.get("confirmed"))) > 0) else 0})
     return out
 
 
@@ -2183,7 +2185,7 @@ def archive_add(writers, watch_path):
                     archive_watch(hit[0], watch_path, size)
                 else:
                     e = {"title": t, "id": archive_id(t), "added": now, "offers": 0,
-                         "last_offered": 0, "watch": []}
+                         "last_offered": 0, "watch": [], "confirmed": 0}
                     archive_watch(e, watch_path, size)
                     entries.append(e)
             archive_save(entries)
@@ -2356,12 +2358,21 @@ def _archive_locked(out, d, sid):
     keep, dropped, due = [], [], []
     for e in entries:
         if archive_scan(e):
-            log("archive: '%s' confirmed archived" % e["title"])
-            continue
+            name, num = split_label_number(e["title"])
+            if name and num > 0 and not e["confirmed"]:
+                # A numbered title may have several sidebar copies: one success does not
+                # prove the others are gone, so it gets one more offer on the normal schedule.
+                e["confirmed"] = 1
+                log("archive: '%s' archived once - one more offer for any copy left"
+                    % e["title"])
+            else:
+                log("archive: '%s' confirmed archived" % e["title"])
+                continue
         age = now - e["added"]
         if age >= ARCHIVE_MAX_AGE or e["offers"] >= ARCHIVE_MAX_OFFERS:
             log("archive: gave up on '%s' (%d offers, %d s)" % (e["title"], e["offers"], age))
-            dropped.append(e["title"])
+            if not e["confirmed"]:
+                dropped.append(e["title"])
             continue
         if (not busy and age >= ARCHIVE_FIRST_WAIT
                 and now - e["last_offered"] >= ARCHIVE_EVERY):
