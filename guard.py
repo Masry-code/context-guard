@@ -1775,11 +1775,23 @@ def _not_his_words(body):
 
     Other cross-session messages are deliberately KEPT: a relay such as "<name> typed this
     request in the X chat, but it belongs to Y. His words, verbatim: ..." is how one of his
-    requests reaches another chat, and dropping it would lose that request."""
-    b = (body or "").lstrip()
-    if b.startswith(("Stop hook feedback:", "[Subagent hand-back]", "<agent-message")):
+    requests reaches another chat, and dropping it would lose that request.
+
+    The rules are narrow so they can never drop text he typed: a cross-session message is
+    dropped only when its text OPENS with the handover line (a relay that merely quotes it
+    is kept), and a Stop-hook entry only when it is the hook's text alone, ending on the
+    memory nag's off-switch sentence (anything of his after it keeps the entry). An
+    <agent-message> block is dropped only when it is that block alone. "[Subagent
+    hand-back]" has no closing marker, so for that one the plain prefix rule stays."""
+    b = (body or "").strip()
+    if re.search(r"<cross-session-message[^>]*>\s*(HANDOVER STARTED - set_session_effort"
+                 r"|<agent-message|\[Subagent hand-back\])", b):
         return True
-    return "<cross-session-message" in b and "HANDOVER STARTED - set_session_effort" in b
+    if b.startswith("Stop hook feedback:" + chr(10)):
+        return b.endswith(NAG_OFF + " .")
+    if b.startswith("<agent-message"):
+        return b.endswith("</agent-message>") and b.count("<agent-message") == 1
+    return b.startswith("[Subagent hand-back]")
 
 
 def ledger_tail(transcript_path, labels=None):

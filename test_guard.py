@@ -2437,6 +2437,40 @@ RELAY_XSESSION = (
     + "</cross-session-message>")
 
 
+STOPHOOK_ENTRY = ("Stop hook feedback:" + chr(10) + "STOPHOOK-BODY-TEXT nothing saved. The user "
+                  "can switch it off for good by creating an empty file at /x/no-memory-nag .")
+WRAPPED_AGENT = (
+    "Another Claude session sent a message:" + chr(10)
+    + '<cross-session-message from="local_cccc3333-x" name="Nova -2 (3 Oct)">' + chr(10)
+    + "<agent-message from=\"w\">WRAPPED-AGENT-TEXT report</agent-message>" + chr(10)
+    + "</cross-session-message>")
+QUOTING_RELAY = (
+    "Another Claude session sent a message:" + chr(10)
+    + '<cross-session-message from="local_dddd4444-x" name="Nova -3 (3 Oct)">' + chr(10)
+    + 'The user asked: why does "HANDOVER STARTED - set_session_effort" show up? QUOTE-RELAY-KEEP'
+    + chr(10) + "</cross-session-message>")
+
+
+def test_the_not_his_words_test_never_drops_what_he_typed():
+    """Narrow rules: a quote of the handover line, or text of his after a hook block, stays."""
+    home = make_home({})
+    try:
+        sec = this_thread_section(pickup(home, [
+            QUOTING_RELAY,
+            STOPHOOK_ENTRY + chr(10) + chr(10) + "TRAILING-HIS-WORDS please also do this",
+            WRAPPED_AGENT,
+            "REAL-REQUEST-THREE"]))
+        check("notmine-narrow: a relay that quotes the handover line is kept",
+              "QUOTE-RELAY-KEEP" in sec, repr(sec[:600]))
+        check("notmine-narrow: a hook block with his words after it is kept",
+              "TRAILING-HIS-WORDS" in sec, repr(sec[:600]))
+        check("notmine-narrow: an agent report wrapped in cross-session text is dropped",
+              "WRAPPED-AGENT-TEXT" not in sec, repr(sec[:600]))
+        check("notmine-narrow: the real request is carried", "REAL-REQUEST-THREE" in sec)
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
 def test_text_he_never_typed_is_not_carried_as_his_words():
     """9 Oct 2026: ~9.5k of 22k chars in a pickup's own-words block were Context Guard's
     own Stop-hook reminders and machine HANDOVER STARTED lines. A relay of one of his real
@@ -2445,7 +2479,7 @@ def test_text_he_never_typed_is_not_carried_as_his_words():
     try:
         lp = os.path.join(home, ".claude", "handoff", KEY + ".requests.md")
         ctx = pickup(home, ["REAL-REQUEST-ONE do the thing",
-                            "Stop hook feedback:" + chr(10) + "STOPHOOK-BODY-TEXT nothing saved",
+                            STOPHOOK_ENTRY,
                             HANDOVER_XSESSION,
                             RELAY_XSESSION,
                             "[Subagent hand-back] SUBAGENT-REPORT-TEXT done",
@@ -2475,7 +2509,8 @@ def test_text_he_never_typed_does_not_count_as_left_out():
     home = make_home({})
     try:
         bodies = ["bulk request %03d %s" % (i, "y" * 600) for i in range(200)]
-        noise = ["Stop hook feedback:" + chr(10) + "x" * 600 for _i in range(50)]
+        noise = ["Stop hook feedback:" + chr(10) + "x" * 600 + " /x/no-memory-nag ."
+                 for _i in range(50)]
         plain = this_thread_section(pickup(home, bodies))
         shutil.rmtree(home, ignore_errors=True)
         home = make_home({})
@@ -10458,6 +10493,7 @@ if __name__ == "__main__":
               test_a_thread_whose_history_fits_inherits_all_of_it,
               test_a_long_thread_is_told_what_was_left_out,
               test_a_long_thread_keeps_its_oldest_requests,
+              test_the_not_his_words_test_never_drops_what_he_typed,
               test_text_he_never_typed_is_not_carried_as_his_words,
               test_text_he_never_typed_does_not_count_as_left_out,
               test_a_summon_label_is_not_carried_as_a_request,
