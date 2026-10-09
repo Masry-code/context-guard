@@ -10218,7 +10218,7 @@ def test_the_ci_workflow_runs_the_in_repo_suite():
     text = raw.decode("utf-8")
     check("ci: the workflow is LF", b"\r" not in raw, "CR bytes: %d" % raw.count(b"\r"))
     for needle in ("windows-latest", "macos-latest", "ubuntu-latest",
-                   "actions/checkout@v4", "actions/setup-python@v5", "python-version",
+                   "actions/checkout@v7", "actions/setup-python@v7", "python-version",
                    "python3 -W error::SyntaxWarning test_guard.py",
                    "python -W error::SyntaxWarning test_guard.py",
                    "contents: read"):
