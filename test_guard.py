@@ -6250,6 +6250,163 @@ def test_a_numbered_title_gets_one_more_offer_after_its_first_success():
         shutil.rmtree(home, ignore_errors=True)
 
 
+def e4b_whole_or_empty(p, name):
+    out = (p.stdout or "").strip()
+    ok = True
+    if out:
+        try:
+            ok = isinstance(json.loads(out), dict)
+        except Exception:
+            ok = False
+    check(name + ": stdout is empty or exactly one json object", ok, repr(out[:200]))
+
+
+E4B_BAD_MANIFESTS = (
+    ("list", [1, "x", {"projects": {}}]),
+    ("string", "just text"),
+    ("null", None),
+    ("projects-string", {"projects": "harbor"}),
+    ("projects-list", {"projects": ["harbor", {"dir": "x"}]}),
+    ("entry-string", {"projects": {"harbor": "D:\\Harbor", "photobox": 5}}),
+    ("fields-wrong", {"projects": {"harbor": {"dir": 5, "also": "abc", "threads": "harbor",
+                                              "files": 7}}}),
+)
+
+
+def test_a_manifest_of_the_wrong_shape_never_crashes_a_hook():
+    for label, man in E4B_BAD_MANIFESTS:
+        name = "e4b-manifest/" + label
+        home = make_home({KEY + ".aaaa1111.md": pa_note(PA_TITLE)})
+        try:
+            write_threads_manifest(home, man)
+            p = run(home, "mf-a", "harbor")                 # label pickup
+            expect_clean(p, name + "/pickup")
+            e4b_whole_or_empty(p, name + "/pickup")
+            check(name + ": the note is still delivered", "body-HARBOR" in pa_ctx(p),
+                  repr(pa_ctx(p)[:200]))
+            p = run(home, "mf-b", "what do we know about harbor memory notes")
+            expect_clean(p, name + "/prompt")
+            e4b_whole_or_empty(p, name + "/prompt")
+            payload = {"session_id": "mf-c", "cwd": "D:\\Harbor", "hook_event_name": "SessionStart",
+                       "source": "startup"}
+            p = subprocess.run([sys.executable, GUARD, "--bootstrap"], input=json.dumps(payload),
+                               capture_output=True, text=True, env=child_env(home))
+            expect_clean(p, name + "/bootstrap")
+            e4b_whole_or_empty(p, name + "/bootstrap")
+            p = subprocess.run([sys.executable, GUARD, "--recall", "harbor", "memory"],
+                               capture_output=True, text=True, env=child_env(home))
+            expect_clean(p, name + "/recall")
+            p = run_report(home)
+            expect_clean(p, name + "/report")
+        finally:
+            shutil.rmtree(home, ignore_errors=True)
+
+
+def test_a_handoff_path_that_is_a_file_never_crashes_a_hook():
+    home = make_home({})
+    try:
+        hand = os.path.join(home, ".claude", "handoff")
+        os.rmdir(hand)
+        with open(hand, "w", encoding="utf-8") as f:
+            f.write("not a folder")
+        write_transcript(home, "hf-big", 250_000)
+        runs = []
+        runs.append(("prompt", run(home, "hf-a", "carry on")))
+        runs.append(("big", run(home, "hf-big", "carry on", transcript_exists=True)))
+        runs.append(("label", run(home, "hf-b", "harbor")))
+        payload = {"session_id": "hf-c", "cwd": CWD, "hook_event_name": "SessionStart",
+                   "source": "startup", "prompt": "carry on"}
+        for flag in ("--bootstrap", "--session-end", "--ledger", "--bash"):
+            runs.append((flag, subprocess.run([sys.executable, GUARD, flag],
+                                              input=json.dumps(payload), capture_output=True,
+                                              text=True, env=child_env(home))))
+        runs.append(("report", run_report(home)))
+        for label, p in runs:
+            expect_clean(p, "e4b-handoff-file/" + label)
+            if label not in ("report",):
+                e4b_whole_or_empty(p, "e4b-handoff-file/" + label)
+        check("e4b-handoff-file: the file is left alone", os.path.isfile(hand), "gone")
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_a_used_note_is_kept_just_inside_the_age_limit_and_deleted_just_past_it():
+    keep_days = guard_constant("USED_KEEP_DAYS")
+    home = make_home({})
+    try:
+        used_recent(home)
+        inside = KEY + ".aaaaaaaa.used-20260901-101010.md"
+        past = KEY + ".bbbbbbbb.used-20260901-101010.md"
+        used_put(home, inside, keep_days - 0.1)
+        used_put(home, past, keep_days + 0.1)
+        p = boot(home, CWD, "edge0001")
+        expect_clean(p, "e4b-edge")
+        left = os.listdir(os.path.join(home, ".claude", "handoff"))
+        check("e4b-edge: a note %g days old is kept" % (keep_days - 0.1), inside in left,
+              repr(sorted(left)[:3]))
+        check("e4b-edge: a note %g days old is deleted" % (keep_days + 0.1), past not in left,
+              repr(sorted(left)[:3]))
+    finally:
+        rm_tree(home)
+
+
+def test_every_non_session_state_file_is_skipped_by_the_report():
+    with open(GUARD, encoding="utf-8") as f:
+        src = f.read()
+    m = re.search(r"NOT_A_SESSION_STATE = frozenset\(\((.*?)\)\)", src, re.S)
+    names = re.findall(r'"([^"]+)"', m.group(1)) if m else []
+    check("e4b-state: the list was found and is not tiny", len(names) >= 8, repr(names))
+    home = make_home({})
+    try:
+        st = os.path.join(home, ".claude", "context-guard")
+        os.makedirs(st, exist_ok=True)
+        sid = "5e55a1b2-1111-2222-3333-444455556666"
+        for name in names + [sid]:
+            with open(os.path.join(st, name + ".json"), "w", encoding="utf-8") as f:
+                json.dump({"warned_ctx": 120000}, f)
+        out = run_report(home).stdout
+        part = out.split("-- sessions being tracked --")[-1].split("-- request ledgers")[0]
+        check("e4b-state: the real session is listed", sid in part, repr(part))
+        for n in names:
+            check("e4b-state: %s is not listed" % n, n not in part, repr(part))
+    finally:
+        rm_tree(home)
+
+
+def test_the_overflow_cut_never_splits_a_character_whatever_the_script():
+    home = make_home({})
+    try:
+        code = ("import sys, json, glob, os; sys.path.insert(0, %r); import guard\n"
+                "room = guard.HOOK_TEXT_MAX\n"
+                "res = []\n"
+                "for pad in range(0, 4):\n"
+                "    text = 'a' * (room - 400 + pad) + ('\\u0645\\u0631\\u062d\\u0628\\u0627\\U0001F415' * 300)\n"
+                "    out = guard.fit_hook_text({'hookSpecificOutput': {'additionalContext': text}}, 'cut%%d' %% pad)\n"
+                "    head = out['hookSpecificOutput']['additionalContext']\n"
+                "    head.encode('utf-8')\n"
+                "    res.append(len(head) <= room)\n"
+                "folder = os.path.join(guard.handoff_dir(), 'overflow')\n"
+                "ok = True\n"
+                "for n in os.listdir(folder):\n"
+                "    with open(os.path.join(folder, n), 'rb') as fh:\n"
+                "        fh.read().decode('utf-8')\n"
+                "print(json.dumps([res, len(os.listdir(folder))]))\n"
+                % os.path.dirname(GUARD))
+        env = child_env(home)
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        pr = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=env)
+        check("e4b-cut: Arabic and an emoji straddling the cut write valid UTF-8",
+              pr.returncode == 0 and "Traceback" not in pr.stderr, repr(pr.stderr[-300:]))
+        try:
+            res, files = json.loads(pr.stdout.strip())
+        except Exception:
+            res, files = [], 0
+        check("e4b-cut: every head fits and every overflow file was written",
+              res == [True] * 4 and files == 4, repr(pr.stdout))
+    finally:
+        rm_tree(home)
+
+
 def test_a_corrupt_pending_list_neither_crashes_nor_breaks_the_output():
     for junk in ("{not json at all", "", "[1, 2, \"x\", {\"title\": 5}]", "{\"a\": 1}"):
         home = make_home({KEY + ".aaaa1111.md": pa_note(PA_TITLE)})
@@ -10738,6 +10895,11 @@ if __name__ == "__main__":
               test_the_pickup_asks_for_the_archive_right_after_the_rename,
               test_duplicate_copies_of_a_finished_numbered_chat_are_archived_once_the_thread_moved_on,
               test_a_numbered_title_gets_one_more_offer_after_its_first_success,
+              test_a_manifest_of_the_wrong_shape_never_crashes_a_hook,
+              test_a_handoff_path_that_is_a_file_never_crashes_a_hook,
+              test_a_used_note_is_kept_just_inside_the_age_limit_and_deleted_just_past_it,
+              test_every_non_session_state_file_is_skipped_by_the_report,
+              test_the_overflow_cut_never_splits_a_character_whatever_the_script,
               test_a_pickup_or_menu_turn_gets_no_offer_and_nothing_is_stamped,
               test_a_held_lock_skips_the_step_cleanly_and_a_stale_one_is_taken_over,
               test_hooks_running_at_once_lose_no_pickup,

@@ -486,7 +486,12 @@ def find_transcript(sid, given):
 
 def handoff_dir():
     d = os.path.join(HOME, ".claude", "handoff")
-    os.makedirs(d, exist_ok=True)
+    try:
+        os.makedirs(d, exist_ok=True)
+    except OSError as e:
+        # The path exists as a FILE (or is unwritable): a hook must carry on, not crash.
+        # Callers that then read or write under it fail on their own and are logged there.
+        log("handoff: cannot make the folder %s: %r" % (d, e))
     return d
 
 
@@ -3585,12 +3590,33 @@ def _same_dir(a, b):
             == (b or "").replace("/", "\\").rstrip("\\").lower())
 
 
+def _manifest_projects(man):
+    """The manifest's projects as {name: entry}, whatever shape the file has. Only entries
+    that are dicts survive, each as a copy whose dir is a string and whose also / threads /
+    files are lists of strings; a list, a string or null where a dict belongs gives {}.
+    A hand-edited manifest must never crash a hook: every reader goes through here."""
+    projs = man.get("projects") if isinstance(man, dict) else None
+    if not isinstance(projs, dict):
+        return {}
+    out = {}
+    for name, e in projs.items():
+        if not isinstance(name, str) or not isinstance(e, dict):
+            continue
+        c = dict(e)
+        c["dir"] = e["dir"] if isinstance(e.get("dir"), str) else ""
+        for k in ("also", "threads", "files"):
+            v = e.get(k)
+            c[k] = [x for x in v if isinstance(x, str)] if isinstance(v, list) else []
+        out[name] = c
+    return out
+
+
 def manifest_project(cwd, man):
     """The manifest entry whose `dir` - or one of its `also` spellings - is this cwd.
 
     `also` is not decoration: PhotoBox lives in two folders and Harbor in four, and a
     chat opened in the wrong one of them is exactly the chat that starts blind."""
-    for name, e in sorted((man.get("projects") or {}).items()):
+    for name, e in sorted(_manifest_projects(man).items()):
         if _same_dir(cwd, e.get("dir")):
             return name, e
         for alt in (e.get("also") or []):
@@ -3624,7 +3650,7 @@ def _resolve_key_dir(key):
     try:
         with open(MANIFEST, encoding="utf-8") as f:
             man = json.load(f)
-        for _n, e in sorted((man.get("projects") or {}).items()):
+        for _n, e in sorted(_manifest_projects(man).items()):
             cands.append(e.get("dir") or "")
             cands.extend(e.get("also") or [])
     except Exception as _e:
@@ -3724,7 +3750,7 @@ def thread_project(prompt, man):
     want = (base or "").strip().lower()
     if not want:
         return None, None
-    for name, e in sorted((man.get("projects") or {}).items()):
+    for name, e in sorted(_manifest_projects(man).items()):
         for t in (e.get("threads") or []):
             if (t or "").strip().lower() == want:
                 return name, e
@@ -4051,7 +4077,7 @@ def memory_catalogue():
     titles, claims = _list_claims(folders)
     try:
         with open(MANIFEST, encoding="utf-8") as f:
-            projects = (json.load(f) or {}).get("projects") or {}
+            projects = _manifest_projects(json.load(f))
     except Exception as _e:
         swallowed('memory_catalogue', _e, quiet=MISSING)
         projects = {}
