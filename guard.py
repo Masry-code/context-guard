@@ -1765,6 +1765,14 @@ def fit_budget(blocks, budget, oldest_share=0.0):
     return head, tail, len(blocks) - len(head) - len(tail)
 
 
+def _HOOK_CLOSINGS():
+    """The last words of each Stop-hook text Context Guard writes: the memory nag, the
+    ceiling block and the keywords check. Measured 9 Oct 2026 on his real ledger: matching
+    the memory nag alone kept 7 entries that were the other two."""
+    return (NAG_OFF + " .", KEYWORDS_OFF + " .",
+            "do not claim the note is written when it is not.")
+
+
 def _not_his_words(body):
     """True for a ledger entry that is machine text, not something the user typed.
 
@@ -1780,7 +1788,7 @@ def _not_his_words(body):
     The rules are narrow so they can never drop text he typed: a cross-session message is
     dropped only when its text OPENS with the handover line (a relay that merely quotes it
     is kept), and a Stop-hook entry only when it is the hook's text alone, ending on the
-    memory nag's off-switch sentence (anything of his after it keeps the entry). An
+    closing sentence of one of its own hooks (anything of his after it keeps the entry). An
     <agent-message> block is dropped only when it is that block alone. "[Subagent
     hand-back]" has no closing marker, so for that one the plain prefix rule stays."""
     b = (body or "").strip()
@@ -1788,7 +1796,7 @@ def _not_his_words(body):
                  r"|<agent-message|\[Subagent hand-back\])", b):
         return True
     if b.startswith("Stop hook feedback:" + chr(10)):
-        return b.endswith(NAG_OFF + " .")
+        return b.endswith(_HOOK_CLOSINGS())
     if b.startswith("<agent-message"):
         return b.endswith("</agent-message>") and b.count("<agent-message") == 1
     return b.startswith("[Subagent hand-back]")

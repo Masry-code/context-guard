@@ -2471,6 +2471,32 @@ def test_the_not_his_words_test_never_drops_what_he_typed():
         shutil.rmtree(home, ignore_errors=True)
 
 
+def test_every_stop_hook_text_of_its_own_is_left_out():
+    """9 Oct 2026, his real ledger: the memory-nag rule alone kept 7 entries that were
+    Context Guard's OTHER Stop-hook texts - the ceiling block and the keywords check. Each
+    is dropped when it ends on its own closing sentence; text of his after one keeps it."""
+    ceiling = ("Stop hook feedback:" + chr(10) + "CEILING-HOOK-TEXT past the ceiling. Create "
+               "an empty file at x" + os.sep + "no-ceiling - do not simply ignore it, and do "
+               "not claim the note is written when it is not.")
+    keywords = ("Stop hook feedback:" + chr(10) + "KEYWORDS-HOOK-TEXT these memories have no "
+                "keywords. Off switch: an empty file at x" + os.sep + "no-keywords-check .")
+    home = make_home({})
+    try:
+        sec = this_thread_section(pickup(home, [
+            ceiling, keywords,
+            keywords + chr(10) + chr(10) + "KW-TRAILING-HIS-WORDS keep me",
+            "REAL-REQUEST-FOUR"]))
+        check("notmine-hooks: the ceiling block is not carried", "CEILING-HOOK-TEXT" not in sec,
+              repr(sec[:600]))
+        check("notmine-hooks: the keywords check is not carried",
+              sec.count("KEYWORDS-HOOK-TEXT") == 1, repr(sec[:900]))
+        check("notmine-hooks: his words after a keywords block keep that entry",
+              "KW-TRAILING-HIS-WORDS" in sec, repr(sec[:900]))
+        check("notmine-hooks: the real request is carried", "REAL-REQUEST-FOUR" in sec)
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
 def test_text_he_never_typed_is_not_carried_as_his_words():
     """9 Oct 2026: ~9.5k of 22k chars in a pickup's own-words block were Context Guard's
     own Stop-hook reminders and machine HANDOVER STARTED lines. A relay of one of his real
@@ -10494,6 +10520,7 @@ if __name__ == "__main__":
               test_a_long_thread_is_told_what_was_left_out,
               test_a_long_thread_keeps_its_oldest_requests,
               test_the_not_his_words_test_never_drops_what_he_typed,
+              test_every_stop_hook_text_of_its_own_is_left_out,
               test_text_he_never_typed_is_not_carried_as_his_words,
               test_text_he_never_typed_does_not_count_as_left_out,
               test_a_summon_label_is_not_carried_as_a_request,
