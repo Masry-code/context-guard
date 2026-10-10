@@ -5577,6 +5577,32 @@ def test_the_note_instruction_asks_for_the_writer_line():
               "THIS CHAT IS NOW" in ctx, repr(ctx[:200]))
         check("note-instruction: asks the chat to record its own title",
               "WRITTEN BY:" in ctx, repr(ctx[-900:]))
+        # A chat titled by the APP (never renamed) wrote '(untitled)' or an invented
+        # 'Thread -1' and was never archived (10 Oct 2026). The title must be READ, not
+        # recalled: get_session 'self' returns it whoever set it.
+        i = ctx.find("WRITTEN BY:")
+        near = ctx[i:i + 700]
+        check("note-instruction: the writer title is read with get_session 'self'",
+              "get_session" in near and "Use the title you set" not in ctx, repr(near))
+        check("note-instruction: and an app-given title counts",
+              "whoever set it" in near, repr(near))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_the_gate_asks_for_the_read_title_too():
+    """The move-on gate writes a note too, and must name its writer the same way."""
+    home = make_home({})
+    try:
+        write_transcript(home, "arch0005", 340_000)
+        p = run(home, "arch0005", "carry on")
+        ctx = context_of(p)
+        expect_clean(p, "gate-writer")
+        i = ctx.find("WRITTEN BY:")
+        near = ctx[i:i + 500]
+        check("gate-writer: the gate's note reads its title with get_session 'self'",
+              i >= 0 and "get_session" in near and "if you never set one" not in near,
+              repr(near))
     finally:
         shutil.rmtree(home, ignore_errors=True)
 
@@ -11126,6 +11152,7 @@ if __name__ == "__main__":
               test_pickup_without_a_writer_line_says_nothing_about_archiving,
               test_a_writer_line_deep_in_the_body_is_not_the_writer,
               test_the_note_instruction_asks_for_the_writer_line,
+              test_the_gate_asks_for_the_read_title_too,
               test_the_archive_instruction_survives_a_truncated_tail,
               test_the_project_key_matches_the_ones_claude_code_actually_made,
               test_bootstrap_furnishes_a_fresh_directory,
