@@ -2603,6 +2603,74 @@ def test_the_thread_budget_is_characters_not_entries():
         shutil.rmtree(home, ignore_errors=True)
 
 
+def test_away_phrases_are_also_read_inside_a_longer_message():
+    """17 Oct 2026, his words: "make sure it can scan afk off or back or whatever when its
+    not it's own message". He opened a chat with a label line, "afk off", "phone connected"
+    and away mode stayed ON. A line that IS a phrase counts, and so do the unambiguous
+    phrases inside a sentence - but bare "back" or "afk" in a sentence must still not."""
+    def one(sid, prompt, armed):
+        home = make_home({})
+        try:
+            write_chat(home, sid, time.time() - 3600)
+            if armed:
+                arm_away(home)
+            p = run(home, sid, prompt)
+            expect_clean(p, "away-inline/" + sid)
+            out = (p.stdout or "").strip()
+            ok = True
+            if out:
+                try:
+                    json.loads(out)
+                except Exception:
+                    ok = False
+            check("away-inline/%s: stdout is empty or ONE json object" % sid, ok, repr(out[:200]))
+            return os.path.exists(away_flag(home)), p
+        finally:
+            shutil.rmtree(home, ignore_errors=True)
+
+    on, p = one("awaylines", "Foo -18 (16 Oct)" + chr(10) + "afk off " + chr(10)
+                + "phone connected", True)
+    check("away-inline: label + 'afk off' line + more clears it while away", not on)
+    on, p = one("awaygoback", "can you go back to the old version", True)
+    check("away-inline: 'go back to the old version' leaves it ON", on)
+    on, p = one("awaybefore", "fix this before i go afk", False)
+    check("away-inline: 'before i go afk' does not arm it", not on)
+    on, p = one("awaypush", "push to remote, then check it on my phone later", False)
+    check("away-inline: 'remote' / 'on my phone' inside a sentence do not arm it", not on)
+    on, p = one("awayimback", "ok im back, check the build", True)
+    check("away-inline: 'ok im back, check the build' clears it while away", not on)
+    check("away-inline: and it says it is OFF", "Away mode OFF" in sysmsg(p), repr(sysmsg(p)[:200]))
+    on, p = one("awayboth", "afk off and afk on", True)
+    check("away-inline: both signals in one message change nothing (away stays ON)", on)
+    on, p = one("awayboth2", "afk off and afk on", False)
+    check("away-inline: both signals in one message change nothing (stays not armed)", not on)
+    on, p = one("awayline", "Bar -3 (1 Jan)" + chr(10) + "afk", False)
+    check("away-inline: a line that is exactly 'afk' arms it", on)
+
+
+def test_an_afk_on_inside_a_message_still_runs_the_rest_of_it():
+    """The old ON path printed one line and RETURNED, which is right for a message that IS
+    the phrase and wrong for 'afk on, keep going': the size check (and so the order to save
+    the note) must still run, and what goes out is still ONE json object."""
+    home = make_home({})
+    try:
+        write_big_chat(home, "awayrest", time.time() - 3600, 250_000)
+        p = run(home, "awayrest", "afk on, keep going with the tests")
+        expect_clean(p, "away-rest")
+        out = (p.stdout or "").strip()
+        try:
+            obj = json.loads(out)
+        except Exception:
+            obj = None
+        check("away-rest: stdout is ONE valid json object", isinstance(obj, dict), repr(out[:200]))
+        check("away-rest: it armed away mode", os.path.exists(away_flag(home)))
+        check("away-rest: it says Away mode ON", "Away mode ON" in sysmsg(p), repr(sysmsg(p)[:200]))
+        check("away-rest: the size check still ran and orders the note",
+              "handoff note" in context_of(p).lower(), repr(context_of(p)[:200]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
 # ------------------------------------ change 8: away mode, for when he is on the phone
 # 18 Sep 2026, his words: "we need to have an exception if it was ever addresed that am
 # currently remote/afk from the console and responding from the phone on claude mobile app
@@ -11125,6 +11193,8 @@ if __name__ == "__main__":
               test_away_is_armed_only_by_an_explicit_phrase,
               test_saying_back_disarms_away,
               test_back_is_ignored_when_he_was_never_away,
+              test_away_phrases_are_also_read_inside_a_longer_message,
+              test_an_afk_on_inside_a_message_still_runs_the_rest_of_it,
               test_away_silences_the_visible_nag_but_still_orders_the_save,
               test_the_move_on_gate_fires_at_the_ceiling_and_not_below,
               test_the_move_on_gate_reaches_a_paused_chat_only_at_the_ceiling,

@@ -158,9 +158,11 @@ CEILING_OFF = "no-ceiling"  # his override, same shape as NAG_OFF
 # dies unattended with no note is the exact disaster this tool exists to prevent) and only
 # the part he cannot act on is withheld.
 #
-# He chose EXPLICIT toggling over sniffing his sentences, so the WHOLE message must be the
-# phrase. "fix this before i go afk" must never arm it - a guard that silently switches
-# itself off mid-sentence is worse than no guard, because he would never know.
+# He chose EXPLICIT toggling over sniffing his sentences, so on 18 Sep the WHOLE message had
+# to be the phrase. "fix this before i go afk" must never arm it - a guard that silently
+# switches itself off mid-sentence is worse than no guard, because he would never know.
+# 17 Oct 2026 he asked for it to also read a phrase that is a line of, or an unambiguous
+# phrase inside, a longer message (see away_scan) - still never a bare "back" or "afk".
 AWAY_FLAG = "away"
 # Written already normalised: lowercase, punctuation stripped, so "I'm AFK!" -> "i m afk".
 AWAY_ON = ("afk", "afk on", "im afk", "i m afk", "afk mode", "going afk",
@@ -1349,25 +1351,75 @@ def set_away(on):
         log("away: could not " + ("set" if on else "clear") + ": " + str(e))
 
 
-def away_toggle(prompt):
-    """True when he just went away, False when he just got back, None when he said neither.
+# Inside a longer message only these count, matched as whole words. Narrower than the
+# lists above on purpose: a bare "back", "afk", "remote" or "im here" is ordinary speech.
+AWAY_ON_IN_TEXT = ("afk on", "away on", "going afk now")
+AWAY_OFF_IN_TEXT = ("afk off", "away off", "afk done", "im back", "i m back", "i am back",
+                    "back at the pc", "back at the desk", "back at my desk", "im at the pc",
+                    "i m at the pc", "i am at the pc", "at the desk now")
 
-    EXPLICIT ONLY - the whole message must be the phrase. This is the half of the feature
-    he actually chose, over auto-detection, and the reason is that the failure mode is
-    invisible: a guard that disarms itself because a sentence contained "afk" would go on
-    saying nothing while his context bill climbed."""
+
+def _away_phrase_in(s, phrases):
+    """The first phrase that appears in s as whole words, else ""."""
+    padded = " " + s + " "
+    for ph in phrases:
+        if " " + ph + " " in padded:
+            return ph
+    return ""
+
+
+def away_scan(prompt):
+    """(toggle, whole): toggle is True (went away), False (got back) or None (neither);
+    whole says the toggle was the WHOLE message, so the caller knows whether the rest of
+    the message still has to be processed.
+
+    EXPLICIT ONLY, with one widening. 18 Sep 2026: the whole message had to be the phrase.
+    That is the half of the feature he actually chose, over auto-detection, and the reason
+    is that the failure mode is invisible: a guard that disarms itself because a sentence
+    contained "afk" would go on saying nothing while his context bill climbed.
+    17 Oct 2026, his words: "make sure it can scan afk off or back or whatever when its
+    not it's own message can we do that?" - he opened a chat with a handoff label, then
+    "afk off", then "phone connected", and away mode stayed ON. So now: a LINE that is
+    exactly a phrase counts, and inside a sentence only the unambiguous phrases above do.
+    Both signals in one message cancel out - a guess either way is worse than no change."""
     s = normalised_prompt(prompt)
     if not s:
-        return None
+        return None, False
     if s in AWAY_ON:
         set_away(True)
         log("away: armed by " + repr(s))
-        return True
+        return True, True
     if s in AWAY_OFF and is_away():
         set_away(False)
         log("away: cleared by " + repr(s))
-        return False
-    return None
+        return False, True
+    on, off = "", ""
+    for line in (prompt or "").splitlines():
+        ln = normalised_prompt(line)
+        if ln in AWAY_ON:
+            on = on or ln
+        elif ln in AWAY_OFF:
+            off = off or ln
+    on = on or _away_phrase_in(s, AWAY_ON_IN_TEXT)
+    off = off or _away_phrase_in(s, AWAY_OFF_IN_TEXT)
+    if on and off:
+        log("away: ignored a message asking for both " + repr(on) + " and " + repr(off))
+        return None, False
+    if on:
+        set_away(True)
+        log("away: armed inside a longer message by " + repr(on))
+        return True, False
+    if off and is_away():
+        set_away(False)
+        log("away: cleared inside a longer message by " + repr(off))
+        return False, False
+    return None, False
+
+
+def away_toggle(prompt):
+    """True when he just went away, False when he just got back, None when he said neither.
+    See away_scan for the rules and for whether it was the whole message."""
+    return away_scan(prompt)[0]
 
 
 # His ask, 25 Sep 2026: "for github users on first run give them the option list of what
@@ -3090,14 +3142,17 @@ def cmd_size():
     # Away mode is toggled before anything else, so the very turn he says it is already
     # quiet. Confirming it out loud is not nagging - a switch he cannot see is a switch he
     # cannot trust, and this is the one turn where he asked to be told.
-    toggled = away_toggle(d.get("prompt") or "")
+    toggled, whole = away_scan(d.get("prompt") or "")
+    on_line = ""
     if toggled is True:
-        print(json.dumps({"systemMessage": (
-            "Away mode ON. Context Guard will still save a handoff note if this chat gets "
-            "expensive, but it will stop telling you to open a new chat. Say 'back' or "
-            "'afk off' when you are at the console again - both work, and so does any "
-            "other phrase in AWAY_OFF.")}))
-        return
+        on_line = ("Away mode ON. Context Guard will still save a handoff note if this chat "
+                   "gets expensive, but it will stop telling you to open a new chat. Say "
+                   "'back' or 'afk off' when you are at the console again.")
+        if whole:
+            print(json.dumps({"systemMessage": on_line}))
+            return
+        # Said inside a longer message (17 Oct 2026): the rest of it - a handoff label that
+        # must trigger the pickup, say - still has to run, so carry on and merge the line.
     back = ""
     if toggled is False:
         # MEASURED 20-21 Sep 2026, session 69ba63cb. This branch used to print and RETURN,
@@ -3126,6 +3181,9 @@ def cmd_size():
         # which prints a second time reads as silence. Merge; never print twice.
         out = out or {}
         out["systemMessage"] = (back + " " + (out.get("systemMessage") or "")).strip()
+    if on_line:
+        out = out or {}
+        out["systemMessage"] = (on_line + " " + (out.get("systemMessage") or "")).strip()
     out = archive_step(out, d, sid)
     out = memory_hints(out, d, sid)
     out = fit_hook_text(out, sid)
