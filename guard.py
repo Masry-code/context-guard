@@ -1001,6 +1001,8 @@ def cmd_ledger():
     if ceiling_block(d, path):
         return          # exactly one decision per Stop, and the ceiling outranks the
                         # nag: with no note written there is nothing for the nag to check
+    if label_without_note_block(d, path):
+        return          # one decision per Stop; a label with no note outranks the head check
     if note_head_block(d, path):
         return          # one decision per Stop; the head outranks the memory nag
     if keywords_block(d, path):
@@ -1712,6 +1714,86 @@ def memory_nag(d, path):
 
 
 HEAD_NAG_MAX = NAG_MAX
+
+# A next-chat label as a reply ends with it: 1-5 words, " -<n>", optional "(16 Oct)".
+REPLY_LABEL_RE = re.compile(r"^\S+(?: \S+){0,4} -\d+(?: \(\d{1,2} [A-Za-z]{3}\))?$")
+REPLY_LABEL_DATED_RE = re.compile(r"\(\d{1,2} [A-Za-z]{3}\)$")
+
+
+def last_assistant_text(path):
+    """The text of the newest assistant record in the transcript that has any, or "".
+    Reads only the tail, so a long chat costs the same as a short one."""
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as f:
+            f.seek(max(0, size - 400_000))
+            chunk = f.read().decode("utf-8", "replace")
+        for line in reversed(chunk.splitlines()):
+            try:
+                rec = json.loads(line)
+            except Exception:
+                continue
+            if not isinstance(rec, dict) or rec.get("type") != "assistant":
+                continue
+            c = (rec.get("message") or {}).get("content")
+            if isinstance(c, str):
+                text = c
+            elif isinstance(c, list):
+                text = chr(10).join(b.get("text", "") for b in c
+                                    if isinstance(b, dict) and b.get("type") == "text")
+            else:
+                continue
+            if text.strip():
+                return text
+    except Exception as _e:
+        swallowed("last_assistant_text", _e, quiet=MISSING)
+    return ""
+
+
+def reply_label(text):
+    """The handoff label a reply ends on, or "". Only the LAST non-empty line counts, with
+    its backticks and spaces off. A bare line such as "Offset -3" is ordinary prose, so the
+    line must be in a code box or carry the (day month) date a real label always has."""
+    lines = [ln for ln in (text or "").splitlines() if ln.strip()]
+    if not lines:
+        return ""
+    raw = lines[-1].strip()
+    label = raw.strip("` ").strip()
+    if not REPLY_LABEL_RE.match(label):
+        return ""
+    if not (raw.startswith("`") or REPLY_LABEL_DATED_RE.search(label)):
+        return ""
+    return label
+
+
+def label_without_note_block(d, path):
+    """The reply ends with a next-chat label but this chat never wrote its handoff note.
+
+    Measured 17 Oct 2026: a chat ended its final reply with a label in a code box and no
+    note on disk. The chat opened with that label found nothing - no pickup text, so no
+    group move, no HANDOVER STARTED, and the work was rebuilt from the request ledger.
+    Returns True when it blocked, so the caller prints exactly one decision. A stub does
+    not count as a note (real_note), and a chat's own label blocks too: a reply must never
+    end with its own label."""
+    if d.get("stop_hook_active"):
+        return False
+    sid = d.get("session_id")
+    if not sid:
+        return False        # handoff_path() would fall back to the legacy shared name
+    label = reply_label(last_assistant_text(path))
+    if not label:
+        return False
+    note = handoff_path(path, sid)
+    if real_note(note):
+        return False
+    log("label-guard: blocked a reply ending with " + repr(label) + " - no note at "
+        + os.path.basename(note))
+    print(json.dumps({"decision": "block", "reason": (
+        "This reply ends with a handoff label (" + label + ") but no handoff note was saved. "
+        "Write the note now to " + note + " - the label on line 1 as HANDOFF LABEL, "
+        "WRITTEN BY on line 2 - then end with the label again. If this was not a handover, "
+        "remove the label line from the end of the reply instead.")}))
+    return True
 
 
 def note_head_block(d, path):

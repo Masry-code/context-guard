@@ -7,7 +7,7 @@
 
 <p align="center">
   <img alt="Tests" src="https://github.com/Masry-code/context-guard/actions/workflows/tests.yml/badge.svg">
-  <img alt="1900+ checks" src="https://img.shields.io/badge/checks-1900%2B-2a78d6">
+  <img alt="2300+ checks" src="https://img.shields.io/badge/checks-2300%2B-2a78d6">
   <img alt="Python 3.8+" src="https://img.shields.io/badge/python-3.8%2B-2a78d6">
   <img alt="No dependencies" src="https://img.shields.io/badge/dependencies-none-1baf7a">
   <img alt="6 hooks" src="https://img.shields.io/badge/hooks-6-eda100">
@@ -358,7 +358,7 @@ is a check you will eventually disable by deleting the whole tool.
 python test_guard.py
 ```
 
-**1900+ checks, no test framework required.** They run against a throwaway home directory, so
+**2300+ checks, no test framework required.** They run against a throwaway home directory, so
 they cannot touch your real notes — which is worth stating plainly, because until
 18 Sep 2026 that was only true on Windows. On macOS and Linux `expanduser("~")` falls back to
 the passwd database when `HOME` is missing, so the suite would have written into the real

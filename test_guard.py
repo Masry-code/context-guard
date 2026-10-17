@@ -7781,6 +7781,63 @@ def append_prose(home, sid, text):
                 "content": [{"type": "text", "text": text}]}}) + chr(10))
 
 
+def test_a_reply_ending_in_a_label_with_no_note_is_blocked():
+    """Measured 17 Oct 2026: a chat ended its reply with a next-chat label in a code box and
+    never wrote the note, so the chat opened with that label found nothing to pick up. The
+    Stop hook now refuses until the note exists - and only for a label on the LAST line."""
+    lab = chr(96) + "Foo -18 (16 Oct)" + chr(96)
+    home = make_home({})
+    try:
+        write_chat(home, "lblnone", time.time() - 3600)
+        append_prose(home, "lblnone", "All done." + chr(10) + chr(10) + lab + chr(10))
+        p = run_stop(home, "lblnone")
+        expect_clean(p, "label-guard")
+        r = blocked(p)
+        check("label-guard: label + no note -> blocked", bool(r), repr((p.stdout or "")[:200]))
+        check("label-guard: it names the note path",
+              KEY + ".lblnone" in r.replace(chr(92), "/"), repr(r[:300]))
+        out = (p.stdout or "").strip()
+        check("label-guard: exactly one json object", out.count(chr(10)) == 0
+              and json.loads(out).get("decision") == "block", repr(out[:200]))
+        p = run_stop(home, "lblnone", active=True)
+        check("label-guard: stop_hook_active -> no output", (p.stdout or "").strip() == "",
+              repr((p.stdout or "")[:200]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+    home = make_home({})
+    try:
+        write_chat(home, "lblnote", time.time() - 3600)
+        write_note(home, "lblnote")
+        append_prose(home, "lblnote", "Done." + chr(10) + lab)
+        p = run_stop(home, "lblnote")
+        check("label-guard: label + a real note -> the label guard stays quiet",
+              "ends with a handoff label" not in blocked(p), repr(blocked(p)[:200]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+    home = make_home({})
+    try:
+        write_chat(home, "lblplain", time.time() - 3600)
+        append_prose(home, "lblplain", "Fixed it, tests pass.")
+        p = run_stop(home, "lblplain")
+        check("label-guard: an ordinary last line -> nothing blocked", blocked(p) == "",
+              repr(blocked(p)[:200]))
+        write_chat(home, "lblmid", time.time() - 3600)
+        append_prose(home, "lblmid", "The label would be " + lab + chr(10) + chr(10)
+                     + "I have not decided yet.")
+        p = run_stop(home, "lblmid")
+        check("label-guard: a label in the middle of the reply -> nothing blocked",
+              blocked(p) == "", repr(blocked(p)[:200]))
+        write_chat(home, "lblbare", time.time() - 3600)
+        append_prose(home, "lblbare", "Result:" + chr(10) + "Offset -3")
+        p = run_stop(home, "lblbare")
+        check("label-guard: a bare 'Offset -3' line is not a label", blocked(p) == "",
+              repr(blocked(p)[:200]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
 def test_a_neighbours_memory_save_no_longer_silences_this_chats_nag():
     """The hole the nag has had since it was written, closed by asking the transcript.
 
@@ -11111,6 +11168,7 @@ if __name__ == "__main__":
               test_the_ceiling_has_an_off_switch,
               test_the_ceiling_gives_up_rather_than_trapping_him,
               test_a_paused_chat_is_not_told_to_hand_off,
+              test_a_reply_ending_in_a_label_with_no_note_is_blocked,
               test_a_paused_chat_can_close_past_the_ceiling,
               test_a_paused_chat_still_gets_the_memory_nag,
               test_resume_brings_the_warning_back_and_a_typo_pauses_nothing,
