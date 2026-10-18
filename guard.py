@@ -170,7 +170,7 @@ AWAY_ON = ("afk", "afk on", "im afk", "i m afk", "afk mode", "going afk",
            "on mobile", "im on mobile", "i m on mobile", "remote", "im remote", "i m remote")
 # "back" is only read as a toggle while away mode is ALREADY on - otherwise an ordinary
 # "back" (go back, revert that) would be swallowed as a command he never issued.
-AWAY_OFF = ("back", "im back", "i m back", "afk off", "away off", "afk done",
+AWAY_OFF = ("back", "im back", "i m back", "am back", "afk off", "away off", "afk done",
             "back at the pc", "im at the pc", "i m at the pc", "im here", "i m here")
 # PAUSE, ONE chat. His words, 24 Sep 2026, in "QIX handover -31": "in this chat i need to
 # pause context guard until we finish all the books but keep the creating memories when you
@@ -1356,7 +1356,7 @@ def set_away(on):
 # Inside a longer message only these count, matched as whole words. Narrower than the
 # lists above on purpose: a bare "back", "afk", "remote" or "im here" is ordinary speech.
 AWAY_ON_IN_TEXT = ("afk on", "away on", "going afk now")
-AWAY_OFF_IN_TEXT = ("afk off", "away off", "afk done", "im back", "i m back", "i am back",
+AWAY_OFF_IN_TEXT = ("afk off", "away off", "afk done", "im back", "i m back", "am back",
                     "back at the pc", "back at the desk", "back at my desk", "im at the pc",
                     "i m at the pc", "i am at the pc", "at the desk now")
 

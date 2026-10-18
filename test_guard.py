@@ -2646,6 +2646,13 @@ def test_away_phrases_are_also_read_inside_a_longer_message():
     check("away-inline: both signals in one message change nothing (stays not armed)", not on)
     on, p = one("awayline", "Bar -3 (1 Jan)" + chr(10) + "afk", False)
     check("away-inline: a line that is exactly 'afk' arms it", on)
+    # 18 Oct 2026 he typed "am back" over "what did i miss" and away mode stayed ON.
+    on, p = one("awayamback", "am back" + chr(10) + "what did i miss", True)
+    check("away-inline: an 'am back' line over a question clears it while away", not on)
+    on, p = one("awayamback2", "phone connected and am back", True)
+    check("away-inline: '... and am back' inside a sentence clears it while away", not on)
+    on, p = one("awaybacking", "i am backing up the files first", True)
+    check("away-inline: 'am backing up' is not 'am back' (away stays ON)", on)
 
 
 def test_an_afk_on_inside_a_message_still_runs_the_rest_of_it():
