@@ -1573,8 +1573,8 @@ def handoff_steps(today):
         "stays readable under 'Resume previous session'. "
         "Then end your turn. If a message later arrives starting HANDOVER STARTED, do exactly "
         "what it says: mcp__ccd_session_mgmt__set_session_effort on the id and level given, "
-        "then mcp__ccd_session_mgmt__archive_session with session_id 'self', with no reply to "
-        "him in between. "
+        "then mcp__ccd_session_mgmt__archive_session with session_id 'self' even if the effort "
+        "call is refused (the new chat checks its own effort), with no reply to him in between. "
         + PATH_RULE + BACKGROUND_RULE)
 
 
@@ -2947,8 +2947,11 @@ def handover_report(effort, writers):
             "session_id=\"self\". This is Context Guard's handover; he asked for it on "
             "30 Sep 2026. Do this BEFORE the sidebar tidy, and if you sent it, do NOT archive "
             "that chat in the tidy - it archives itself once it has set your effort. Zero or "
-            "several matches: send nothing and let the tidy handle it as usual. Say nothing "
-            "more to him about it. ")
+            "several matches: send nothing and let the tidy handle it as usual. If you sent it, "
+            "call get_session 'self' again just before your last reply: if its effort is still "
+            "not " + effort[0].lower() + ", the old chat was refused and no chat can set its own "
+            "effort, so add one line asking him to pick " + effort[0].capitalize() + " in the "
+            "effort picker. Otherwise say nothing more to him about it. ")
 
 
 def _bash_shape(cmd):
@@ -3331,8 +3334,9 @@ def gate_text(sid, path, ctx, reason, idle_days):
         "handover reply, so that is the one reply allowed to end on a label. ")
     tail = ("Then end your turn. If a message later arrives starting HANDOVER STARTED, do "
             "exactly what it says: mcp__ccd_session_mgmt__set_session_effort on the id and "
-            "level given, then mcp__ccd_session_mgmt__archive_session with session_id 'self', "
-            "with no reply to him in between. " + PATH_RULE + BACKGROUND_RULE)
+            "level given, then mcp__ccd_session_mgmt__archive_session with session_id 'self' "
+            "even if the effort call is refused (the new chat checks its own effort), with no "
+            "reply to him in between. " + PATH_RULE + BACKGROUND_RULE)
     if have:
         return (head + reply + "The label to quote, exactly as the note's first line gives it: "
                 + (("`" + label + "`") if label else "(read the HANDOFF LABEL line at the top of "

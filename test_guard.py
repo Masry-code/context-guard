@@ -6100,6 +6100,10 @@ def test_the_handover_shows_the_label_and_finishes_when_the_new_chat_reports():
         check("handover/console: and the HANDOVER STARTED instruction is there",
               "HANDOVER STARTED" in ctx and "set_session_effort" in ctx
               and "archive_session" in ctx and "'self'" in ctx, repr(ctx[-1200:]))
+        # 29 Oct 2026: the app's safety check refused the effort call once in 30, and the old
+        # chat stopped to report it instead of archiving itself.
+        check("handover/console: it archives itself even when the effort call is refused",
+              "even if the effort call is refused" in ctx, repr(ctx[-1200:]))
     finally:
         shutil.rmtree(home, ignore_errors=True)
     home = make_home({})
@@ -6136,6 +6140,9 @@ def test_the_pickup_reports_to_the_old_chat_only_when_the_note_has_an_effort():
         # that was sent HANDOVER STARTED must be left out of the sidebar tidy.
         check("handover/pickup: the chat it messaged is left out of the tidy",
               "do NOT archive" in ctx and "archives itself" in ctx, repr(ctx[:1800]))
+        # a refused effort call is only visible in the new chat: it checks its own effort
+        check("handover/pickup: the new chat checks its own effort before its last reply",
+              "still not medium" in ctx and "effort picker" in ctx, repr(ctx[:1800]))
     finally:
         shutil.rmtree(home, ignore_errors=True)
     home = make_home({KEY + ".aaaaaaaa.md": NOTE_MANGO})
